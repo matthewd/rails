@@ -142,3 +142,313 @@ Lint/EndAlignment:
 # Use my_method(my_arg) not my_method( my_arg ) or my_method my_arg.
 Lint/RequireParentheses:
   Enabled: true
+
+Lint/BlockAlignment:
+  Enabled: true
+  Exclude:
+    - 'actionpack/test/controller/resources_test.rb'
+    - 'actionpack/test/controller/routing_test.rb'
+    - 'activerecord/lib/active_record/connection_adapters/postgresql/schema_statements.rb'
+    - 'activerecord/test/cases/associations/callbacks_test.rb'
+
+Lint/CircularArgumentReference: # XXX
+  Enabled: true
+  Exclude:
+    - 'actionpack/test/dispatch/reloader_test.rb'
+    - 'activerecord/lib/active_record/associations/has_many_association.rb'
+    - 'activerecord/lib/active_record/reflection.rb'
+    - 'activesupport/lib/active_support/values/time_zone.rb'
+
+Lint/ConditionPosition:
+  Enabled: true
+
+Lint/Debugger:
+  Enabled: true
+
+Lint/DefEndAlignment:
+  Enabled: true
+
+Lint/DeprecatedClassMethods:
+  Enabled: true
+
+Lint/DuplicateMethods:
+  Enabled: true
+  Exclude:
+    - 'activesupport/lib/active_support/core_ext/class/subclasses.rb'
+    - 'activesupport/test/array_inquirer_test.rb'
+    - 'activesupport/test/string_inquirer_test.rb'
+    - 'activesupport/test/subscriber_test.rb'
+
+Lint/DuplicatedKey:
+  Enabled: true
+
+Lint/EachWithObjectArgument:
+  Enabled: true
+
+Lint/ElseLayout:
+  Enabled: true
+
+Lint/EmptyEnsure:
+  Enabled: true
+
+Lint/EndInMethod:
+  Enabled: true
+
+Lint/EmptyInterpolation:
+  Enabled: true
+
+Lint/EnsureReturn:
+  Enabled: true
+  Exclude:
+    - 'activerecord/test/cases/migration/rename_table_test.rb'
+    - 'activesupport/lib/active_support/dependencies.rb'
+
+Lint/FloatOutOfRange:
+  Enabled: true
+
+Lint/FormatParameterMismatch:
+  Enabled: true
+
+Lint/InvalidCharacterLiteral:
+  Enabled: true
+
+Lint/LiteralInCondition:
+  Enabled: true
+  Exclude:
+    - 'activesupport/lib/active_support/callbacks.rb'
+
+Lint/LiteralInInterpolation:
+  Enabled: true
+  Exclude:
+    - 'actionpack/test/controller/mime/respond_to_test.rb'
+    - 'activerecord/test/cases/associations/left_outer_join_association_test.rb'
+
+Lint/Loop:
+  Enabled: false
+
+Lint/NextWithoutAccumulator:
+  Enabled: true
+
+Lint/RandOne:
+  Enabled: true
+
+Lint/RescueException:
+  Enabled: false
+
+Lint/StringConversionInInterpolation:
+  Enabled: true
+
+Lint/UnderscorePrefixedVariableName:
+  Enabled: false
+
+Lint/UnneededDisable:
+  Enabled: true
+
+Lint/UnneededSplatExpansion:
+  Enabled: true
+  Exclude:
+    - 'actionpack/test/controller/new_base/render_file_test.rb'
+    - 'actionpack/test/dispatch/uploaded_file_test.rb'
+    - 'activesupport/test/core_ext/hash_ext_test.rb'
+
+Lint/UnreachableCode:
+  Enabled: true
+  Exclude:
+    - 'actionpack/test/controller/filters_test.rb'
+    - 'activesupport/test/dependencies/raises_exception.rb'
+
+Lint/UselessComparison:
+  Enabled: true
+  Exclude:
+    - 'activerecord/test/cases/base_test.rb'
+    - 'activesupport/test/core_ext/duration_test.rb'
+    - 'activesupport/test/core_ext/range_ext_test.rb'
+    - 'activesupport/test/time_zone_test.rb'
+
+Lint/UselessSetterCall:
+  Enabled: false
+
+Lint/Void:
+  Enabled: true
+  Exclude:
+    - 'activesupport/test/autoloading_fixtures/circular2.rb'
+
+Performance/Count:
+  Enabled: true
+
+Performance/Detect:
+  Enabled: true
+
+Performance/DoubleStartEndWith:
+  Enabled: true
+  Exclude:
+    - 'actionview/lib/action_view/helpers/asset_tag_helper.rb'
+
+Performance/EndWith:
+  Enabled: true
+  Exclude:
+    - 'activesupport/lib/active_support/dependencies.rb'
+
+Performance/FlatMap:
+  Enabled: true
+
+Performance/HashEachMethods:
+  Enabled: true
+
+Performance/LstripRstrip:
+  Enabled: true
+
+Performance/RedundantMerge:
+  Enabled: true
+  MaxKeyValuePairs: 1
+  Exclude:
+    - 'actionpack/test/controller/http_digest_authentication_test.rb'
+    - 'actionpack/test/controller/resources_test.rb'
+    - 'actionpack/test/dispatch/header_test.rb'
+    - 'activerecord/lib/active_record/connection_adapters/mysql/schema_statements.rb'
+    - 'activerecord/lib/active_record/connection_adapters/mysql2_adapter.rb'
+    - 'activerecord/test/cases/relation_test.rb'
+    - 'activerecord/test/cases/tasks/database_tasks_test.rb'
+
+Performance/RedundantSortBy:
+  Enabled: true
+
+Performance/ReverseEach:
+  Enabled: true
+
+Performance/Sample:
+  Enabled: true
+
+Performance/Size:
+  Enabled: false
+
+Performance/StartWith:
+  Enabled: true
+  Exclude:
+    - 'tasks/release.rb'
+
+Security/Eval:
+  Enabled: false
+
+Style/ArrayJoin:
+  Enabled: true
+  Exclude:
+    - 'activesupport/test/message_encryptor_test.rb'
+
+Style/AsciiIdentifiers:
+  Enabled: true
+  Exclude:
+    - 'activerecord/test/cases/base_test.rb'
+
+Style/BeginBlock:
+  Enabled: true
+
+Style/BlockComments:
+  Enabled: true
+
+Layout/BlockEndNewline:
+  Enabled: true
+  Exclude:
+    - 'actionpack/test/controller/routing_test.rb'
+    - 'activesupport/test/core_ext/object/instance_variables_test.rb'
+
+Style/CaseEquality:
+  Enabled: false
+
+Style/CharacterLiteral:
+  Enabled: false
+
+Style/ClassAndModuleCamelCase:
+  Enabled: true
+  Exclude:
+    - 'activerecord/lib/active_record/migration/compatibility.rb'
+    - 'activesupport/lib/active_support/xml_mini/*.rb'
+
+Style/ClassMethods:
+  Enabled: true
+
+Style/DefWithParentheses:
+  Enabled: true
+  Exclude:
+    - 'actionview/test/template/form_helper/form_with_test.rb'
+    - 'actionview/test/template/form_helper_test.rb'
+    - 'activesupport/test/json/encoding_test.rb'
+
+Style/EndBlock:
+  Enabled: true
+
+Layout/EndOfLine:
+  Enabled: true
+
+Style/FileName:
+  Enabled: true
+
+Style/FlipFlop:
+  Enabled: true
+
+Style/For:
+  Enabled: true
+
+Layout/InitialIndentation:
+  Enabled: true
+
+Style/LambdaCall:
+  Enabled: false
+
+Style/MethodCallWithoutArgsParentheses:
+  Enabled: false
+
+Style/MethodName:
+  Enabled: false
+
+Style/MultilineIfThen:
+  Enabled: true
+
+Style/NilComparison:
+  Enabled: true
+  Exclude:
+    - 'activemodel/test/cases/errors_test.rb'
+    - 'activerecord/lib/active_record/migration/command_recorder.rb'
+
+Style/Not:
+  Enabled: true
+  Exclude:
+    - 'activesupport/lib/active_support/core_ext/hash/conversions.rb'
+
+Style/OneLineConditional:
+  Enabled: true
+
+Layout/SpaceAfterMethodName:
+  Enabled: true
+
+Layout/SpaceAfterNot:
+  Enabled: false
+
+Layout/SpaceAfterSemicolon:
+  Enabled: true
+  Exclude:
+    - 'activerecord/test/cases/associations/has_many_through_associations_test.rb'
+
+Layout/SpaceAroundBlockParameters:
+  Enabled: true
+  Exclude:
+    - 'actionpack/test/journey/router_test.rb'
+    - 'activesupport/lib/active_support/duration.rb'
+    - 'activesupport/test/multibyte_conformance_test.rb'
+    - 'activesupport/test/multibyte_grapheme_break_conformance_test.rb'
+    - 'activesupport/test/multibyte_normalization_conformance_test.rb'
+
+Layout/SpaceInsideArrayPercentLiteral:
+  Enabled: true
+  Exclude:
+    - 'activesupport/test/ordered_hash_test.rb'
+    - 'railties/lib/rails/tasks/statistics.rake'
+
+Layout/SpaceInsideBrackets:
+  Enabled: false
+
+Layout/SpaceInsideRangeLiteral:
+  Enabled: true
+
+Style/StabbyLambdaParentheses:
+  Enabled: false
