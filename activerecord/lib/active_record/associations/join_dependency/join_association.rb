@@ -54,7 +54,16 @@ module ActiveRecord
             end
             scope_chain_index += 1
 
-            scope_chain_items.concat [klass.send(:build_default_scope, ActiveRecord::Relation.create(klass, table))].compact
+            relation = ActiveRecord::Relation.create(klass, table)
+            current_scope = klass.current_scope
+
+            klass_scope =
+              if current_scope && current_scope.empty_scope?
+                relation
+              else
+                klass.send(:build_default_scope, relation)
+              end
+            scope_chain_items.concat [klass_scope].compact
 
             rel = scope_chain_items.inject(scope_chain_items.shift) do |left, right|
               left.merge right
