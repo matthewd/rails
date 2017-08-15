@@ -37,7 +37,7 @@ module ActiveRecord
     end
 
     def merge!(other) # :nodoc:
-      if !other.is_a?(Relation) && other.respond_to?(:to_proc)
+      if !other.is_a?(Relation) && !other.is_a?(Hash) && other.respond_to?(:to_proc)
         instance_exec(&other)
       else
         klass = other.is_a?(Hash) ? Relation::HashMerger : Relation::Merger

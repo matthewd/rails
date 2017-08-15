@@ -578,6 +578,10 @@ module ActiveRecord
       "#<#{self.class.name} [#{entries.join(', ')}]>"
     end
 
+    def empty_scope? # :nodoc:
+      @values == klass.unscoped.values
+    end
+
     private
 
     def exec_queries

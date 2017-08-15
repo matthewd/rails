@@ -29,6 +29,7 @@ class Comment < ActiveRecord::Base
 end
 
 class SpecialComment < Comment
+  default_scope { where(deleted_at: nil) }
 end
 
 class SubSpecialComment < SpecialComment

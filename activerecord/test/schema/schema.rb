@@ -175,6 +175,7 @@ ActiveRecord::Schema.define do
     t.integer :taggings_count, :default => 0
     t.integer :children_count, :default => 0
     t.integer :parent_id
+    t.datetime :deleted_at
   end
 
   create_table :companies, :force => true do |t|
