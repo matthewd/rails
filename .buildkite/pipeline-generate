@@ -27,10 +27,11 @@ ONE_RUBY = RUBIES.last
 STEPS = []
 
 def step_for(subdirectory, rake_task, ruby: nil)
-  label = +"#{subdirectory} #{rake_task}"
-  label.sub!(/[:_]test|test:/, "")
+  label = +"#{subdirectory} #{rake_task.sub(/[:_]test|test:/, "")}"
   label.sub!(/ test/, "")
-  label << " (#{ruby})" if ruby
+  if ruby
+    label << " (#{ruby.sub(/^ruby:|:latest$/, "")})"
+  end
 
   if rake_task.start_with?("mysql2:")
     rake_task = "db:mysql:rebuild #{rake_task}"
@@ -38,9 +39,15 @@ def step_for(subdirectory, rake_task, ruby: nil)
     rake_task = "db:postgresql:rebuild #{rake_task}"
   end
 
+  command = "cd #{subdirectory} && bundle exec rake #{rake_task}"
+  command = "yarn install && #{command}" if subdirectory == "actioncable" && rake_task == "test:integration"
+
+  timeout = 10
+  timeout = 45 if subdirectory == "railties"
+
   hash = {
     "label" => label,
-    "command" => "sh -c 'cd #{subdirectory} && bundle exec rake #{rake_task}'",
+    "command" => "sh -c '#{command}'",
     "plugins" => {
       DOCKER_COMPOSE_PLUGIN => {
         "run" => "default",
@@ -50,7 +57,7 @@ def step_for(subdirectory, rake_task, ruby: nil)
     "env" => {
       "RUBY_IMAGE" => ruby || ONE_RUBY,
     },
-    "timeout_in_minutes" => 10,
+    "timeout_in_minutes" => timeout,
   }
 
   yield hash if block_given?
@@ -96,7 +103,7 @@ end
   activestorage   test
   actionmailbox   test
   actiontext      test
-  guides          check
+  guides          test
 ).each_slice(2) do |dir, task|
   steps_for(dir, task)
 end

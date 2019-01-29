@@ -1,46 +1,38 @@
 version: "3.6"
 
 services:
-  base: &base
+  default: &default
     build:
       context: ../
       dockerfile: .buildkite/Dockerfile
       args:
         - RUBY_IMAGE
     environment:
-      - CI
-
-  default: &default
-    <<: *base
-    depends_on:
-      - memcached
-      - redis
-      - mysql
-      - postgres
+      CI:
 
   activejob:
     <<: *default
     depends_on:
-      - memcached
-      - redis
-      - mysql
-      - postgres
       - rabbitmq
       - beanstalkd
 
   memcached:
     image: memcached:alpine
+    network_mode: service:default
 
   redis:
     image: redis:alpine
+    network_mode: service:default
 
   mysql:
     image: "${MYSQL_IMAGE-mysql:latest}"
     environment:
       MYSQL_ROOT_PASSWORD: password
+    network_mode: service:default
 
   postgres:
     image: postgres:alpine
+    network_mode: service:default
 
   rabbitmq:
     image: rabbitmq:alpine

@@ -2,6 +2,9 @@ ARG RUBY_IMAGE
 FROM ${RUBY_IMAGE:-ruby:latest}
 
 RUN echo "--- :package: Installing system deps" \
+    # Postgres apt sources
+    && curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+    && echo "deb http://apt.postgresql.org/pub/repos/apt/ stretch-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
     # Node apt sources
     && curl -sS https://deb.nodesource.com/gpgkey/nodesource.gpg.key | apt-key add - \
     && echo "deb http://deb.nodesource.com/node_10.x stretch main" > /etc/apt/sources.list.d/nodesource.list \
@@ -10,7 +13,7 @@ RUN echo "--- :package: Installing system deps" \
     && echo "deb http://dl.yarnpkg.com/debian/ stable main" > /etc/apt/sources.list.d/yarn.list \
     # Install all the things
     && apt-get update \
-    && apt-get install -y --no-install-recommends git nodejs yarn ffmpeg mupdf mupdf-tools poppler-utils \
+    && apt-get install -y --no-install-recommends postgresql-client mysql-client sqlite3 git nodejs yarn ffmpeg mupdf mupdf-tools poppler-utils \
     # await (for waiting on dependent services)
     && cd /tmp \
     && wget -qc https://github.com/betalo-sweden/await/releases/download/v0.4.0/await-linux-amd64 \
