@@ -1,0 +1,118 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "yaml"
+
+BRANCH = ENV["BUILDKITE_BRANCH"] || "master"
+IS_PULL_REQUEST = ENV.fetch("BUILDKITE_PULL_REQUEST_BASE_BRANCH", "") != ""
+
+DOCKER_COMPOSE_PLUGIN = "docker-compose#v2.6.0"
+
+if File.read(File.expand_path("../rails.gemspec", __dir__)) =~ /required_ruby_version[^0-9]+([0-9]+\.[0-9]+)/
+  MIN_RUBY = $1
+else
+  MIN_RUBY = "2.0"
+end
+
+RUBIES = []
+next_ruby = Gem::Version.new(MIN_RUBY)
+this_ruby = Gem::Version.new(RUBY_VERSION)
+until next_ruby > this_ruby
+  RUBIES << "ruby:#{next_ruby}"
+  next_ruby = Gem::Version.new("#{next_ruby}.0").bump
+end
+
+ONE_RUBY = RUBIES.last
+
+STEPS = []
+
+def step_for(subdirectory, rake_task, ruby: nil)
+  label = +"#{subdirectory} #{rake_task}"
+  label.sub!(/[:_]test|test:/, "")
+  label.sub!(/ test/, "")
+  label << " (#{ruby})" if ruby
+
+  if rake_task.start_with?("mysql2:")
+    rake_task = "db:mysql:rebuild #{rake_task}"
+  elsif rake_task.start_with?("postgresql:")
+    rake_task = "db:postgresql:rebuild #{rake_task}"
+  end
+
+  hash = {
+    "label" => label,
+    "command" => "sh -c 'cd #{subdirectory} && bundle exec rake #{rake_task}'",
+    "plugins" => {
+      DOCKER_COMPOSE_PLUGIN => {
+        "run" => "default",
+        "config" => ".buildkite/docker-compose.yml",
+      },
+    },
+    "env" => {
+      "RUBY_IMAGE" => ruby || ONE_RUBY,
+    },
+    "timeout_in_minutes" => 10,
+  }
+
+  yield hash if block_given?
+
+  STEPS << hash
+end
+
+def steps_for(subdirectory, rake_task, &block)
+  RUBIES.each do |ruby|
+    step_for(subdirectory, rake_task, ruby: ruby, &block)
+  end
+end
+
+# GROUP 1: Runs additional isolated tests for non-PR builds
+%w(
+  actionpack      test
+  actionmailer    test
+  activemodel     test
+  activesupport   test
+  actionview      test
+  activejob       test
+  activerecord    mysql2:test
+  activerecord    postgresql:test
+  activerecord    sqlite3:test
+).each_slice(2) do |dir, task|
+  steps_for(dir, task)
+
+  next if IS_PULL_REQUEST
+  next if BRANCH != "master" && BRANCH !~ /\A[0-9-]+(?:-stable)?\z/
+
+  if task.match?(/:test/)
+    step_for(dir, task.sub(":test", ":isolated_test"))
+  else
+    step_for(dir, "#{task}:isolated")
+  end
+end
+
+# GROUP 2: No isolated tests, runs for each supported ruby
+%w(
+  actioncable     test
+  actioncable     test:integration
+  railties        test
+  activestorage   test
+  actionmailbox   test
+  actiontext      test
+  guides          check
+).each_slice(2) do |dir, task|
+  steps_for(dir, task)
+end
+
+# GROUP 3: Special cases
+
+step_for("actionview", "test:ujs")
+step_for("activerecord", "sqlite3_mem:test")
+step_for("activerecord", "mysql2:test") do |x|
+  x["label"] += " [mariadb]"
+  x["env"]["MYSQL_IMAGE"] = "mariadb:latest"
+end
+steps_for("activejob", "test:integration") do |x|
+  x["plugins"][DOCKER_COMPOSE_PLUGIN]["run"] = "activejob"
+end
+
+###
+
+puts YAML.dump("steps" => STEPS)

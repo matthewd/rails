@@ -1,0 +1,51 @@
+version: "3.6"
+
+services:
+  base: &base
+    build:
+      context: ../
+      dockerfile: .buildkite/Dockerfile
+      args:
+        - RUBY_IMAGE
+    environment:
+      - CI
+
+  default: &default
+    <<: *base
+    depends_on:
+      - memcached
+      - redis
+      - mysql
+      - postgres
+
+  activejob:
+    <<: *default
+    depends_on:
+      - memcached
+      - redis
+      - mysql
+      - postgres
+      - rabbitmq
+      - beanstalkd
+
+  memcached:
+    image: memcached:alpine
+
+  redis:
+    image: redis:alpine
+
+  mysql:
+    image: "${MYSQL_IMAGE-mysql:latest}"
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+
+  postgres:
+    image: postgres:alpine
+
+  rabbitmq:
+    image: rabbitmq:alpine
+
+  beanstalkd:
+    build:
+      context: ./
+      dockerfile: Dockerfile.beanstalkd
