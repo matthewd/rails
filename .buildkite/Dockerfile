@@ -29,6 +29,9 @@ WORKDIR /rails
 ADD Gemfile Gemfile.lock RAILS_VERSION rails.gemspec */*.gemspec /rails/
 RUN echo "--- :bundler: Installing gems" \
     && for f in *.gemspec; do d="$(basename -s.gemspec "$f")"; [ "$d" = "rails" ] || (mkdir "$d" && mv "$f" "$d/"); done \
-    && rm Gemfile.lock && bundle install -j 8
+    && rm Gemfile.lock && bundle install -j 8 && cp Gemfile.lock Gemfile.lock.updated \
+    && echo "--- :floppy_disk: Copying repository contents"
 
 ADD . /rails
+
+RUN mv -f Gemfile.lock.updated Gemfile.lock
