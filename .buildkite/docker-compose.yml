@@ -26,7 +26,7 @@ services:
       - redis
       - "${MYSQL_SERVICE-mysql}"
       - postgres
-    entrypoint: "await postgres://postgres@postgres:5432/postgres tcp://redis:6379 tcp://memcached:11211 mysql://root@${MYSQL_SERVICE-mysql}:3306 --"
+    entrypoint: "await postgres://postgres@postgres:5432/postgres tcp://redis:6379 tcp://memcached:11211 tcp://${MYSQL_SERVICE-mysql}:3306 --"
 
   activejob:
     <<: *default
