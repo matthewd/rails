@@ -42,12 +42,24 @@ def step_for(subdirectory, rake_task, ruby: nil)
   command = "cd #{subdirectory} && bundle exec rake #{rake_task}"
   command = "yarn install && #{command}" if subdirectory == "actioncable" && rake_task == "test:integration"
 
-  timeout = 10
-  timeout = 45 if subdirectory == "railties"
+  timeout =
+    case subdirectory
+    when "railties"; 45
+    when "guides"; 20
+    else; 10
+    end
+
+  group =
+    if rake_task.include?("isolated")
+      "isolated"
+    else
+      ruby || ONE_RUBY
+    end
 
   hash = {
     "label" => label,
     "command" => "sh -c '#{command}'",
+    "group" => group,
     "plugins" => {
       DOCKER_COMPOSE_PLUGIN => {
         "run" => "default",
@@ -114,7 +126,7 @@ step_for("actionview", "test:ujs")
 step_for("activerecord", "sqlite3_mem:test")
 step_for("activerecord", "mysql2:test") do |x|
   x["label"] += " [mariadb]"
-  x["env"]["MYSQL_IMAGE"] = "mariadb:latest"
+  x["env"]["MYSQL_SERVICE"] = "mariadb"
 end
 steps_for("activejob", "test:integration") do |x|
   x["plugins"][DOCKER_COMPOSE_PLUGIN]["run"] = "activejob"
@@ -122,4 +134,17 @@ end
 
 ###
 
-puts YAML.dump("steps" => STEPS)
+STEPS.sort_by! do |step|
+  [
+    -step["timeout_in_minutes"],
+    step["group"] == "isolated" ? 2 : 1,
+    step["command"].include?("test:") ? 2 : 1,
+    step["label"],
+  ]
+end
+
+groups = STEPS.group_by { |s| s.delete("group") }.map do |group, steps|
+  { "group" => group, "steps" => steps }
+end
+
+puts YAML.dump("steps" => ["wait", *groups])

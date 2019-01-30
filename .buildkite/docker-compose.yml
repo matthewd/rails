@@ -11,7 +11,7 @@ services:
       CI:
       PGUSER: postgres
       PGHOST: postgres
-      MYSQL_HOST: mysql
+      MYSQL_HOST: "${MYSQL_SERVICE-mysql}"
       REDIS_URL: "redis://redis:6379/1"
       QC_DATABASE_URL: "postgres://postgres@postgres/active_jobs_qc_int_test"
       QUE_DATABASE_URL: "postgres://postgres@postgres/active_jobs_que_int_test"
@@ -21,7 +21,7 @@ services:
     depends_on:
       - memcached
       - redis
-      - mysql
+      - "${MYSQL_SERVICE-mysql}"
       - postgres
 
   activejob:
@@ -29,7 +29,7 @@ services:
     depends_on:
       - memcached
       - redis
-      - mysql
+      - "${MYSQL_SERVICE-mysql}"
       - postgres
       - rabbitmq
       - beanstalkd
@@ -41,7 +41,12 @@ services:
     image: redis:alpine
 
   mysql:
-    image: "${MYSQL_IMAGE-mysql:latest}"
+    image: mysql:latest
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+
+  mariadb:
+    image: mariadb:latest
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
 
