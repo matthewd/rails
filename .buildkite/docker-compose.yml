@@ -9,6 +9,7 @@ services:
         - RUBY_IMAGE
     environment:
       CI:
+      BEANSTALK_URL: "beanstalk://beanstalkd"
       MEMCACHE_SERVERS: "memcached:11211"
       MYSQL_HOST: "${MYSQL_SERVICE-mysql}"
       PGHOST: postgres
@@ -25,6 +26,7 @@ services:
       - redis
       - "${MYSQL_SERVICE-mysql}"
       - postgres
+    entrypoint: "await postgres://postgres@postgres:5432/postgres tcp://redis:6379 tcp://memcached:11211 mysql://root@${MYSQL_SERVICE-mysql}:3306 --"
 
   activejob:
     <<: *default
@@ -46,11 +48,15 @@ services:
     image: mysql:latest
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+    volumes:
+      - .buildkite/mysql.sql:/docker-entrypoint-initdb.d/mysql.sql
 
   mariadb:
     image: mariadb:latest
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+    volumes:
+      - .buildkite/mysql.sql:/docker-entrypoint-initdb.d/mysql.sql
 
   postgres:
     image: postgres:alpine
