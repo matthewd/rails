@@ -9,12 +9,14 @@ services:
         - RUBY_IMAGE
     environment:
       CI:
-      PGUSER: postgres
-      PGHOST: postgres
+      MEMCACHE_SERVERS: "memcached:11211"
       MYSQL_HOST: "${MYSQL_SERVICE-mysql}"
-      REDIS_URL: "redis://redis:6379/1"
+      PGHOST: postgres
+      PGUSER: postgres
       QC_DATABASE_URL: "postgres://postgres@postgres/active_jobs_qc_int_test"
       QUE_DATABASE_URL: "postgres://postgres@postgres/active_jobs_que_int_test"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
+      REDIS_URL: "redis://redis:6379/1"
 
   default: &default
     <<: *base

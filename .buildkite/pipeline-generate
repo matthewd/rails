@@ -1,26 +1,31 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "json"
 require "yaml"
+require "net/http"
 
 BRANCH = ENV["BUILDKITE_BRANCH"] || "master"
 IS_PULL_REQUEST = ENV.fetch("BUILDKITE_PULL_REQUEST_BASE_BRANCH", "") != ""
 
 DOCKER_COMPOSE_PLUGIN = "docker-compose#v2.6.0"
 
-if File.read(File.expand_path("../rails.gemspec", __dir__)) =~ /required_ruby_version[^0-9]+([0-9]+\.[0-9]+)/
-  MIN_RUBY = $1
-else
-  MIN_RUBY = "2.0"
+File.read(File.expand_path("../rails.gemspec", __dir__)) =~ /required_ruby_version[^0-9]+([0-9]+\.[0-9]+)/
+MIN_RUBY = Gem::Version.new($1 || "2.0")
+
+def available_tags_for_image(image)
+  uri = URI("https://registry.hub.docker.com/v1/repositories/#{image}/tags")
+  json = Net::HTTP.get(uri)
+  JSON.parse(json).map { |x| x["name"] }
 end
 
-RUBIES = []
-next_ruby = Gem::Version.new(MIN_RUBY)
-this_ruby = Gem::Version.new(RUBY_VERSION)
-until next_ruby > this_ruby
-  RUBIES << "ruby:#{next_ruby}"
-  next_ruby = Gem::Version.new("#{next_ruby}.0").bump
-end
+RUBIES =
+  available_tags_for_image("ruby").
+  grep(/\A[0-9]+\.[0-9]+\z/).
+  map { |s| Gem::Version.new(s) }.
+  select { |v| v >= MIN_RUBY }.
+  sort.
+  map { |v| "ruby:#{v}" }
 
 ONE_RUBY = RUBIES.last
 
@@ -147,4 +152,7 @@ groups = STEPS.group_by { |s| s.delete("group") }.map do |group, steps|
   { "group" => group, "steps" => steps }
 end
 
-puts YAML.dump("steps" => ["wait", *groups])
+puts YAML.dump("steps" => [
+  "wait",
+  *groups,
+])

@@ -38,8 +38,9 @@ class MemCacheStoreTest < ActionDispatch::IntegrationTest
 
   begin
     require "dalli"
-    ss = Dalli::Client.new("localhost:11211").stats
-    raise Dalli::DalliError unless ss["localhost:11211"]
+    servers = ENV["MEMCACHE_SERVERS"] || "localhost:11211"
+    ss = Dalli::Client.new(servers).stats
+    raise Dalli::DalliError unless ss[servers]
 
     def test_setting_and_getting_session_value
       with_test_route_set do
