@@ -1,6 +1,10 @@
 ARG RUBY_IMAGE
 FROM ${RUBY_IMAGE:-ruby:latest}
 
+ENV JRUBY_OPTS="--dev -J-Xmx1024M"
+
+RUN gem update --system && gem install bundler
+
 RUN echo "--- :package: Installing system deps" \
     # Postgres apt sources
     && curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
@@ -22,19 +26,26 @@ RUN echo "--- :package: Installing system deps" \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/*
 
-ENV JRUBY_OPTS="--dev -J-Xmx1024M"
-
-RUN gem update --system && gem install bundler
-
 RUN mkdir /rails
 WORKDIR /rails
 
-ADD Gemfile Gemfile.lock RAILS_VERSION rails.gemspec */*.gemspec /rails/
-RUN echo "--- :bundler: Installing gems" \
-    && for f in *.gemspec; do d="$(basename -s.gemspec "$f")"; [ "$d" = "rails" ] || (mkdir "$d" && mv "$f" "$d/"); done \
-    && rm Gemfile.lock && bundle install -j 8 && cp Gemfile.lock Gemfile.lock.updated \
+ADD actiontext/package.json actiontext/
+ADD actionview/package.json actionview/
+ADD activestorage/package.json activestorage/
+ADD package.json yarn.lock ./
+
+RUN echo "--- :javascript: Installing JavaScript deps" \
+    && yarn install
+
+ADD Gemfile Gemfile.lock RAILS_VERSION rails.gemspec ./
+ADD */*.gemspec tmp/
+ADD railties/exe/ railties/exe/
+
+RUN echo "--- :bundler: Installing Ruby deps" \
+    && (cd tmp && for f in *.gemspec; do d="$(basename -s.gemspec "$f")"; mkdir -p "../$d" && mv "$f" "../$d/"; done) \
+    && rm Gemfile.lock && bundle install -j 8 && cp Gemfile.lock tmp/Gemfile.lock.updated \
     && echo "--- :floppy_disk: Copying repository contents"
 
-ADD . /rails
+ADD . ./
 
-RUN mv -f Gemfile.lock.updated Gemfile.lock
+RUN mv -f tmp/Gemfile.lock.updated Gemfile.lock
