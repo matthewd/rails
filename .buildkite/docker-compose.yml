@@ -49,14 +49,14 @@ services:
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
     volumes:
-      - .buildkite/mysql.sql:/docker-entrypoint-initdb.d/mysql.sql
+      - "./mysql-initdb.d:/docker-entrypoint-initdb.d"
 
   mariadb:
     image: mariadb:latest
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
     volumes:
-      - .buildkite/mysql.sql:/docker-entrypoint-initdb.d/mysql.sql
+      - "./mysql-initdb.d:/docker-entrypoint-initdb.d"
 
   postgres:
     image: postgres:alpine
