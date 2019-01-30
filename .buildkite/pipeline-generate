@@ -49,9 +49,9 @@ def step_for(subdirectory, rake_task, ruby: nil)
 
   timeout =
     case subdirectory
-    when "railties"; 45
-    when "guides"; 20
-    else; 10
+    when "railties"; 90
+    when "guides"; 45
+    else; 30
     end
 
   group =
