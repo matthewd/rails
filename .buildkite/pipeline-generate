@@ -31,6 +31,10 @@ ONE_RUBY = RUBIES.last
 
 STEPS = []
 
+def image_name_for(ruby)
+  "#{ruby.tr(":", "-")}-${BUILDKITE_BUILD_ID}"
+end
+
 def step_for(subdirectory, rake_task, ruby: nil)
   label = +"#{subdirectory} #{rake_task.sub(/[:_]test|test:/, "")}"
   label.sub!(/ test/, "")
@@ -72,7 +76,7 @@ def step_for(subdirectory, rake_task, ruby: nil)
       },
     },
     "env" => {
-      "RUBY_IMAGE" => ruby || ONE_RUBY,
+      "IMAGE_NAME" => image_name_for(ruby || ONE_RUBY),
     },
     "timeout_in_minutes" => timeout,
   }
@@ -153,6 +157,29 @@ groups = STEPS.group_by { |s| s.delete("group") }.map do |group, steps|
 end
 
 puts YAML.dump("steps" => [
+  "wait",
+  {
+    "group" => "build",
+    "steps" => [
+      *RUBIES.map do |ruby|
+        {
+          "label" => ":docker: #{ruby}",
+          "plugins" => {
+            DOCKER_COMPOSE_PLUGIN => {
+              "build" => "base",
+              "config" => ".buildkite/docker-compose.yml",
+              "image-name" => image_name_for(ruby),
+              "image-repository" => "973266071021.dkr.ecr.us-east-1.amazonaws.com/builds",
+            },
+          },
+          "env" => {
+            "RUBY_IMAGE" => ruby,
+          },
+          "timeout_in_minutes" => 15,
+        }
+      end,
+    ],
+  },
   "wait",
   *groups,
 ])

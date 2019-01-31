@@ -1,12 +1,15 @@
 version: "3.6"
 
 services:
-  base: &base
+  base:
     build:
       context: ../
       dockerfile: .buildkite/Dockerfile
       args:
         - RUBY_IMAGE
+
+  default: &default
+    image: "${IMAGE_NAME}"
     environment:
       CI:
       BEANSTALK_URL: "beanstalk://beanstalkd"
@@ -18,9 +21,6 @@ services:
       QUE_DATABASE_URL: "postgres://postgres@postgres/active_jobs_que_int_test"
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
       REDIS_URL: "redis://redis:6379/1"
-
-  default: &default
-    <<: *base
     depends_on:
       - memcached
       - redis
