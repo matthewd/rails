@@ -115,7 +115,6 @@ end
 # GROUP 2: No isolated tests, runs for each supported ruby
 %w(
   actioncable     test
-  actioncable     test:integration
   activestorage   test
   actionmailbox   test
   actiontext      test
@@ -131,6 +130,7 @@ step_for("activerecord", "mysql2:test") do |x|
   x["label"] += " [mariadb]"
   x["env"]["MYSQL_SERVICE"] = "mariadb"
 end
+steps_for("actioncable", "test:integration")
 step_for("actionview", "test:ujs") do |x|
   x["plugins"][DOCKER_COMPOSE_PLUGIN]["run"] = "actionview"
 end
