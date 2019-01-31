@@ -49,6 +49,7 @@ namespace :test do
     end
 
     test_files.each do |file|
+      puts "--- #{file}"
       fake_command = Shellwords.join([
         FileUtils::RUBY,
         "-w",
@@ -68,10 +69,13 @@ namespace :test do
 
       unless $?.success?
         failing_files << file
+        puts "^^^ +++"
       end
     end
 
+    puts "--- All tests completed"
     unless failing_files.empty?
+      puts "^^^ +++"
       puts
       puts "Failed in:"
       failing_files.each do |file|
@@ -79,7 +83,7 @@ namespace :test do
       end
       puts
 
-      raise "Failure in isolated test runner"
+      exit 1
     end
   end
 end
