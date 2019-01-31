@@ -17,7 +17,10 @@ RUN echo "--- :package: Installing system deps" \
     && echo "deb http://dl.yarnpkg.com/debian/ stable main" > /etc/apt/sources.list.d/yarn.list \
     # Install all the things
     && apt-get update \
-    && apt-get install -y --no-install-recommends postgresql-client mysql-client sqlite3 git nodejs yarn ffmpeg mupdf mupdf-tools poppler-utils \
+    && apt-get install -y --no-install-recommends \
+        postgresql-client mysql-client sqlite3 \
+        git nodejs yarn lsof \
+        ffmpeg mupdf mupdf-tools poppler-utils \
     # await (for waiting on dependent services)
     && cd /tmp \
     && wget -qc https://github.com/betalo-sweden/await/releases/download/v0.4.0/await-linux-amd64 \

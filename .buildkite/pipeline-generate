@@ -76,7 +76,7 @@ def step_for(subdirectory, rake_task, ruby: nil)
       },
     },
     "env" => {
-      "IMAGE_NAME" => image_name_for(ruby || ONE_RUBY),
+      "IMAGE_NAME" => "builds:#{image_name_for(ruby || ONE_RUBY)}",
     },
     "timeout_in_minutes" => timeout,
   }

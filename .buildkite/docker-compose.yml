@@ -2,14 +2,14 @@ version: "3.6"
 
 services:
   base:
-    build:
+    build: &build
       context: ../
       dockerfile: .buildkite/Dockerfile
       args:
         - RUBY_IMAGE
 
   default: &default
-    image: "${IMAGE_NAME}"
+    image: "${IMAGE_NAME-buildkite_base}"
     environment:
       CI:
       BEANSTALK_URL: "beanstalk://beanstalkd"
