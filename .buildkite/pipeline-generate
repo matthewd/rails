@@ -67,7 +67,7 @@ def step_for(subdirectory, rake_task, ruby: nil)
     "plugins" => {
       DOCKER_COMPOSE_PLUGIN => {
         "run" => "default",
-        "pull" => "base",
+        "pull" => "default",
         "config" => ".buildkite/docker-compose.yml",
       },
     },
@@ -126,11 +126,13 @@ end
 
 # GROUP 3: Special cases
 
-step_for("actionview", "test:ujs")
 step_for("activerecord", "sqlite3_mem:test")
 step_for("activerecord", "mysql2:test") do |x|
   x["label"] += " [mariadb]"
   x["env"]["MYSQL_SERVICE"] = "mariadb"
+end
+step_for("actionview", "test:ujs") do |x|
+  x["plugins"][DOCKER_COMPOSE_PLUGIN]["run"] = "actionview"
 end
 steps_for("activejob", "test:integration") do |x|
   x["plugins"][DOCKER_COMPOSE_PLUGIN]["run"] = "activejob"

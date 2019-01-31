@@ -23,6 +23,7 @@ services:
       QUE_DATABASE_URL: "postgres://postgres@postgres/active_jobs_que_int_test"
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
       REDIS_URL: "redis://redis:6379/1"
+      SELENIUM_DRIVER_URL: "http://chrome:4444/wd/hub"
     depends_on:
       - memcached
       - redis
@@ -39,6 +40,16 @@ services:
       - postgres
       - rabbitmq
       - beanstalkd
+
+  actionview:
+    <<: *default
+    depends_on:
+      - memcached
+      - redis
+      - "${MYSQL_SERVICE-mysql}"
+      - postgres
+      - chrome
+    entrypoint: "await postgres://postgres@postgres:5432/postgres tcp://redis:6379 tcp://memcached:11211 tcp://${MYSQL_SERVICE-mysql}:3306 tcp://chrome:4444 --"
 
   memcached:
     image: memcached:alpine
@@ -68,3 +79,6 @@ services:
     build:
       context: ./
       dockerfile: Dockerfile.beanstalkd
+
+  chrome:
+    image: selenium/standalone-chrome:latest
