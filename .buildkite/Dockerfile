@@ -32,14 +32,6 @@ RUN echo "--- :package: Installing system deps" \
 RUN mkdir /rails
 WORKDIR /rails
 
-ADD actiontext/package.json actiontext/
-ADD actionview/package.json actionview/
-ADD activestorage/package.json activestorage/
-ADD package.json yarn.lock ./
-
-RUN echo "--- :javascript: Installing JavaScript deps" \
-    && yarn install
-
 ADD Gemfile Gemfile.lock RAILS_VERSION rails.gemspec ./
 ADD */*.gemspec tmp/
 ADD railties/exe/ railties/exe/
@@ -51,4 +43,6 @@ RUN echo "--- :bundler: Installing Ruby deps" \
 
 ADD . ./
 
-RUN mv -f tmp/Gemfile.lock.updated Gemfile.lock
+RUN mv -f tmp/Gemfile.lock.updated Gemfile.lock \
+    && echo "--- :javascript: Installing JavaScript deps" \
+    && yarn install

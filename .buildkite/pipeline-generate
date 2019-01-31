@@ -49,7 +49,6 @@ def step_for(subdirectory, rake_task, ruby: nil)
   end
 
   command = "cd #{subdirectory} && bundle exec rake #{rake_task}"
-  command = "yarn install && #{command}" if subdirectory == "actioncable" && rake_task == "test:integration"
 
   timeout = 30
 
