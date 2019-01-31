@@ -12,6 +12,8 @@ services:
     image: "${IMAGE_NAME-buildkite_base}"
     environment:
       CI:
+      BUILDKITE_PARALLEL_JOB:
+      BUILDKITE_PARALLEL_JOB_COUNT:
       BEANSTALK_URL: "beanstalk://beanstalkd"
       MEMCACHE_SERVERS: "memcached:11211"
       MYSQL_HOST: "${MYSQL_SERVICE-mysql}"

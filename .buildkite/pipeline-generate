@@ -51,12 +51,7 @@ def step_for(subdirectory, rake_task, ruby: nil)
   command = "cd #{subdirectory} && bundle exec rake #{rake_task}"
   command = "yarn install && #{command}" if subdirectory == "actioncable" && rake_task == "test:integration"
 
-  timeout =
-    case subdirectory
-    when "railties"; 90
-    when "guides"; 45
-    else; 30
-    end
+  timeout = 30
 
   group =
     if rake_task.include?("isolated")
@@ -72,6 +67,7 @@ def step_for(subdirectory, rake_task, ruby: nil)
     "plugins" => {
       DOCKER_COMPOSE_PLUGIN => {
         "run" => "default",
+        "pull" => "base",
         "config" => ".buildkite/docker-compose.yml",
       },
     },
@@ -120,7 +116,6 @@ end
 %w(
   actioncable     test
   actioncable     test:integration
-  railties        test
   activestorage   test
   actionmailbox   test
   actiontext      test
@@ -139,6 +134,9 @@ step_for("activerecord", "mysql2:test") do |x|
 end
 steps_for("activejob", "test:integration") do |x|
   x["plugins"][DOCKER_COMPOSE_PLUGIN]["run"] = "activejob"
+end
+steps_for("railties", "test") do |x|
+  x["parallelism"] = 8
 end
 
 ###
