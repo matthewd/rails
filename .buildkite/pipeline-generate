@@ -129,7 +129,9 @@ step_for("activerecord", "mysql2:test") do |x|
   x["label"] += " [mariadb]"
   x["env"]["MYSQL_SERVICE"] = "mariadb"
 end
-steps_for("actioncable", "test:integration")
+steps_for("actioncable", "test:integration") do |x|
+  x["retry"] = { "automatic" => { "limit" => 3 } }
+end
 step_for("actionview", "test:ujs") do |x|
   x["plugins"][DOCKER_COMPOSE_PLUGIN]["run"] = "actionview"
 end
