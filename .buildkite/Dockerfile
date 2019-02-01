@@ -43,6 +43,8 @@ RUN echo "--- :bundler: Installing Ruby deps" \
 
 ADD . ./
 
+ENV RAILS_ENV=test RACK_ENV=test
+
 RUN mv -f tmp/Gemfile.lock.updated Gemfile.lock \
     && echo "--- :javascript: Installing JavaScript deps" \
     && yarn install
