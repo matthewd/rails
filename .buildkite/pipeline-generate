@@ -48,7 +48,7 @@ def step_for(subdirectory, rake_task, ruby: nil)
     rake_task = "db:postgresql:rebuild #{rake_task}"
   end
 
-  command = "cd #{subdirectory} && bundle exec rake #{rake_task}"
+  command = "echo \"+++ #{subdirectory}: rake #{rake_task}\"; cd #{subdirectory} && bundle exec rake #{rake_task}"
 
   timeout = 30
 
