@@ -39,7 +39,8 @@ ADD activestorage/package.json activestorage/
 ADD package.json yarn.lock .yarnrc ./
 
 RUN echo "--- :javascript: Installing JavaScript deps" \
-    && yarn install
+    && yarn install \
+    && yarn cache clean
 
 ADD */*.gemspec tmp/
 ADD railties/exe/ railties/exe/
@@ -48,6 +49,7 @@ ADD Gemfile Gemfile.lock RAILS_VERSION rails.gemspec ./
 RUN echo "--- :bundler: Installing Ruby deps" \
     && (cd tmp && for f in *.gemspec; do d="$(basename -s.gemspec "$f")"; mkdir -p "../$d" && mv "$f" "../$d/"; done) \
     && rm Gemfile.lock && bundle install -j 8 && cp Gemfile.lock tmp/Gemfile.lock.updated \
+    && rm -rf /usr/local/bundle/gems/cache \
     && echo "--- :floppy_disk: Copying repository contents"
 
 ADD . ./
