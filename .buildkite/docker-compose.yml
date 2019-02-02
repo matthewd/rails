@@ -1,15 +1,8 @@
 version: "3.6"
 
 services:
-  base:
-    build:
-      context: ../
-      dockerfile: .buildkite/Dockerfile
-      args:
-        - RUBY_IMAGE
-
   default: &default
-    image: "${IMAGE_NAME-buildkite_base}"
+    image: "${IMAGE_NAME?}"
     environment:
       CI:
       BUILDKITE_PARALLEL_JOB:

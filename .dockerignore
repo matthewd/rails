@@ -1,0 +1,7 @@
+/.buildkite
+/.git
+/activerecord/test/config.yml
+/doc
+/node_modules
+/pkg
+/tmp

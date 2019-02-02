@@ -48,7 +48,7 @@ def step_for(subdirectory, rake_task, ruby: nil)
     rake_task = "db:postgresql:rebuild #{rake_task}"
   end
 
-  command = "echo \"+++ #{subdirectory}: rake #{rake_task}\"; cd #{subdirectory} && bundle exec rake #{rake_task}"
+  command = "cd #{subdirectory} && bundle exec rake #{rake_task}"
 
   timeout = 30
 
@@ -66,7 +66,6 @@ def step_for(subdirectory, rake_task, ruby: nil)
     "plugins" => {
       DOCKER_COMPOSE_PLUGIN => {
         "run" => "default",
-        "pull" => "default",
         "config" => ".buildkite/docker-compose.yml",
       },
     },
@@ -165,17 +164,7 @@ puts YAML.dump("steps" => [
       *RUBIES.map do |ruby|
         {
           "label" => ":docker: #{ruby}",
-          "plugins" => {
-            DOCKER_COMPOSE_PLUGIN => {
-              "build" => "base",
-              "config" => ".buildkite/docker-compose.yml",
-              "image-name" => image_name_for(ruby),
-              "image-repository" => "973266071021.dkr.ecr.us-east-1.amazonaws.com/builds",
-            },
-          },
-          "env" => {
-            "RUBY_IMAGE" => ruby,
-          },
+          "command" => ".buildkite/image #{ruby}",
           "timeout_in_minutes" => 15,
         }
       end,
