@@ -2,7 +2,7 @@ version: "3.6"
 
 services:
   base:
-    build: &build
+    build:
       context: ../
       dockerfile: .buildkite/Dockerfile
       args:

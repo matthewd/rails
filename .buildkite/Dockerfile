@@ -1,11 +1,9 @@
 ARG RUBY_IMAGE
 FROM ${RUBY_IMAGE:-ruby:latest}
 
-ENV JRUBY_OPTS="--dev -J-Xmx1024M"
-
-RUN gem update --system && gem install bundler
-
-RUN echo "--- :package: Installing system deps" \
+RUN gem update --system && gem install bundler \
+    && ruby --version && gem --version && bundle --version \
+    && echo "--- :package: Installing system deps" \
     # Postgres apt sources
     && curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
     && echo "deb http://apt.postgresql.org/pub/repos/apt/ stretch-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
@@ -27,14 +25,25 @@ RUN echo "--- :package: Installing system deps" \
     && install await-linux-amd64 /usr/local/bin/await \
     # clean up
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/*
+    && rm -rf /var/lib/apt/lists/* /tmp/* \
+    && mkdir /rails
 
-RUN mkdir /rails
 WORKDIR /rails
+ENV RAILS_ENV=test RACK_ENV=test
+ENV JRUBY_OPTS="--dev -J-Xmx1024M"
 
-ADD Gemfile Gemfile.lock RAILS_VERSION rails.gemspec ./
+ADD actioncable/package.json actioncable/
+ADD actiontext/package.json actiontext/
+ADD actionview/package.json actionview/
+ADD activestorage/package.json activestorage/
+ADD package.json yarn.lock .yarnrc ./
+
+RUN echo "--- :javascript: Installing JavaScript deps" \
+    && yarn install
+
 ADD */*.gemspec tmp/
 ADD railties/exe/ railties/exe/
+ADD Gemfile Gemfile.lock RAILS_VERSION rails.gemspec ./
 
 RUN echo "--- :bundler: Installing Ruby deps" \
     && (cd tmp && for f in *.gemspec; do d="$(basename -s.gemspec "$f")"; mkdir -p "../$d" && mv "$f" "../$d/"; done) \
@@ -43,8 +52,4 @@ RUN echo "--- :bundler: Installing Ruby deps" \
 
 ADD . ./
 
-ENV RAILS_ENV=test RACK_ENV=test
-
-RUN mv -f tmp/Gemfile.lock.updated Gemfile.lock \
-    && echo "--- :javascript: Installing JavaScript deps" \
-    && yarn install
+RUN mv -f tmp/Gemfile.lock.updated Gemfile.lock
