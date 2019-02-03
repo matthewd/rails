@@ -1,0 +1,7 @@
+#!/bin/bash
+
+# The `post-command` hook will run after the bootstrap script has run your
+# build commands
+
+set -e
+echo "--- :trident: post-command"

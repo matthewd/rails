@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# The `pre-exit` hook will run just before your build job finishes
+
+set -e
+echo "--- :trident: pre-exit"
