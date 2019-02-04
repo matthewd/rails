@@ -12,7 +12,7 @@ PULL_REQUEST = ([ENV["BUILDKITE_PULL_REQUEST"]] - ["false"]).first
 
 BUILD_ID = ENV["BUILDKITE_BUILD_ID"]
 
-DOCKER_COMPOSE_PLUGIN = "docker-compose#v2.6.0"
+DOCKER_COMPOSE_PLUGIN = "matthewd/docker-compose#master"
 
 File.read(File.expand_path("../rails.gemspec", __dir__)) =~ /required_ruby_version[^0-9]+([0-9]+\.[0-9]+)/
 MIN_RUBY = Gem::Version.new($1 || "2.0")
@@ -185,12 +185,17 @@ puts YAML.dump("steps" => [
               "config" => ".buildkite/docker-compose.yml",
               "image-name" => image_name_for(ruby, short: true),
               "cache-from" => [
-                ENV["BUILDKITE_REBUILT_FROM_BUILD_ID"] &&
-                  image_name_for(ruby, ENV["BUILDKITE_REBUILT_FROM_BUILD_ID"]),
-                PULL_REQUEST && image_name_for(ruby, "pr-#{PULL_REQUEST}"),
-                image_name_for(ruby, "br-#{BRANCH}"),
-                BRANCH == "master" ? nil : image_name_for(ruby, "br-master"),
+                ENV.fetch("BUILDKITE_REBUILT_FROM_BUILD_ID", "") == "" ? nil :
+                  "base:" + image_name_for(ruby, ENV["BUILDKITE_REBUILT_FROM_BUILD_ID"]),
+                PULL_REQUEST && "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}"),
+                "base:" + image_name_for(ruby, "br-#{BRANCH}"),
+                BRANCH == "master" ? nil : "base:" + image_name_for(ruby, "br-master"),
               ].compact,
+              "push" => [
+                PULL_REQUEST ?
+                  "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}") :
+                  "base:" + image_name_for(ruby, "br-#{BRANCH}"),
+              ],
               "image-repository" => IMAGE_BASE,
             },
           },
@@ -203,29 +208,5 @@ puts YAML.dump("steps" => [
     ],
   },
   "wait",
-  {
-    "group" => "cache",
-    "steps" => [
-      *RUBIES.map do |ruby|
-        {
-          "label" => ":ecs: #{ruby}",
-          "plugins" => {
-            DOCKER_COMPOSE_PLUGIN => {
-              "config" => ".buildkite/docker-compose.yml",
-              "push" => [
-                PULL_REQUEST ?
-                  "default:" + image_name_for(ruby, "pr-#{PULL_REQUEST}") :
-                  "default:" + image_name_for(ruby, "br-#{BRANCH}"),
-              ],
-            },
-          },
-          "env" => {
-            "IMAGE_NAME" => image_name_for(ruby),
-          },
-          "timeout_in_minutes" => 15,
-        }
-      end,
-    ],
-  },
   *groups,
 ])
