@@ -76,7 +76,7 @@ def step_for(subdirectory, rake_task, ruby: nil)
 
   hash = {
     "label" => label,
-    "command" => "sh -c '#{command}'",
+    "command" => command,
     "group" => group,
     "plugins" => [
       {
