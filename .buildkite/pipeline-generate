@@ -5,8 +5,12 @@ require "json"
 require "yaml"
 require "net/http"
 
-BRANCH = ENV["BUILDKITE_BRANCH"] || "master"
-IS_PULL_REQUEST = ENV.fetch("BUILDKITE_PULL_REQUEST_BASE_BRANCH", "") != ""
+IMAGE_BASE = "973266071021.dkr.ecr.us-east-1.amazonaws.com/builds"
+
+BRANCH = ([ENV["BUILDKITE_PULL_REQUEST_BASE_BRANCH"], ENV["BUILDKITE_BRANCH"], "master"] - [""]).first
+PULL_REQUEST = ([ENV["BUILDKITE_PULL_REQUEST"]] - ["false"]).first
+
+BUILD_ID = ENV["BUILDKITE_BUILD_ID"]
 
 DOCKER_COMPOSE_PLUGIN = "docker-compose#v2.6.0"
 
@@ -31,8 +35,18 @@ ONE_RUBY = RUBIES.last
 
 STEPS = []
 
-def image_name_for(ruby)
-  "#{ruby.tr(":", "-")}-${BUILDKITE_BUILD_ID}"
+def image_name_for(ruby, suffix = BUILD_ID, short: false)
+  tag = "#{mangle_name(ruby)}-#{suffix}"
+
+  if short
+    tag
+  else
+    "#{IMAGE_BASE}:#{tag}"
+  end
+end
+
+def mangle_name(name)
+  name.tr("^A-Za-z0-9", "-")
 end
 
 def step_for(subdirectory, rake_task, ruby: nil)
@@ -71,7 +85,7 @@ def step_for(subdirectory, rake_task, ruby: nil)
       },
     },
     "env" => {
-      "IMAGE_NAME" => "973266071021.dkr.ecr.us-east-1.amazonaws.com/builds:#{image_name_for(ruby || ONE_RUBY)}",
+      "IMAGE_NAME" => image_name_for(ruby || ONE_RUBY),
     },
     "timeout_in_minutes" => timeout,
   }
@@ -101,7 +115,7 @@ end
 ).each_slice(2) do |dir, task|
   steps_for(dir, task)
 
-  next if IS_PULL_REQUEST
+  next if PULL_REQUEST
   next if BRANCH != "master" && BRANCH !~ /\A[0-9-]+(?:-stable)?\z/
 
   if task.match?(/:test/)
@@ -169,8 +183,15 @@ puts YAML.dump("steps" => [
             DOCKER_COMPOSE_PLUGIN => {
               "build" => "base",
               "config" => ".buildkite/docker-compose.yml",
-              "image-name" => image_name_for(ruby),
-              "image-repository" => "973266071021.dkr.ecr.us-east-1.amazonaws.com/builds",
+              "image-name" => image_name_for(ruby, short: true),
+              "cache-from" => [
+                ENV["BUILDKITE_REBUILT_FROM_BUILD_ID"] &&
+                  image_name_for(ruby, ENV["BUILDKITE_REBUILT_FROM_BUILD_ID"]),
+                PULL_REQUEST && image_name_for(ruby, "pr-#{PULL_REQUEST}"),
+                image_name_for(ruby, "br-#{BRANCH}"),
+                BRANCH == "master" ? nil : image_name_for(ruby, "br-master"),
+              ].compact,
+              "image-repository" => IMAGE_BASE,
             },
           },
           "env" => {
@@ -182,5 +203,29 @@ puts YAML.dump("steps" => [
     ],
   },
   "wait",
+  {
+    "group" => "cache",
+    "steps" => [
+      *RUBIES.map do |ruby|
+        {
+          "label" => ":ecs: #{ruby}",
+          "plugins" => {
+            DOCKER_COMPOSE_PLUGIN => {
+              "config" => ".buildkite/docker-compose.yml",
+              "push" => [
+                PULL_REQUEST ?
+                  "default:" + image_name_for(ruby, "pr-#{PULL_REQUEST}") :
+                  "default:" + image_name_for(ruby, "br-#{BRANCH}"),
+              ],
+            },
+          },
+          "env" => {
+            "IMAGE_NAME" => image_name_for(ruby),
+          },
+          "timeout_in_minutes" => 15,
+        }
+      end,
+    ],
+  },
   *groups,
 ])

@@ -32,7 +32,10 @@ steps:
         -v "$$PWD":/app:ro -w /app
         -e CI
         -e BUILDKITE_BRANCH
+        -e BUILDKITE_BUILD_ID
+        -e BUILDKITE_PULL_REQUEST
         -e BUILDKITE_PULL_REQUEST_BASE_BRANCH
+        -e BUILDKITE_REBUILT_FROM_BUILD_ID
         ruby:latest
         .buildkite/pipeline-generate |
         buildkite-agent pipeline upload
