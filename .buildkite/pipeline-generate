@@ -50,7 +50,7 @@ def mangle_name(name)
   name.tr("^A-Za-z0-9", "-")
 end
 
-def step_for(subdirectory, rake_task, ruby: nil)
+def step_for(subdirectory, rake_task, ruby: nil, service: "default")
   label = +"#{subdirectory} #{rake_task.sub(/[:_]test|test:/, "")}"
   label.sub!(/ test/, "")
   if ruby
@@ -86,8 +86,8 @@ def step_for(subdirectory, rake_task, ruby: nil)
       },
       {
         DOCKER_COMPOSE_PLUGIN => {
-          "run" => "default",
-          "pull" => "default",
+          "run" => service,
+          "pull" => service,
           "config" => ".buildkite/docker-compose.yml",
         },
       },
@@ -103,64 +103,60 @@ def step_for(subdirectory, rake_task, ruby: nil)
   STEPS << hash
 end
 
-def steps_for(subdirectory, rake_task, &block)
+def steps_for(subdirectory, rake_task, service: "default", &block)
   RUBIES.each do |ruby|
-    step_for(subdirectory, rake_task, ruby: ruby, &block)
+    step_for(subdirectory, rake_task, ruby: ruby, service: service, &block)
   end
 end
 
 # GROUP 1: Runs additional isolated tests for non-PR builds
 %w(
-  actionpack      test
-  actionmailer    test
-  activemodel     test
-  activesupport   test
-  actionview      test
-  activejob       test
-  activerecord    mysql2:test
-  activerecord    postgresql:test
-  activerecord    sqlite3:test
-).each_slice(2) do |dir, task|
-  steps_for(dir, task)
+  actionpack      test                default
+  actionmailer    test                default
+  activemodel     test                default
+  activesupport   test                default
+  actionview      test                default
+  activejob       test                default
+  activerecord    mysql2:test         databases
+  activerecord    postgresql:test     databases
+  activerecord    sqlite3:test        default
+).each_slice(3) do |dir, task, service|
+  steps_for(dir, task, service: service)
 
   next if PULL_REQUEST
   next if BRANCH != "master" && BRANCH !~ /\A[0-9-]+(?:-stable)?\z/
 
   if task.match?(/:test/)
-    step_for(dir, task.sub(":test", ":isolated_test"))
+    step_for(dir, task.sub(":test", ":isolated_test"), service: service)
   else
-    step_for(dir, "#{task}:isolated")
+    step_for(dir, "#{task}:isolated", service: service)
   end
 end
 
 # GROUP 2: No isolated tests, runs for each supported ruby
 %w(
-  actioncable     test
-  activestorage   test
-  actionmailbox   test
-  actiontext      test
-  guides          test
-).each_slice(2) do |dir, task|
-  steps_for(dir, task)
+  actioncable     test                databases
+  activestorage   test                databases
+  actionmailbox   test                databases
+  actiontext      test                databases
+  guides          test                default
+).each_slice(3) do |dir, task, service|
+  steps_for(dir, task, service: service)
 end
 
 # GROUP 3: Special cases
 
-step_for("activerecord", "sqlite3_mem:test")
-step_for("activerecord", "mysql2:test") do |x|
+step_for("activerecord", "sqlite3_mem:test", service: "default")
+step_for("activerecord", "mysql2:test", service: "databases") do |x|
   x["label"] += " [mariadb]"
   x["env"]["MYSQL_SERVICE"] = "mariadb"
 end
-steps_for("actioncable", "test:integration") do |x|
+steps_for("actioncable", "test:integration", service: "default") do |x|
   x["retry"] = { "automatic" => { "limit" => 3 } }
 end
-step_for("actionview", "test:ujs") do |x|
-  x["plugins"].last[DOCKER_COMPOSE_PLUGIN]["run"] = "actionview"
-end
-steps_for("activejob", "test:integration") do |x|
-  x["plugins"].last[DOCKER_COMPOSE_PLUGIN]["run"] = "activejob"
-end
-steps_for("railties", "test") do |x|
+step_for("actionview", "test:ujs", service: "actionview")
+steps_for("activejob", "test:integration", service: "activejob")
+steps_for("railties", "test", service: "databases") do |x|
   x["parallelism"] = 8
 end
 

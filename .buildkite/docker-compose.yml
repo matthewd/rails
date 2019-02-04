@@ -31,6 +31,17 @@ services:
     depends_on:
       - redis
       - memcached
+    entrypoint:
+      - await
+      - tcp://redis:6379
+      - tcp://memcached:11211
+      - --
+
+  databases: &databases
+    <<: *default
+    depends_on:
+      - redis
+      - memcached
       - "${MYSQL_SERVICE-mysql}"
       - postgres
     entrypoint:
@@ -42,7 +53,7 @@ services:
       - --
 
   activejob:
-    <<: *default
+    <<: *databases
     depends_on:
       - redis
       - memcached
@@ -52,7 +63,7 @@ services:
       - beanstalkd
 
   actionview:
-    <<: *default
+    <<: *databases
     depends_on:
       - redis
       - memcached
