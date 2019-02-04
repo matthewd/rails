@@ -13,6 +13,7 @@ PULL_REQUEST = ([ENV["BUILDKITE_PULL_REQUEST"]] - ["false"]).first
 BUILD_ID = ENV["BUILDKITE_BUILD_ID"]
 
 DOCKER_COMPOSE_PLUGIN = "matthewd/docker-compose#master"
+ARTIFACTS_PLUGIN = "artifacts#v1.2.0"
 
 File.read(File.expand_path("../rails.gemspec", __dir__)) =~ /required_ruby_version[^0-9]+([0-9]+\.[0-9]+)/
 MIN_RUBY = Gem::Version.new($1 || "2.0")
@@ -77,13 +78,20 @@ def step_for(subdirectory, rake_task, ruby: nil)
     "label" => label,
     "command" => "sh -c '#{command}'",
     "group" => group,
-    "plugins" => {
-      DOCKER_COMPOSE_PLUGIN => {
-        "run" => "default",
-        "pull" => "default",
-        "config" => ".buildkite/docker-compose.yml",
+    "plugins" => [
+      {
+        ARTIFACTS_PLUGIN => {
+          "download" => [".buildkite/*", ".buildkite/**/*"],
+        },
       },
-    },
+      {
+        DOCKER_COMPOSE_PLUGIN => {
+          "run" => "default",
+          "pull" => "default",
+          "config" => ".buildkite/docker-compose.yml",
+        },
+      },
+    ],
     "env" => {
       "IMAGE_NAME" => image_name_for(ruby || ONE_RUBY),
     },
@@ -147,10 +155,10 @@ steps_for("actioncable", "test:integration") do |x|
   x["retry"] = { "automatic" => { "limit" => 3 } }
 end
 step_for("actionview", "test:ujs") do |x|
-  x["plugins"][DOCKER_COMPOSE_PLUGIN]["run"] = "actionview"
+  x["plugins"].last[DOCKER_COMPOSE_PLUGIN]["run"] = "actionview"
 end
 steps_for("activejob", "test:integration") do |x|
-  x["plugins"][DOCKER_COMPOSE_PLUGIN]["run"] = "activejob"
+  x["plugins"].last[DOCKER_COMPOSE_PLUGIN]["run"] = "activejob"
 end
 steps_for("railties", "test") do |x|
   x["parallelism"] = 8
@@ -179,26 +187,33 @@ puts YAML.dump("steps" => [
       *RUBIES.map do |ruby|
         {
           "label" => ":docker: #{ruby}",
-          "plugins" => {
-            DOCKER_COMPOSE_PLUGIN => {
-              "build" => "base",
-              "config" => ".buildkite/docker-compose.yml",
-              "image-name" => image_name_for(ruby, short: true),
-              "cache-from" => [
-                ENV.fetch("BUILDKITE_REBUILT_FROM_BUILD_ID", "") == "" ? nil :
+          "plugins" => [
+            {
+              ARTIFACTS_PLUGIN => {
+                "upload" => ".buildkite/**/*",
+              },
+            },
+            {
+              DOCKER_COMPOSE_PLUGIN => {
+                "build" => "base",
+                "config" => ".buildkite/docker-compose.yml",
+                "image-name" => image_name_for(ruby, short: true),
+                "cache-from" => [
+                  ENV.fetch("BUILDKITE_REBUILT_FROM_BUILD_ID", "") == "" ? nil :
                   "base:" + image_name_for(ruby, ENV["BUILDKITE_REBUILT_FROM_BUILD_ID"]),
-                PULL_REQUEST && "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}"),
-                "base:" + image_name_for(ruby, "br-#{BRANCH}"),
-                BRANCH == "master" ? nil : "base:" + image_name_for(ruby, "br-master"),
-              ].compact,
-              "push" => [
-                PULL_REQUEST ?
+                  PULL_REQUEST && "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}"),
+                  "base:" + image_name_for(ruby, "br-#{BRANCH}"),
+                  BRANCH == "master" ? nil : "base:" + image_name_for(ruby, "br-master"),
+                ].compact,
+                "push" => [
+                  PULL_REQUEST ?
                   "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}") :
                   "base:" + image_name_for(ruby, "br-#{BRANCH}"),
-              ],
-              "image-repository" => IMAGE_BASE,
+                ],
+                "image-repository" => IMAGE_BASE,
+              },
             },
-          },
+          ],
           "env" => {
             "RUBY_IMAGE" => ruby,
           },
