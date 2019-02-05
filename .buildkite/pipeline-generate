@@ -157,7 +157,7 @@ end
 step_for("actionview", "test:ujs", service: "actionview")
 steps_for("activejob", "test:integration", service: "activejob")
 steps_for("railties", "test", service: "databases") do |x|
-  x["parallelism"] = 8
+  x["parallelism"] = 12
 end
 
 ###
