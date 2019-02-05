@@ -6,9 +6,15 @@ steps:
     command: |
       PATH=/bin:/usr/bin
       treesha="$$(git ls-tree -d HEAD .buildkite | awk '{print $$3}')"
-      if [ -z "$${treesha}" ]; then echo "No SHA for .buildkite/"; exit 0; fi
-      if [ "$${#treesha}" -lt 40 ]; then echo "Short SHA for .buildkite/"; exit 1; fi
-      if curl -s -S "https://gist.githubusercontent.com/matthewd/3f98bcc9957c8ddf2204a390bf3a6cdd/raw/list" | grep -a -F -x "$${treesha}"; then
+      if [ -z "$${treesha}" ]; then
+        echo "+++ No .buildkite/; using fallback repository"
+        rm -rf .buildkite
+        git clone "https://github.com/rails/buildkite-config" .buildkite
+        sh -c "$$PIPELINE_COMMAND"
+      elif [ "$${#treesha}" -lt 40 ]; then
+        echo "Short SHA for .buildkite/"
+        exit 1
+      elif curl -s -S "https://gist.githubusercontent.com/matthewd/3f98bcc9957c8ddf2204a390bf3a6cdd/raw/list" | grep -a -F -x "$${treesha}"; then
         echo "+++ Known tree; generating pipeline"
         echo ".buildkite/ tree is $${treesha}"
         sh -c "$$PIPELINE_COMMAND"
@@ -23,9 +29,17 @@ steps:
         - name: ":pipeline:"
           command: >-
             $$PIPELINE_COMMAND
+          plugins:
+            - artifacts#v1.2.0:
+                download:
+                  - ".buildkite/*"
+                  - ".buildkite/**/*"
           timeout_in_minutes: 5
       NESTED
       fi
+    plugins:
+      - artifacts#v1.2.0:
+          upload: ".buildkite/**/*"
     env:
       PIPELINE_COMMAND: >-
         docker run --rm

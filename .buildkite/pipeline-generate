@@ -185,11 +185,6 @@ puts YAML.dump("steps" => [
           "label" => ":docker: #{ruby}",
           "plugins" => [
             {
-              ARTIFACTS_PLUGIN => {
-                "upload" => ".buildkite/**/*",
-              },
-            },
-            {
               DOCKER_COMPOSE_PLUGIN => {
                 "build" => "base",
                 "config" => ".buildkite/docker-compose.yml",
