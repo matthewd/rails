@@ -32,6 +32,8 @@ WORKDIR /rails
 ENV RAILS_ENV=test RACK_ENV=test
 ENV JRUBY_OPTS="--dev -J-Xmx1024M"
 
+ADD .buildkite/await-all /usr/local/bin/
+
 ADD actioncable/package.json actioncable/
 ADD actiontext/package.json actiontext/
 ADD actionview/package.json actionview/

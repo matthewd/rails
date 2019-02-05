@@ -117,8 +117,8 @@ end
   activesupport   test                default
   actionview      test                default
   activejob       test                default
-  activerecord    mysql2:test         databases
-  activerecord    postgresql:test     databases
+  activerecord    mysql2:test         mysqldb
+  activerecord    postgresql:test     postgresdb
   activerecord    sqlite3:test        default
 ).each_slice(3) do |dir, task, service|
   steps_for(dir, task, service: service)
@@ -135,10 +135,10 @@ end
 
 # GROUP 2: No isolated tests, runs for each supported ruby
 %w(
-  actioncable     test                databases
-  activestorage   test                databases
-  actionmailbox   test                databases
-  actiontext      test                databases
+  actioncable     test                postgresdb
+  activestorage   test                default
+  actionmailbox   test                default
+  actiontext      test                default
   guides          test                default
 ).each_slice(3) do |dir, task, service|
   steps_for(dir, task, service: service)
@@ -147,7 +147,7 @@ end
 # GROUP 3: Special cases
 
 step_for("activerecord", "sqlite3_mem:test", service: "default")
-step_for("activerecord", "mysql2:test", service: "databases") do |x|
+step_for("activerecord", "mysql2:test", service: "mysqldb") do |x|
   x["label"] += " [mariadb]"
   x["env"]["MYSQL_SERVICE"] = "mariadb"
 end
@@ -156,7 +156,7 @@ steps_for("actioncable", "test:integration", service: "default") do |x|
 end
 step_for("actionview", "test:ujs", service: "actionview")
 steps_for("activejob", "test:integration", service: "activejob")
-steps_for("railties", "test", service: "databases") do |x|
+steps_for("railties", "test", service: "railties") do |x|
   x["parallelism"] = 12
 end
 

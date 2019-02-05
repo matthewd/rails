@@ -28,56 +28,59 @@ services:
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
       REDIS_URL: "redis://redis:6379/1"
       SELENIUM_DRIVER_URL: "http://chrome:4444/wd/hub"
+
+      AWAIT_redis: tcp://redis:6379
+      AWAIT_memcached: tcp://memcached:11211
+      AWAIT_mysql: tcp://mysql:3306
+      AWAIT_mariadb: tcp://mariadb:3306
+      AWAIT_postgres: postgres://postgres@postgres:5432/postgres
+      AWAIT_rabbitmq: tcp://rabbitmq:5672
+      AWAIT_beanstalkd: tcp://beanstalkd:11300
+      AWAIT_chrome: tcp://chrome:4444
+
+    entrypoint: await-all
+
     depends_on:
       - redis
       - memcached
-    entrypoint:
-      - await
-      - tcp://redis:6379
-      - tcp://memcached:11211
-      - --
 
-  databases: &databases
+  postgresdb:
+    <<: *default
+    depends_on:
+      - redis
+      - memcached
+      - postgres
+
+  mysqldb:
+    <<: *default
+    depends_on:
+      - redis
+      - memcached
+      - "${MYSQL_SERVICE-mysql}"
+
+  railties:
     <<: *default
     depends_on:
       - redis
       - memcached
       - "${MYSQL_SERVICE-mysql}"
       - postgres
-    entrypoint:
-      - await
-      - tcp://redis:6379
-      - tcp://memcached:11211
-      - tcp://${MYSQL_SERVICE-mysql}:3306
-      - postgres://postgres@postgres:5432/postgres
-      - --
 
   activejob:
-    <<: *databases
+    <<: *default
     depends_on:
       - redis
       - memcached
-      - "${MYSQL_SERVICE-mysql}"
       - postgres
       - rabbitmq
       - beanstalkd
 
   actionview:
-    <<: *databases
+    <<: *default
     depends_on:
       - redis
       - memcached
-      - "${MYSQL_SERVICE-mysql}"
-      - postgres
       - chrome
-    entrypoint:
-      - await
-      - tcp://redis:6379
-      - tcp://memcached:11211
-      - tcp://${MYSQL_SERVICE-mysql}:3306
-      - postgres://postgres@postgres:5432/postgres
-      - tcp://chrome:4444
-      - --
 
   memcached:
     image: memcached:alpine
