@@ -1,5 +1,7 @@
 # syntax = docker/dockerfile:experimental
 
+ARG RUBY_IMAGE
+
 FROM buildpack-deps:stretch AS ruby-trunk
 
 # skip installing gem documentation
@@ -72,7 +74,6 @@ RUN mkdir -p "$GEM_HOME" && chmod 777 "$GEM_HOME"
 CMD [ "irb" ]
 
 
-ARG RUBY_IMAGE
 FROM ${RUBY_IMAGE:-ruby:latest}
 
 RUN echo "--- :ruby: Updating RubyGems and Bundler" \

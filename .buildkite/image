@@ -1,0 +1,33 @@
+#!/bin/bash
+
+set -e -x
+
+echo "--- :docker: Building docker image with buildkit"
+
+export RUBY_IMAGE="$1"
+
+if [[ "$RUBY_IMAGE" = "ruby-trunk" ]]; then
+  export TRUNK_DATE="$(date -u "+%Y%m%d")"
+fi
+
+for t in $CACHE_FROM; do
+  docker pull "$t" || continue
+  break
+  cache_from="--cache-from=$t"
+done
+
+DOCKER_BUILDKIT=1 \
+  docker build \
+  $cache_from \
+  --build-arg TRUNK_DATE \
+  --build-arg RUBY_IMAGE \
+  -f .buildkite/Dockerfile \
+  -t "$PUSH_AS" \
+  -t "$TAG" \
+  --progress=plain \
+  .
+
+echo "--- :docker: Pushing docker image"
+
+docker push "$PUSH_AS"
+docker push "$TAG"
