@@ -10,11 +10,6 @@ require "yaml"
 TRUNK_DATE = Date.today.strftime("%Y%m%d")
 
 IMAGE_BASE = "973266071021.dkr.ecr.us-east-1.amazonaws.com/builds"
-RUBY_IMAGE_BASE = "973266071021.dkr.ecr.us-east-1.amazonaws.com/ruby-trunk"
-
-def ruby_image_trunk(date = Date.today)
-  "#{RUBY_IMAGE_BASE}:#{date.strftime("%Y%m%d")}"
-end
 
 BASE_BRANCH = ([ENV["BUILDKITE_PULL_REQUEST_BASE_BRANCH"], ENV["BUILDKITE_BRANCH"], "master"] - [""]).first
 LOCAL_BRANCH = ([ENV["BUILDKITE_BRANCH"], "master"] - [""]).first
@@ -47,7 +42,7 @@ RUBIES =
 
 ONE_RUBY = RUBIES.last
 
-RUBIES << "ruby-trunk:#{TRUNK_DATE}"
+RUBIES << "ruby-trunk"
 
 STEPS = []
 
@@ -209,56 +204,29 @@ puts YAML.dump("steps" => [
               },
             },
             {
-              DOCKER_COMPOSE_PLUGIN =>
-              if ruby =~ /ruby-trunk/
-                {
-                  "build" => ["ruby-trunk", "base"],
-                  "config" => ".buildkite/docker-compose.yml",
-                  "image-name" => [ruby.tr(":", "-"), image_name_for(ruby, short: true)],
-                  "cache-from" => [
-                    REBUILD_ID && "base:" + image_name_for(ruby, REBUILD_ID),
-                    PULL_REQUEST && "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}"),
-                    LOCAL_BRANCH && LOCAL_BRANCH !~ /:/ && "base:" + image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
-                    BASE_BRANCH && "base:" + image_name_for(ruby, "br-#{BASE_BRANCH}"),
-                    "base:" + image_name_for(ruby, "br-master"),
-
-                    "ruby-trunk:#{ruby_image_trunk}",
-                    "ruby-trunk:#{ruby_image_trunk(Date.today - 1)}",
-                    "ruby-trunk:#{ruby_image_trunk(Date.today - 2)}",
-                  ].grep(String).uniq,
-                  "push" => [
-                    "ruby-trunk:#{ruby_image_trunk}",
-                    LOCAL_BRANCH =~ /:/ ?
-                    "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}") :
-                    "base:" + image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
-                  ],
-                  "image-repository" => IMAGE_BASE,
-                }
-              else
-                {
-                  "build" => "base",
-                  "config" => ".buildkite/docker-compose.yml",
-                  "image-name" => image_name_for(ruby, short: true),
-                  "cache-from" => [
-                    REBUILD_ID && "base:" + image_name_for(ruby, REBUILD_ID),
-                    PULL_REQUEST && "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}"),
-                    LOCAL_BRANCH && LOCAL_BRANCH !~ /:/ && "base:" + image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
-                    BASE_BRANCH && "base:" + image_name_for(ruby, "br-#{BASE_BRANCH}"),
-                    "base:" + image_name_for(ruby, "br-master"),
-                  ].grep(String).uniq,
-                  "push" => [
-                    LOCAL_BRANCH =~ /:/ ?
-                    "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}") :
-                    "base:" + image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
-                  ],
-                  "image-repository" => IMAGE_BASE,
-                }
-              end,
+              DOCKER_COMPOSE_PLUGIN => {
+                "build" => "base",
+                "config" => ".buildkite/docker-compose.yml",
+                "image-name" => image_name_for(ruby, short: true),
+                "cache-from" => [
+                  REBUILD_ID && "base:" + image_name_for(ruby, REBUILD_ID),
+                  PULL_REQUEST && "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}"),
+                  LOCAL_BRANCH && LOCAL_BRANCH !~ /:/ && "base:" + image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
+                  BASE_BRANCH && "base:" + image_name_for(ruby, "br-#{BASE_BRANCH}"),
+                  "base:" + image_name_for(ruby, "br-master"),
+                ].grep(String).uniq,
+                "push" => [
+                  LOCAL_BRANCH =~ /:/ ?
+                  "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}") :
+                  "base:" + image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
+                ],
+                "image-repository" => IMAGE_BASE,
+              },
             },
           ],
           "env" => {
             "RUBY_IMAGE" => ruby,
-          },
+          }.tap { |h| h["TRUNK_DATE"] = TRUNK_DATE if ruby =~ /ruby-trunk/ },
           "timeout_in_minutes" => 15,
           "pass_when" => [{ "exit_status" => (ruby =~ /ruby-trunk/ ? "*" : 0) }],
         }
