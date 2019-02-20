@@ -1,4 +1,5 @@
-ARG TRUNK_DATE
+# syntax = docker/dockerfile:experimental
+
 FROM buildpack-deps:stretch AS ruby-trunk
 
 # skip installing gem documentation
@@ -7,6 +8,8 @@ RUN mkdir -p /usr/local/etc \
 		echo 'install: --no-document'; \
 		echo 'update: --no-document'; \
 	} >> /usr/local/etc/gemrc
+
+ARG TRUNK_DATE
 
 # some of ruby's build scripts are written in ruby
 #   we purge system ruby later to make sure our final image uses what we just built

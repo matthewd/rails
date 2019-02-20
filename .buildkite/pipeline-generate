@@ -225,6 +225,7 @@ puts YAML.dump("steps" => [
             },
           ],
           "env" => {
+            "DOCKER_BUILDKIT" => "1",
             "RUBY_IMAGE" => ruby,
           }.tap { |h| h["TRUNK_DATE"] = TRUNK_DATE if ruby =~ /ruby-trunk/ },
           "timeout_in_minutes" => 15,
