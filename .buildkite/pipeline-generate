@@ -1,21 +1,34 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "date"
 require "json"
-require "yaml"
 require "net/http"
+require "pathname"
+require "yaml"
+
+TRUNK_DATE = Date.today.strftime("%Y%m%d")
 
 IMAGE_BASE = "973266071021.dkr.ecr.us-east-1.amazonaws.com/builds"
+RUBY_IMAGE_BASE = "973266071021.dkr.ecr.us-east-1.amazonaws.com/ruby-trunk"
 
-BRANCH = ([ENV["BUILDKITE_PULL_REQUEST_BASE_BRANCH"], ENV["BUILDKITE_BRANCH"], "master"] - [""]).first
+def ruby_image_trunk(date = Date.today)
+  "#{RUBY_IMAGE_BASE}:#{date.strftime("%Y%m%d")}"
+end
+
+BASE_BRANCH = ([ENV["BUILDKITE_PULL_REQUEST_BASE_BRANCH"], ENV["BUILDKITE_BRANCH"], "master"] - [""]).first
+LOCAL_BRANCH = ([ENV["BUILDKITE_BRANCH"], "master"] - [""]).first
 PULL_REQUEST = ([ENV["BUILDKITE_PULL_REQUEST"]] - ["false"]).first
 
 BUILD_ID = ENV["BUILDKITE_BUILD_ID"]
+REBUILD_ID = ([ENV["BUILDKITE_REBUILT_FROM_BUILD_ID"]] - [""]).first
 
 DOCKER_COMPOSE_PLUGIN = "matthewd/docker-compose#master"
 ARTIFACTS_PLUGIN = "artifacts#v1.2.0"
 
-File.read(File.expand_path("../rails.gemspec", __dir__)) =~ /required_ruby_version[^0-9]+([0-9]+\.[0-9]+)/
+REPO_ROOT = Pathname.new(ARGV.shift || File.expand_path("../..", __FILE__))
+
+REPO_ROOT.join("rails.gemspec").read =~ /required_ruby_version[^0-9]+([0-9]+\.[0-9]+)/
 MIN_RUBY = Gem::Version.new($1 || "2.0")
 
 def available_tags_for_image(image)
@@ -34,6 +47,8 @@ RUBIES =
 
 ONE_RUBY = RUBIES.last
 
+RUBIES << "ruby-trunk:#{TRUNK_DATE}"
+
 STEPS = []
 
 def image_name_for(ruby, suffix = BUILD_ID, short: false)
@@ -51,10 +66,12 @@ def mangle_name(name)
 end
 
 def step_for(subdirectory, rake_task, ruby: nil, service: "default")
+  return unless REPO_ROOT.join(subdirectory).exist?
+
   label = +"#{subdirectory} #{rake_task.sub(/[:_]test|test:/, "")}"
   label.sub!(/ test/, "")
   if ruby
-    label << " (#{ruby.sub(/^ruby:|:latest$/, "")})"
+    label << " (#{ruby.sub(/^ruby:|:latest$/, "").sub(/^ruby-trunk:.*/, "trunk")})"
   end
 
   if rake_task.start_with?("mysql2:")
@@ -96,6 +113,7 @@ def step_for(subdirectory, rake_task, ruby: nil, service: "default")
       "IMAGE_NAME" => image_name_for(ruby || ONE_RUBY),
     },
     "timeout_in_minutes" => timeout,
+    "pass_when" => [{ "exit_status" => (ruby =~ /ruby-trunk/ ? "*" : 0) }],
   }
 
   yield hash if block_given?
@@ -123,11 +141,12 @@ end
 ).each_slice(3) do |dir, task, service|
   steps_for(dir, task, service: service)
 
-  next if PULL_REQUEST
-  next if BRANCH != "master" && BRANCH !~ /\A[0-9-]+(?:-stable)?\z/
+  next if LOCAL_BRANCH != "master" && LOCAL_BRANCH !~ /\A[0-9-]+(?:-stable)?\z/
 
-  if task.match?(/:test/)
-    step_for(dir, task.sub(":test", ":isolated_test"), service: service)
+  if dir == "activerecord"
+    step_for(dir, task.sub(":test", ":isolated_test"), service: service) do |x|
+      x["parallelism"] = 5 if REPO_ROOT.join("activerecord/Rakefile").read.include?("BUILDKITE_PARALLEL")
+    end
   else
     step_for(dir, "#{task}:isolated", service: service)
   end
@@ -157,7 +176,7 @@ end
 step_for("actionview", "test:ujs", service: "actionview")
 steps_for("activejob", "test:integration", service: "activejob")
 steps_for("railties", "test", service: "railties") do |x|
-  x["parallelism"] = 12
+  x["parallelism"] = 12 if REPO_ROOT.join("railties/Rakefile").read.include?("BUILDKITE_PARALLEL")
 end
 
 ###
@@ -185,30 +204,63 @@ puts YAML.dump("steps" => [
           "label" => ":docker: #{ruby}",
           "plugins" => [
             {
-              DOCKER_COMPOSE_PLUGIN => {
-                "build" => "base",
-                "config" => ".buildkite/docker-compose.yml",
-                "image-name" => image_name_for(ruby, short: true),
-                "cache-from" => [
-                  ENV.fetch("BUILDKITE_REBUILT_FROM_BUILD_ID", "") == "" ? nil :
-                  "base:" + image_name_for(ruby, ENV["BUILDKITE_REBUILT_FROM_BUILD_ID"]),
-                  PULL_REQUEST && "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}"),
-                  "base:" + image_name_for(ruby, "br-#{BRANCH}"),
-                  BRANCH == "master" ? nil : "base:" + image_name_for(ruby, "br-master"),
-                ].compact,
-                "push" => [
-                  PULL_REQUEST ?
-                  "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}") :
-                  "base:" + image_name_for(ruby, "br-#{BRANCH}"),
-                ],
-                "image-repository" => IMAGE_BASE,
+              ARTIFACTS_PLUGIN => {
+                "download" => [".buildkite/*", ".buildkite/**/*"],
               },
+            },
+            {
+              DOCKER_COMPOSE_PLUGIN =>
+              if ruby =~ /ruby-trunk/
+                {
+                  "build" => ["ruby-trunk", "base"],
+                  "config" => ".buildkite/docker-compose.yml",
+                  "image-name" => [ruby.tr(":", "-"), image_name_for(ruby, short: true)],
+                  "cache-from" => [
+                    REBUILD_ID && "base:" + image_name_for(ruby, REBUILD_ID),
+                    PULL_REQUEST && "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}"),
+                    LOCAL_BRANCH && LOCAL_BRANCH !~ /:/ && "base:" + image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
+                    BASE_BRANCH && "base:" + image_name_for(ruby, "br-#{BASE_BRANCH}"),
+                    "base:" + image_name_for(ruby, "br-master"),
+
+                    "ruby-trunk:#{ruby_image_trunk}",
+                    "ruby-trunk:#{ruby_image_trunk(Date.today - 1)}",
+                    "ruby-trunk:#{ruby_image_trunk(Date.today - 2)}",
+                  ].grep(String).uniq,
+                  "push" => [
+                    "ruby-trunk:#{ruby_image_trunk}",
+                    LOCAL_BRANCH =~ /:/ ?
+                    "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}") :
+                    "base:" + image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
+                  ],
+                  "image-repository" => IMAGE_BASE,
+                }
+              else
+                {
+                  "build" => "base",
+                  "config" => ".buildkite/docker-compose.yml",
+                  "image-name" => image_name_for(ruby, short: true),
+                  "cache-from" => [
+                    REBUILD_ID && "base:" + image_name_for(ruby, REBUILD_ID),
+                    PULL_REQUEST && "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}"),
+                    LOCAL_BRANCH && LOCAL_BRANCH !~ /:/ && "base:" + image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
+                    BASE_BRANCH && "base:" + image_name_for(ruby, "br-#{BASE_BRANCH}"),
+                    "base:" + image_name_for(ruby, "br-master"),
+                  ].grep(String).uniq,
+                  "push" => [
+                    LOCAL_BRANCH =~ /:/ ?
+                    "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}") :
+                    "base:" + image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
+                  ],
+                  "image-repository" => IMAGE_BASE,
+                }
+              end,
             },
           ],
           "env" => {
             "RUBY_IMAGE" => ruby,
           },
           "timeout_in_minutes" => 15,
+          "pass_when" => [{ "exit_status" => (ruby =~ /ruby-trunk/ ? "*" : 0) }],
         }
       end,
     ],

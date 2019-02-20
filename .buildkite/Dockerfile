@@ -1,15 +1,18 @@
 ARG RUBY_IMAGE
 FROM ${RUBY_IMAGE:-ruby:latest}
 
-RUN gem update --system && gem install bundler \
+RUN echo "--- :ruby: Updating RubyGems and Bundler" \
+    && (gem update --system || gem update --system 2.7.8) \
+    && (gem install bundler || true) \
+    && gem install bundler -v '< 2' \
     && ruby --version && gem --version && bundle --version \
     && echo "--- :package: Installing system deps" \
     # Postgres apt sources
     && curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
-    && echo "deb http://apt.postgresql.org/pub/repos/apt/ stretch-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && echo "deb http://apt.postgresql.org/pub/repos/apt/ $(awk -F"[)(]+" '/VERSION=/ {print $2}' /etc/os-release)-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
     # Node apt sources
     && curl -sS https://deb.nodesource.com/gpgkey/nodesource.gpg.key | apt-key add - \
-    && echo "deb http://deb.nodesource.com/node_10.x stretch main" > /etc/apt/sources.list.d/nodesource.list \
+    && echo "deb http://deb.nodesource.com/node_10.x $(awk -F"[)(]+" '/VERSION=/ {print $2}' /etc/os-release) main" > /etc/apt/sources.list.d/nodesource.list \
     # Yarn apt sources
     && curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add - \
     && echo "deb http://dl.yarnpkg.com/debian/ stable main" > /etc/apt/sources.list.d/yarn.list \
@@ -18,7 +21,8 @@ RUN gem update --system && gem install bundler \
     && apt-get install -y --no-install-recommends \
         postgresql-client mysql-client sqlite3 \
         git nodejs yarn lsof \
-        ffmpeg mupdf mupdf-tools poppler-utils \
+    && (apt-get install -y --no-install-recommends \
+        ffmpeg mupdf mupdf-tools poppler-utils || true) \
     # await (for waiting on dependent services)
     && cd /tmp \
     && wget -qc https://github.com/betalo-sweden/await/releases/download/v0.4.0/await-linux-amd64 \
@@ -33,16 +37,23 @@ ENV RAILS_ENV=test RACK_ENV=test
 ENV JRUBY_OPTS="--dev -J-Xmx1024M"
 
 ADD .buildkite/await-all /usr/local/bin/
+RUN chmod +x /usr/local/bin/await-all
 
-ADD actioncable/package.json actioncable/
-ADD actiontext/package.json actiontext/
-ADD actionview/package.json actionview/
-ADD activestorage/package.json activestorage/
-ADD package.json yarn.lock .yarnrc ./
+# Wildcard ignores missing files; .empty ensures ADD always has at least
+# one valid source: https://stackoverflow.com/a/46801962
+ADD .buildkite/.empty actioncable/package.jso[n] actioncable/
+ADD .buildkite/.empty actiontext/package.jso[n] actiontext/
+ADD .buildkite/.empty actionview/package.jso[n] actionview/
+ADD .buildkite/.empty activestorage/package.jso[n] activestorage/
+ADD .buildkite/.empty package.jso[n] yarn.loc[k] .yarnr[c] ./
 
-RUN echo "--- :javascript: Installing JavaScript deps" \
-    && yarn install \
-    && yarn cache clean
+RUN rm -f .empty */.empty \
+    && find . -type d -maxdepth 1 -empty -exec rmdir '{}' '+' \
+    && if [ -f package.json ]; then \
+        echo "--- :javascript: Installing JavaScript deps" \
+        && yarn install \
+        && yarn cache clean; \
+    fi
 
 ADD */*.gemspec tmp/
 ADD railties/exe/ railties/exe/
@@ -56,4 +67,12 @@ RUN echo "--- :bundler: Installing Ruby deps" \
 
 ADD . ./
 
-RUN mv -f tmp/Gemfile.lock.updated Gemfile.lock
+RUN mv -f tmp/Gemfile.lock.updated Gemfile.lock \
+    && if [ -f package.json ]; then \
+        echo "--- :javascript: Building JavaScript package" \
+        && (cd actionview && yarn build) \
+        && if [ -f railties/test/isolation/assets/package.json ]; then \
+            (cd railties/test/isolation/assets && yarn install); \
+        fi \
+        && yarn cache clean; \
+    fi

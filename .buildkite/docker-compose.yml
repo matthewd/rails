@@ -113,3 +113,8 @@ services:
 
   chrome:
     image: selenium/standalone-chrome:latest
+
+  ruby-trunk:
+    build:
+      context: ./
+      dockerfile: Dockerfile.ruby-trunk
