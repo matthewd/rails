@@ -1,79 +1,4 @@
-# syntax = docker/dockerfile:experimental
-
 ARG RUBY_IMAGE
-
-FROM buildpack-deps:stretch AS ruby-trunk
-
-# skip installing gem documentation
-RUN mkdir -p /usr/local/etc \
-	&& { \
-		echo 'install: --no-document'; \
-		echo 'update: --no-document'; \
-	} >> /usr/local/etc/gemrc
-
-ARG TRUNK_DATE
-
-# some of ruby's build scripts are written in ruby
-#   we purge system ruby later to make sure our final image uses what we just built
-RUN set -ex \
-	\
-	&& buildDeps=' \
-		bison \
-		dpkg-dev \
-		libgdbm-dev \
-		ruby \
-	' \
-	&& apt-get update \
-	&& apt-get install -y --no-install-recommends $buildDeps \
-	&& rm -rf /var/lib/apt/lists/* \
-	\
-	&& wget -O ruby.tar.gz "https://github.com/ruby/ruby/archive/trunk.tar.gz" \
-	\
-	&& mkdir -p /usr/src/ruby \
-	&& tar -xzf ruby.tar.gz -C /usr/src/ruby --strip-components=1 \
-	&& rm ruby.tar.gz \
-	\
-	&& cd /usr/src/ruby \
-	\
-# hack in "ENABLE_PATH_CHECK" disabling to suppress:
-#   warning: Insecure world writable dir
-	&& { \
-		echo '#define ENABLE_PATH_CHECK 0'; \
-		echo; \
-		cat file.c; \
-	} > file.c.new \
-	&& mv file.c.new file.c \
-	\
-	&& autoconf \
-	&& gnuArch="$(dpkg-architecture --query DEB_BUILD_GNU_TYPE)" \
-	&& ./configure \
-		--build="$gnuArch" \
-		--disable-install-doc \
-		--enable-shared \
-	&& make -j "$(nproc)" \
-	&& make install \
-	\
-	&& apt-get purge -y --auto-remove $buildDeps \
-	&& cd / \
-	&& rm -r /usr/src/ruby \
-# rough smoke test
-	&& ruby --version && gem --version && bundle --version
-
-# install things globally, for great justice
-# and don't create ".bundle" in all our apps
-ENV GEM_HOME /usr/local/bundle
-ENV BUNDLE_PATH="$GEM_HOME" \
-	BUNDLE_SILENCE_ROOT_WARNING=1 \
-	BUNDLE_APP_CONFIG="$GEM_HOME"
-# path recommendation: https://github.com/bundler/bundler/pull/6469#issuecomment-383235438
-ENV PATH $GEM_HOME/bin:$BUNDLE_PATH/gems/bin:$PATH
-# adjust permissions of a few directories for running "gem install" as an arbitrary user
-RUN mkdir -p "$GEM_HOME" && chmod 777 "$GEM_HOME"
-# (BUNDLE_PATH = GEM_HOME, no need to mkdir/chown both)
-
-CMD [ "irb" ]
-
-
 FROM ${RUBY_IMAGE:-ruby:latest}
 
 RUN echo "--- :ruby: Updating RubyGems and Bundler" \
@@ -82,26 +7,83 @@ RUN echo "--- :ruby: Updating RubyGems and Bundler" \
     && gem install bundler -v '< 2' \
     && ruby --version && gem --version && bundle --version \
     && echo "--- :package: Installing system deps" \
+    # Pre-requirements
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gnupg curl \
+    && codename="$(. /etc/os-release; x="${VERSION_CODENAME-${VERSION#*(}}"; echo "${x%%[ )]*}")" \
     # Postgres apt sources
-    && curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
-    && echo "deb http://apt.postgresql.org/pub/repos/apt/ $(awk -F"[)(]+" '/VERSION=/ {print $2}' /etc/os-release)-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc | APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1 apt-key add - \
+    && echo "deb http://apt.postgresql.org/pub/repos/apt/ ${codename}-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
     # Node apt sources
-    && curl -sS https://deb.nodesource.com/gpgkey/nodesource.gpg.key | apt-key add - \
-    && echo "deb http://deb.nodesource.com/node_10.x $(awk -F"[)(]+" '/VERSION=/ {print $2}' /etc/os-release) main" > /etc/apt/sources.list.d/nodesource.list \
+    && curl -sS https://deb.nodesource.com/gpgkey/nodesource.gpg.key | APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1 apt-key add - \
+    && echo "deb http://deb.nodesource.com/node_10.x ${codename} main" > /etc/apt/sources.list.d/nodesource.list \
     # Yarn apt sources
-    && curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add - \
+    && curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1 apt-key add - \
     && echo "deb http://dl.yarnpkg.com/debian/ stable main" > /etc/apt/sources.list.d/yarn.list \
     # Install all the things
     && apt-get update \
+    #  buildpack-deps
+    && apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        bzip2 \
+        dpkg-dev \
+        file \
+        g++ \
+        gcc \
+        imagemagick \
+        libbz2-dev \
+        libc6-dev \
+        libcurl4-openssl-dev \
+        libdb-dev \
+        libevent-dev \
+        libffi-dev \
+        libgdbm-dev \
+        libgeoip-dev \
+        libglib2.0-dev \
+        libjpeg-dev \
+        libkrb5-dev \
+        liblzma-dev \
+        libmagickcore-dev \
+        libmagickwand-dev \
+        libncurses5-dev \
+        libncursesw5-dev \
+        libpng-dev \
+        libpq-dev \
+        libreadline-dev \
+        libsqlite3-dev \
+        libssl-dev \
+        libtool \
+        libwebp-dev \
+        libxml2-dev \
+        libxslt-dev \
+        libyaml-dev \
+        make \
+        patch \
+        unzip \
+        xz-utils \
+        zlib1g-dev \
+        \
+# https://lists.debian.org/debian-devel-announce/2016/09/msg00000.html
+        $( \
+# if we use just "apt-cache show" here, it returns zero because "Can't select versions from package 'libmysqlclient-dev' as it is purely virtual", hence the pipe to grep
+            if apt-cache show 'default-libmysqlclient-dev' 2>/dev/null | grep -q '^Version:'; then \
+                echo 'default-libmysqlclient-dev'; \
+            else \
+                echo 'libmysqlclient-dev'; \
+            fi \
+        ) \
+    #  specific dependencies for the rails build
     && apt-get install -y --no-install-recommends \
         postgresql-client mysql-client sqlite3 \
         git nodejs yarn lsof \
+    #  optional dependencies
     && (apt-get install -y --no-install-recommends \
         ffmpeg mupdf mupdf-tools poppler-utils || true) \
     # await (for waiting on dependent services)
-    && cd /tmp \
-    && wget -qc https://github.com/betalo-sweden/await/releases/download/v0.4.0/await-linux-amd64 \
-    && install await-linux-amd64 /usr/local/bin/await \
+    && curl -fLsS -o /tmp/await-linux-amd64 https://github.com/betalo-sweden/await/releases/download/v0.4.0/await-linux-amd64 \
+    && install /tmp/await-linux-amd64 /usr/local/bin/await \
     # clean up
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* \

@@ -1,13 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-require "date"
 require "json"
 require "net/http"
 require "pathname"
 require "yaml"
-
-TRUNK_DATE = Date.today.strftime("%Y%m%d")
 
 IMAGE_BASE = "973266071021.dkr.ecr.us-east-1.amazonaws.com/builds"
 
@@ -44,7 +41,8 @@ RUBIES =
 
 ONE_RUBY = RUBIES.last
 
-RUBIES << "ruby-trunk" if MAINLINE
+TRUNK_RUBY = "rubylang/ruby:trunk-nightly-bionic"
+RUBIES << TRUNK_RUBY
 
 STEPS = []
 
@@ -68,7 +66,8 @@ def step_for(subdirectory, rake_task, ruby: nil, service: "default")
   label = +"#{subdirectory} #{rake_task.sub(/[:_]test|test:/, "")}"
   label.sub!(/ test/, "")
   if ruby
-    label << " (#{ruby.sub(/^ruby:|:latest$/, "").sub(/^ruby-trunk:.*/, "trunk")})"
+    short_ruby = ruby == TRUNK_RUBY ? "trunk" : ruby.sub(/^ruby:|:latest$/, "")
+    label << " (#{short_ruby})"
   end
 
   if rake_task.start_with?("mysql2:")
@@ -110,7 +109,7 @@ def step_for(subdirectory, rake_task, ruby: nil, service: "default")
       "IMAGE_NAME" => image_name_for(ruby || ONE_RUBY),
     },
     "timeout_in_minutes" => timeout,
-    "pass_when" => [{ "exit_status" => (ruby =~ /ruby-trunk/ ? "*" : 0) }],
+    "pass_when" => [{ "exit_status" => (ruby == TRUNK_RUBY ? "*" : 0) }],
   }
 
   yield hash if block_given?
@@ -199,32 +198,38 @@ puts YAML.dump("steps" => [
       *RUBIES.map do |ruby|
         {
           "label" => ":docker: #{ruby}",
-          "command" => ".buildkite/image #{ruby}",
           "plugins" => [
             {
               ARTIFACTS_PLUGIN => {
                 "download" => [".buildkite/*", ".buildkite/**/*"],
               },
             },
+            {
+              DOCKER_COMPOSE_PLUGIN => {
+                "build" => "base",
+                "config" => ".buildkite/docker-compose.yml",
+                "image-name" => image_name_for(ruby, short: true),
+                "cache-from" => [
+                  REBUILD_ID && "base:" + image_name_for(ruby, REBUILD_ID),
+                  PULL_REQUEST && "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}"),
+                  LOCAL_BRANCH && LOCAL_BRANCH !~ /:/ && "base:" + image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
+                  BASE_BRANCH && "base:" + image_name_for(ruby, "br-#{BASE_BRANCH}"),
+                  "base:" + image_name_for(ruby, "br-master"),
+                ].grep(String).uniq,
+                "push" => [
+                  LOCAL_BRANCH =~ /:/ ?
+                  "base:" + image_name_for(ruby, "pr-#{PULL_REQUEST}") :
+                  "base:" + image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
+                ],
+                "image-repository" => IMAGE_BASE,
+              },
+            },
           ],
           "env" => {
             "RUBY_IMAGE" => ruby,
-            "TAG" => image_name_for(ruby),
-            "PUSH_AS" =>
-              LOCAL_BRANCH =~ /:/ ?
-              image_name_for(ruby, "pr-#{PULL_REQUEST}") :
-              image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
-            "CACHE_FROM" =>
-              [
-                REBUILD_ID && image_name_for(ruby, REBUILD_ID),
-                PULL_REQUEST && image_name_for(ruby, "pr-#{PULL_REQUEST}"),
-                LOCAL_BRANCH && LOCAL_BRANCH !~ /:/ && image_name_for(ruby, "br-#{LOCAL_BRANCH}"),
-                BASE_BRANCH && image_name_for(ruby, "br-#{BASE_BRANCH}"),
-                image_name_for(ruby, "br-master"),
-              ].grep(String).uniq.join(" "),
           },
           "timeout_in_minutes" => 15,
-          "pass_when" => [{ "exit_status" => (ruby =~ /ruby-trunk/ ? "*" : 0) }],
+          "pass_when" => [{ "exit_status" => (ruby == TRUNK_RUBY ? "*" : 0) }],
         }
       end,
     ],
