@@ -43,16 +43,18 @@ module ApplicationTests
       master, slave = PTY.open
       pid = nil
 
-      begin
-        pid = Process.spawn("#{app_path}/bin/rails server -P tmp/dummy.pid", in: slave, out: slave, err: slave)
-        assert_output("Listening", master)
+      Bundler.with_original_env do
+        begin
+          pid = Process.spawn("bin/rails server -P tmp/dummy.pid", chdir: app_path, in: slave, out: slave, err: slave)
+          assert_output("Listening", master)
 
-        rails("restart")
+          rails("restart")
 
-        assert_output("Restarting", master)
-        assert_output("Inherited", master)
-      ensure
-        kill(pid) if pid
+          assert_output("Restarting", master)
+          assert_output("Inherited", master)
+        ensure
+          kill(pid) if pid
+        end
       end
     end
 
