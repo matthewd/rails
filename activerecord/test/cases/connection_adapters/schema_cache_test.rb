@@ -52,18 +52,13 @@ module ActiveRecord
           YAML.respond_to?(:unsafe_load) ? YAML.unsafe_load(gz.read) : YAML.load(gz.read)
         end
 
-        # Give it a connection. Usually the connection
-        # would get set on the cache when it's retrieved
-        # from the pool.
-        cache.connection = @connection
-
         assert_no_queries do
-          assert_equal 12, cache.columns("posts").size
-          assert_equal 12, cache.columns_hash("posts").size
-          assert cache.data_sources("posts")
-          assert_equal "id", cache.primary_keys("posts")
-          assert_equal 1, cache.indexes("posts").size
-          assert_equal @database_version.to_s, cache.database_version.to_s
+          assert_equal 12, cache.columns(@connection, "posts").size
+          assert_equal 12, cache.columns_hash(@connection, "posts").size
+          assert cache.data_source_exists?(@connection, "posts")
+          assert_equal "id", cache.primary_keys(@connection, "posts")
+          assert_equal 1, cache.indexes(@connection, "posts").size
+          assert_equal @database_version.to_s, cache.database_version(@connection).to_s
         end
 
         # Load the cache the usual way.
@@ -183,16 +178,20 @@ module ActiveRecord
         # Populate it.
         cache.add("posts")
 
+        # We're going to manually dump, so we also need to force
+        # database_version to be stored.
+        cache.database_version
+
         # Create a new cache by marshal dumping / loading.
-        cache = Marshal.load(Marshal.dump(cache))
+        cache = Marshal.load(Marshal.dump(cache.instance_variable_get(:@schema_reflection).instance_variable_get(:@cache)))
 
         assert_no_queries do
-          assert_equal 12, cache.columns("posts").size
-          assert_equal 12, cache.columns_hash("posts").size
-          assert cache.data_sources("posts")
-          assert_equal "id", cache.primary_keys("posts")
-          assert_equal 1, cache.indexes("posts").size
-          assert_equal @database_version.to_s, cache.database_version.to_s
+          assert_equal 12, cache.columns(@connection, "posts").size
+          assert_equal 12, cache.columns_hash(@connection, "posts").size
+          assert cache.data_sources(@connection, "posts")
+          assert_equal "id", cache.primary_keys(@connection, "posts")
+          assert_equal 1, cache.indexes(@connection, "posts").size
+          assert_equal @database_version.to_s, cache.database_version(@connection).to_s
         end
       end
 
@@ -267,15 +266,14 @@ module ActiveRecord
 
         # Load a new cache manually.
         cache = Zlib::GzipReader.open(tempfile.path) { |gz| Marshal.load(gz.read) }
-        cache.connection = @connection
 
         assert_no_queries do
-          assert_equal 12, cache.columns("posts").size
-          assert_equal 12, cache.columns_hash("posts").size
-          assert cache.data_sources("posts")
-          assert_equal "id", cache.primary_keys("posts")
-          assert_equal 1, cache.indexes("posts").size
-          assert_equal @database_version.to_s, cache.database_version.to_s
+          assert_equal 12, cache.columns(@connection, "posts").size
+          assert_equal 12, cache.columns_hash(@connection, "posts").size
+          assert cache.data_source_exists?(@connection, "posts")
+          assert_equal "id", cache.primary_keys(@connection, "posts")
+          assert_equal 1, cache.indexes(@connection, "posts").size
+          assert_equal @database_version.to_s, cache.database_version(@connection).to_s
         end
 
         # Load a new cache.
@@ -327,40 +325,29 @@ module ActiveRecord
 
           ActiveRecord::Base.establish_connection(new_config)
 
-          # cache is empty
-          assert_empty ActiveRecord::Base.connection.schema_cache.instance_variable_get(:@primary_keys)
-          assert_empty ActiveRecord::Base.connection.schema_cache.instance_variable_get(:@data_sources)
-          assert_empty ActiveRecord::Base.connection.schema_cache.instance_variable_get(:@indexes)
+          # cache starts empty
+          assert_nil ActiveRecord::Base.connection.pool.schema_reflection.instance_variable_get(:@cache)
 
-          # calling dump_to will load data sources, but not the rest of the cache
-          # so we need to set the cache manually. This essentially mimics the behavior
-          # of the Railtie.
-          cache = SchemaCache.new(ActiveRecord::Base.connection)
-          cache.dump_to(tempfile.path)
-          ActiveRecord::Base.connection.schema_cache = cache
+          # now we access the cache, causing it to load
+          assert ActiveRecord::Base.connection.schema_cache.version
 
           assert File.exist?(tempfile)
-          assert_not_empty ActiveRecord::Base.connection.schema_cache.instance_variable_get(:@primary_keys)
-          assert_not_empty ActiveRecord::Base.connection.schema_cache.instance_variable_get(:@data_sources)
-          assert_not_empty ActiveRecord::Base.connection.schema_cache.instance_variable_get(:@indexes)
+          assert ActiveRecord::Base.connection.pool.schema_reflection.instance_variable_get(:@cache)
 
-          # assert cache is empty on new connection
+          # assert cache is still empty on new connection (precondition for the
+          # following to show it is loading because of the config change)
           ActiveRecord::Base.establish_connection(new_config)
 
           assert File.exist?(tempfile)
-          assert_empty ActiveRecord::Base.connection.schema_cache.instance_variable_get(:@primary_keys)
-          assert_empty ActiveRecord::Base.connection.schema_cache.instance_variable_get(:@data_sources)
-          assert_empty ActiveRecord::Base.connection.schema_cache.instance_variable_get(:@indexes)
+          assert_nil ActiveRecord::Base.connection.pool.schema_reflection.instance_variable_get(:@cache)
 
-          # cache is lazily loaded when lazily loading is on
+          # cache is loaded upon connection when lazily loading is on
           old_config = ActiveRecord.lazily_load_schema_cache
           ActiveRecord.lazily_load_schema_cache = true
           ActiveRecord::Base.establish_connection(new_config)
 
           assert File.exist?(tempfile)
-          assert_not_empty ActiveRecord::Base.connection.schema_cache.instance_variable_get(:@primary_keys)
-          assert_not_empty ActiveRecord::Base.connection.schema_cache.instance_variable_get(:@data_sources)
-          assert_not_empty ActiveRecord::Base.connection.schema_cache.instance_variable_get(:@indexes)
+          assert ActiveRecord::Base.connection.pool.schema_reflection.instance_variable_get(:@cache)
         ensure
           ActiveRecord.lazily_load_schema_cache = old_config
           ActiveRecord::Base.establish_connection(:arunit)

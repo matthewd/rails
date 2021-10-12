@@ -6,7 +6,11 @@ module ActiveRecord
       include Mutex_m
 
       attr_reader :db_config, :connection_klass
-      attr_accessor :schema_cache
+      attr_writer :schema_reflection
+
+      def schema_reflection
+        @schema_reflection ||= SchemaReflection.new(db_config.lazy_schema_cache_path)
+      end
 
       INSTANCES = ObjectSpace::WeakMap.new
       private_constant :INSTANCES
