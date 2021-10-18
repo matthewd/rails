@@ -35,7 +35,7 @@ module ActiveRecord
         assert_no_queries do
           assert_equal 12, cache.columns("posts").size
           assert_equal 12, cache.columns_hash("posts").size
-          assert cache.data_sources("posts")
+          assert cache.data_source_exists?("posts")
           assert_equal "id", cache.primary_keys("posts")
           assert_equal 1, cache.indexes("posts").size
           assert_equal @database_version.to_s, cache.database_version.to_s
@@ -72,7 +72,7 @@ module ActiveRecord
         assert_no_queries do
           assert_equal 12, cache.columns("posts").size
           assert_equal 12, cache.columns_hash("posts").size
-          assert cache.data_sources("posts")
+          assert cache.data_source_exists?("posts")
           assert_equal "id", cache.primary_keys("posts")
           assert_equal 1, cache.indexes("posts").size
           assert_equal @database_version.to_s, cache.database_version.to_s
@@ -87,7 +87,7 @@ module ActiveRecord
         assert_no_queries do
           assert_equal 11, cache.columns("posts").size
           assert_equal 11, cache.columns_hash("posts").size
-          assert cache.data_sources("posts")
+          assert cache.data_source_exists?("posts")
           assert_equal "id", cache.primary_keys("posts")
         end
       end
@@ -160,7 +160,7 @@ module ActiveRecord
       def test_clearing
         @cache.columns("posts")
         @cache.columns_hash("posts")
-        @cache.data_sources("posts")
+        @cache.data_source_exists?("posts")
         @cache.primary_keys("posts")
         @cache.indexes("posts")
 
@@ -187,7 +187,7 @@ module ActiveRecord
         assert_no_queries do
           assert_equal 12, cache.columns(@connection, "posts").size
           assert_equal 12, cache.columns_hash(@connection, "posts").size
-          assert cache.data_sources(@connection, "posts")
+          assert cache.data_source_exists?(@connection, "posts")
           assert_equal "id", cache.primary_keys(@connection, "posts")
           assert_equal 1, cache.indexes(@connection, "posts").size
           assert_equal @database_version.to_s, cache.database_version(@connection).to_s
@@ -208,7 +208,7 @@ module ActiveRecord
         assert_no_queries do
           assert_equal 12, cache.columns("posts").size
           assert_equal 12, cache.columns_hash("posts").size
-          assert cache.data_sources("posts")
+          assert cache.data_source_exists?("posts")
           assert_equal "id", cache.primary_keys("posts")
           assert_equal 1, cache.indexes("posts").size
           assert_equal @database_version.to_s, cache.database_version.to_s
@@ -231,15 +231,15 @@ module ActiveRecord
         cache = load_bound_reflection(tempfile.path)
 
         # Assert a table in the cache
-        assert cache.data_sources("posts"), "expected posts to be in the cached data_sources"
+        assert cache.data_source_exists?("posts"), "expected posts to be in the cached data_sources"
         assert_equal 12, cache.columns("posts").size
         assert_equal 12, cache.columns_hash("posts").size
-        assert cache.data_sources("posts")
+        assert cache.data_source_exists?("posts")
         assert_equal "id", cache.primary_keys("posts")
         assert_equal 1, cache.indexes("posts").size
 
         # Assert ignored table. Behavior should match non-existent table.
-        assert_nil cache.data_sources("p_schema_migrations"), "expected comments to not be in the cached data_sources"
+        assert_nil cache.data_source_exists?("p_schema_migrations"), "expected comments to not be in the cached data_sources"
         assert_raises ActiveRecord::StatementInvalid do
           cache.columns("p_schema_migrations")
         end
@@ -279,7 +279,7 @@ module ActiveRecord
         assert_no_queries do
           assert_equal 12, cache.columns("posts").size
           assert_equal 12, cache.columns_hash("posts").size
-          assert cache.data_sources("posts")
+          assert cache.data_source_exists?("posts")
           assert_equal "id", cache.primary_keys("posts")
           assert_equal 1, cache.indexes("posts").size
           assert_equal @database_version.to_s, cache.database_version.to_s
