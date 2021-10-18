@@ -7,25 +7,30 @@ module ActiveRecord
     class SchemaCacheTest < ActiveRecord::TestCase
       def setup
         @connection       = ActiveRecord::Base.connection
-        @cache            = SchemaCache.new @connection
+        @cache            = new_bound_reflection
         @database_version = @connection.get_database_version
+      end
+
+      def new_bound_reflection(connection = @connection)
+        BoundSchemaReflection.new(SchemaReflection.new(nil), connection)
+      end
+
+      def load_bound_reflection(filename, connection = @connection)
+        BoundSchemaReflection.new(SchemaReflection.new(filename), connection).tap do |cache|
+          cache.load!
+        end
       end
 
       def test_yaml_dump_and_load
         # Create an empty cache.
-        cache = SchemaCache.new @connection
+        cache = new_bound_reflection
 
         tempfile = Tempfile.new(["schema_cache-", ".yml"])
         # Dump it. It should get populated before dumping.
         cache.dump_to(tempfile.path)
 
         # Load the cache.
-        cache = SchemaCache.load_from(tempfile.path)
-
-        # Give it a connection. Usually the connection
-        # would get set on the cache when it's retrieved
-        # from the pool.
-        cache.connection = @connection
+        cache = load_bound_reflection(tempfile.path)
 
         assert_no_queries do
           assert_equal 12, cache.columns("posts").size
@@ -41,7 +46,7 @@ module ActiveRecord
 
       def test_yaml_dump_and_load_with_gzip
         # Create an empty cache.
-        cache = SchemaCache.new @connection
+        cache = new_bound_reflection
 
         tempfile = Tempfile.new(["schema_cache-", ".yml.gz"])
         # Dump it. It should get populated before dumping.
@@ -62,10 +67,7 @@ module ActiveRecord
         end
 
         # Load the cache the usual way.
-        cache = SchemaCache.load_from(tempfile.path)
-
-        # Give it a connection.
-        cache.connection = @connection
+        cache = load_bound_reflection(tempfile.path)
 
         assert_no_queries do
           assert_equal 12, cache.columns("posts").size
@@ -80,8 +82,7 @@ module ActiveRecord
       end
 
       def test_yaml_loads_5_1_dump
-        cache = SchemaCache.load_from(schema_dump_path)
-        cache.connection = @connection
+        cache = load_bound_reflection(schema_dump_path)
 
         assert_no_queries do
           assert_equal 11, cache.columns("posts").size
@@ -92,8 +93,7 @@ module ActiveRecord
       end
 
       def test_yaml_loads_5_1_dump_without_indexes_still_queries_for_indexes
-        cache = SchemaCache.load_from(schema_dump_path)
-        cache.connection = @connection
+        cache = load_bound_reflection(schema_dump_path)
 
         assert_queries :any, ignore_none: true do
           assert_equal 1, cache.indexes("posts").size
@@ -101,8 +101,7 @@ module ActiveRecord
       end
 
       def test_yaml_loads_5_1_dump_without_database_version_still_queries_for_database_version
-        cache = SchemaCache.load_from(schema_dump_path)
-        cache.connection = @connection
+        cache = load_bound_reflection(schema_dump_path)
 
         # We can't verify queries get executed because the database version gets
         # cached in both MySQL and PostgreSQL outside of the schema cache.
@@ -173,7 +172,7 @@ module ActiveRecord
 
       def test_marshal_dump_and_load
         # Create an empty cache.
-        cache = SchemaCache.new @connection
+        cache = new_bound_reflection
 
         # Populate it.
         cache.add("posts")
@@ -197,15 +196,14 @@ module ActiveRecord
 
       def test_marshal_dump_and_load_via_disk
         # Create an empty cache.
-        cache = SchemaCache.new @connection
+        cache = new_bound_reflection
 
         tempfile = Tempfile.new(["schema_cache-", ".dump"])
         # Dump it. It should get populated before dumping.
         cache.dump_to(tempfile.path)
 
         # Load a new cache.
-        cache = SchemaCache.load_from(tempfile.path)
-        cache.connection = @connection
+        cache = load_bound_reflection(tempfile.path)
 
         assert_no_queries do
           assert_equal 12, cache.columns("posts").size
@@ -223,15 +221,14 @@ module ActiveRecord
         old_ignore = ActiveRecord.schema_cache_ignored_tables
         ActiveRecord.schema_cache_ignored_tables = ["p_schema_migrations"]
         # Create an empty cache.
-        cache = SchemaCache.new @connection
+        cache = new_bound_reflection
 
         tempfile = Tempfile.new(["schema_cache-", ".dump"])
         # Dump it. It should get populated before dumping.
         cache.dump_to(tempfile.path)
 
         # Load a new cache.
-        cache = SchemaCache.load_from(tempfile.path)
-        cache.connection = @connection
+        cache = load_bound_reflection(tempfile.path)
 
         # Assert a table in the cache
         assert cache.data_sources("posts"), "expected posts to be in the cached data_sources"
@@ -258,7 +255,7 @@ module ActiveRecord
 
       def test_marshal_dump_and_load_with_gzip
         # Create an empty cache.
-        cache = SchemaCache.new @connection
+        cache = new_bound_reflection
 
         tempfile = Tempfile.new(["schema_cache-", ".dump.gz"])
         # Dump it. It should get populated before dumping.
@@ -277,8 +274,7 @@ module ActiveRecord
         end
 
         # Load a new cache.
-        cache = SchemaCache.load_from(tempfile.path)
-        cache.connection = @connection
+        cache = load_bound_reflection(tempfile.path)
 
         assert_no_queries do
           assert_equal 12, cache.columns("posts").size
