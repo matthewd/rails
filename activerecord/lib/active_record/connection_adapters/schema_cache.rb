@@ -136,12 +136,6 @@ module ActiveRecord
         @connection = connection
       end
 
-      # XXX: temporary test shim only
-      def connection=(value)
-        @connection = value
-        load!
-      end
-
       def clear!
         @schema_reflection.clear!
       end
@@ -204,15 +198,19 @@ module ActiveRecord
     end
 
     class SchemaCache
-      def self.new(connection)
-        BoundSchemaReflection.new(SchemaReflection.new(nil), connection)
+      class << self
+        def new(connection)
+          BoundSchemaReflection.new(SchemaReflection.new(nil), connection)
+        end
+        deprecate new: "use ActiveRecord::ConnectionAdapters::SchemaReflection instead"
+
+        def load_from(filename) # :nodoc:
+          BoundSchemaReflection.new(SchemaReflection.new(filename), nil)
+        end
+        deprecate load_from: "use ActiveRecord::ConnectionAdapters::SchemaReflection instead"
       end
 
-      def self.load_from(filename)
-        BoundSchemaReflection.new(SchemaReflection.new(filename), nil)
-      end
-
-      def self._load_from(filename)
+      def self._load_from(filename) # :nodoc:
         return unless File.file?(filename)
 
         read(filename) do |file|
@@ -247,7 +245,7 @@ module ActiveRecord
         @indexes      = {}
       end
 
-      def initialize_dup(other)
+      def initialize_dup(other) # :nodoc:
         super
         @columns      = @columns.dup
         @columns_hash = @columns_hash.dup
@@ -256,7 +254,7 @@ module ActiveRecord
         @indexes      = @indexes.dup
       end
 
-      def encode_with(coder)
+      def encode_with(coder) # :nodoc:
         coder["columns"]          = @columns
         coder["primary_keys"]     = @primary_keys
         coder["data_sources"]     = @data_sources
@@ -363,7 +361,7 @@ module ActiveRecord
         @indexes.delete name
       end
 
-      def add_all(connection)
+      def add_all(connection) # :nodoc:
         tables_to_cache(connection).each do |table|
           add(connection, table)
         end
@@ -382,11 +380,11 @@ module ActiveRecord
         }
       end
 
-      def marshal_dump
+      def marshal_dump # :nodoc:
         [@version, @columns, {}, @primary_keys, @data_sources, @indexes, @database_version]
       end
 
-      def marshal_load(array)
+      def marshal_load(array) # :nodoc:
         @version, @columns, _columns_hash, @primary_keys, @data_sources, @indexes, @database_version = array
         @indexes ||= {}
 

@@ -407,8 +407,7 @@ module ActiveRecord
         end
 
         def test_retrieve_connection_pool_copies_schema_cache_from_ancestor_pool
-          @pool.schema_cache = @pool.connection.schema_cache
-          @pool.schema_cache.add("posts")
+          @pool.connection.schema_cache.add("posts")
 
           rd, wr = IO.pipe
           rd.binmode
@@ -417,7 +416,7 @@ module ActiveRecord
           pid = fork {
             rd.close
             pool = @handler.retrieve_connection_pool(@owner_name)
-            wr.write Marshal.dump pool.schema_cache.size
+            wr.write Marshal.dump pool.connection.schema_cache.size
             wr.close
             exit!
           }
@@ -425,7 +424,7 @@ module ActiveRecord
           wr.close
 
           Process.waitpid pid
-          assert_equal @pool.schema_cache.size, Marshal.load(rd.read)
+          assert_equal @pool.connection.schema_cache.size, Marshal.load(rd.read)
           rd.close
         end
 
