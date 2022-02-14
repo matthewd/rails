@@ -323,7 +323,8 @@ module ActiveRecord
 
       delegate :within_new_transaction, :open_transactions, :current_transaction, :begin_transaction,
                :commit_transaction, :rollback_transaction, :materialize_transactions,
-               :disable_lazy_transactions!, :enable_lazy_transactions!, to: :transaction_manager
+               :disable_lazy_transactions!, :enable_lazy_transactions!, :dirty_current_transaction,
+               to: :transaction_manager
 
       def mark_transaction_written_if_write(sql) # :nodoc:
         transaction = current_transaction
@@ -336,7 +337,11 @@ module ActiveRecord
         current_transaction.open?
       end
 
-      def reset_transaction # :nodoc:
+      def reset_transaction(restore: false) # :nodoc:
+        if restore && @transaction_manager
+          return if @transaction_manager.restore_transactions
+        end
+
         @transaction_manager = ConnectionAdapters::TransactionManager.new(self)
       end
 

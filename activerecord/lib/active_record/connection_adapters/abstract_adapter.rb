@@ -89,16 +89,27 @@ module ActiveRecord
         @quoted_table_names ||= {}
       end
 
-      def initialize(connection, logger = nil, config = {}) # :nodoc:
+      def initialize(config_or_connection = {}, deprecated_logger = nil, deprecated_config = nil, model: ActiveRecord::Base) # :nodoc:
         super()
 
-        @connection          = connection
-        @owner               = nil
-        @instrumenter        = ActiveSupport::Notifications.instrumenter
-        @logger              = logger
-        @config              = config
-        @pool                = ActiveRecord::ConnectionAdapters::NullPool.new
-        @idle_since          = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        if config_or_connection.is_a?(Hash)
+          @connection = nil
+          @config = config_or_connection
+          @logger = model.logger
+
+          if deprecated_logger || deprecated_config
+            raise ArgumentError, "new API accepts just one config hash"
+          end
+        else
+          @connection = config_or_connection
+          @logger = deprecated_logger || model.logger
+          @config = deprecated_config
+        end
+
+        @owner = nil
+        @instrumenter = ActiveSupport::Notifications.instrumenter
+        @pool = ActiveRecord::ConnectionAdapters::NullPool.new
+        @idle_since = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         @visitor = arel_visitor
         @statements = build_statement_pool
         @lock = ActiveSupport::Concurrency::LoadInterlockAwareMonitor.new
@@ -112,6 +123,8 @@ module ActiveRecord
         )
 
         @default_timezone = self.class.validate_default_timezone(config[:default_timezone])
+
+        @raw_connection_dirty = false
       end
 
       EXCEPTION_NEVER = { Exception => :never }.freeze # :nodoc:
@@ -539,6 +552,12 @@ module ActiveRecord
       def active?
       end
 
+      def connect!(restore_transactions: false)
+        @raw_connection_dirty = false
+        clear_cache!
+        reset_transaction(restore: restore_transactions)
+      end
+
       # Disconnects from the database if already connected, and establishes a
       # new connection with the database. Implementors should call super if they
       # override the default implementation.
@@ -551,7 +570,6 @@ module ActiveRecord
       # method does nothing.
       def disconnect!
         clear_cache!
-        reset_transaction
       end
 
       # Immediately forget this connection ever existed. Unlike disconnect!,
@@ -611,6 +629,7 @@ module ActiveRecord
       # PostgreSQL's lo_* methods.
       def raw_connection
         disable_lazy_transactions!
+        @raw_connection_dirty = true
         @connection
       end
 
@@ -763,6 +782,35 @@ module ActiveRecord
       EXTENDED_TYPE_MAPS = Concurrent::Map.new
 
       private
+        MAX_RETRIES = 8
+        def with_raw_connection(allow_retry: false, materialize: true, mark_dirty: true)
+          permitted_retries = allow_retry ? MAX_RETRIES : 0
+
+          @lock.synchronize do
+            @connection ||= connect!(restore_transactions: true)
+
+            materialize_transactions if materialize
+
+            result = yield @connection
+
+            dirty_current_transaction if mark_dirty
+
+            result
+          rescue => ex
+            if retryable_error?(ex) && permitted_retries > 0
+              permitted_retries -= 1
+              disconnect!
+              retry
+            end
+
+            raise
+          end
+        end
+
+        def reconnect_can_restore_state?
+          transaction_manager.restorable? && !@raw_connection_dirty
+        end
+
         def extended_type_map_key
           if @default_timezone
             { default_timezone: @default_timezone }
@@ -789,7 +837,7 @@ module ActiveRecord
           exception
         end
 
-        def log(sql, name = "SQL", binds = [], type_casted_binds = [], statement_name = nil, async: false, &block) # :doc:
+        def log(sql, name = "SQL", binds = [], type_casted_binds = [], statement_name = nil, async: false) # :doc:
           @instrumenter.instrument(
             "sql.active_record",
             sql:               sql,
@@ -799,7 +847,7 @@ module ActiveRecord
             statement_name:    statement_name,
             async:             async,
             connection:        self) do
-            @lock.synchronize(&block)
+            yield
           rescue => e
             raise translate_exception_class(e, sql, binds)
           end

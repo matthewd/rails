@@ -80,6 +80,9 @@ module ActiveRecord
       def open?; false; end
       def joinable?; false; end
       def add_record(record, _ = true); end
+      def resettable?; false; end
+      def dirty?; false; end
+      def dirty!; end
     end
 
     class Transaction # :nodoc:
@@ -95,9 +98,19 @@ module ActiveRecord
         @joinable = joinable
         @run_commit_callbacks = run_commit_callbacks
         @lazy_enrollment_records = nil
+        @dirty = false
+      end
+
+      def dirty!
+        @dirty = true
+      end
+
+      def dirty?
+        @dirty
       end
 
       def add_record(record, ensure_finalize = true)
+        dirty!
         @records ||= []
         if ensure_finalize
           @records << record
@@ -115,12 +128,32 @@ module ActiveRecord
         @records
       end
 
+      # Can this transaction's current state be recreated by
+      # rollback+begin ?
+      def resettable?
+        joinable? && !isolation_level && !dirty?
+      end
+
+      def reset!
+        raise "Not resettable" unless resettable?
+
+        return unless materialized?
+
+        rollback
+        @state.nullify!
+        materialize!
+      end
+
       def materialize!
         @materialized = true
       end
 
       def materialized?
         @materialized
+      end
+
+      def restore!
+        @materialized = false
       end
 
       def rollback_records
@@ -166,6 +199,29 @@ module ActiveRecord
       def joinable?; @joinable; end
       def closed?; false; end
       def open?; !closed?; end
+    end
+
+    class ResetParentTransaction < Transaction
+      attr_reader :parent
+
+      def initialize(connection, parent)
+        super(connection)
+
+        @parent = parent
+
+        parent.state.add_child(@state)
+      end
+
+      delegate :materialize!, :materialized?, to: :@parent
+
+      def rollback
+        @state.rollback!
+        @parent.reset!
+      end
+
+      def commit
+        @state.commit!
+      end
     end
 
     class SavepointTransaction < Transaction
@@ -241,6 +297,8 @@ module ActiveRecord
                 joinable: joinable,
                 run_commit_callbacks: run_commit_callbacks
               )
+            elsif current_transaction.resettable? && isolation.nil? && joinable
+              ResetParentTransaction.new(@connection, current_transaction)
             else
               SavepointTransaction.new(
                 @connection,
@@ -273,6 +331,38 @@ module ActiveRecord
 
       def lazy_transactions_enabled?
         @lazy_transactions_enabled
+      end
+
+      def dirty_current_transaction
+        current_transaction.dirty!
+      end
+
+      def restore_transactions
+        return false unless restorable?
+
+        @stack.each(&:restore!)
+
+        materialize_transactions unless @lazy_transactions_enabled
+        
+        true
+      end
+
+      def restorable?
+        return false if @stack.any?(&:dirty?)
+
+        # TODO: is this necessary? SERIALIZABLE is obviously strict, but if
+        # we've never run an real query yet, I think we'd get serialized after
+        # any other potentially-conflicting transactions anyway?
+        return false if @stack.any?(&:isolation_level)
+
+        # TODO: written should be a subset of dirty, making this unneeded
+        return false if @stack.any?(&:written)
+
+        true
+      end
+
+      def all_clean?
+        !@stack.any?(&:dirty?)
       end
 
       def materialize_transactions
