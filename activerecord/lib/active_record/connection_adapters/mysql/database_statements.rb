@@ -69,8 +69,8 @@ module ActiveRecord
 
         def exec_delete(sql, name = nil, binds = []) # :nodoc:
           if without_prepared_statement?(binds)
-            @lock.synchronize do
-              execute_and_free(sql, name) { @raw_connection.affected_rows }
+            with_raw_connection do |conn|
+              execute_and_free(sql, name) { conn.affected_rows }
             end
           else
             exec_stmt_and_free(sql, name, binds) { |stmt| stmt.affected_rows }
@@ -176,29 +176,31 @@ module ActiveRecord
             type_casted_binds = type_casted_binds(binds)
 
             log(sql, name, binds, type_casted_binds, async: async) do
-              if cache_stmt
-                stmt = @statements[sql] ||= @raw_connection.prepare(sql)
-              else
-                stmt = @raw_connection.prepare(sql)
-              end
-
-              begin
-                result = ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-                  stmt.execute(*type_casted_binds)
-                end
-              rescue Mysql2::Error => e
+              with_raw_connection do |conn|
                 if cache_stmt
-                  @statements.delete(sql)
+                  stmt = @statements[sql] ||= conn.prepare(sql)
                 else
-                  stmt.close
+                  stmt = conn.prepare(sql)
                 end
-                raise e
-              end
 
-              ret = yield stmt, result
-              result.free if result
-              stmt.close unless cache_stmt
-              ret
+                begin
+                  result = ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
+                    stmt.execute(*type_casted_binds)
+                  end
+                rescue Mysql2::Error => e
+                  if cache_stmt
+                    @statements.delete(sql)
+                  else
+                    stmt.close
+                  end
+                  raise e
+                end
+
+                ret = yield stmt, result
+                result.free if result
+                stmt.close unless cache_stmt
+                ret
+              end
             end
           end
       end

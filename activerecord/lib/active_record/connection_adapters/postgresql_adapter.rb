@@ -769,7 +769,9 @@ module ActiveRecord
           type_casted_binds = type_casted_binds(binds)
           log(sql, name, binds, type_casted_binds, async: async) do
             ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-              @raw_connection.exec_params(sql, type_casted_binds)
+              with_raw_connection do |conn|
+                conn.exec_params(sql, type_casted_binds)
+              end
             end
           end
         end
@@ -783,7 +785,9 @@ module ActiveRecord
 
           log(sql, name, binds, type_casted_binds, stmt_key, async: async) do
             ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-              @raw_connection.exec_prepared(stmt_key, type_casted_binds)
+              with_raw_connection do |conn|
+                conn.exec_prepared(stmt_key, type_casted_binds)
+              end
             end
           end
         rescue ActiveRecord::StatementInvalid => e

@@ -15,7 +15,9 @@ module ActiveRecord
 
           log(sql, name) do
             ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-              @raw_connection.async_exec(sql).map_types!(@type_map_for_results).values
+              with_raw_connection do |conn|
+                conn.async_exec(sql).map_types!(@type_map_for_results).values
+              end
             end
           end
         end
@@ -43,7 +45,9 @@ module ActiveRecord
 
           log(sql, name) do
             ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-              @raw_connection.async_exec(sql)
+              with_raw_connection do |conn|
+                conn.async_exec(sql)
+              end
             end
           end
         end

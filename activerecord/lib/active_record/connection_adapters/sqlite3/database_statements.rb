@@ -28,7 +28,9 @@ module ActiveRecord
 
           log(sql, name) do
             ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-              @raw_connection.execute(sql)
+              with_raw_connection do |conn|
+                conn.execute(sql)
+              end
             end
           end
         end
@@ -43,27 +45,29 @@ module ActiveRecord
 
           log(sql, name, binds, type_casted_binds, async: async) do
             ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-              # Don't cache statements if they are not prepared
-              unless prepare
-                stmt = @raw_connection.prepare(sql)
-                begin
-                  cols = stmt.columns
-                  unless without_prepared_statement?(binds)
-                    stmt.bind_params(type_casted_binds)
+              with_raw_connection do |conn|
+                # Don't cache statements if they are not prepared
+                unless prepare
+                  stmt = conn.prepare(sql)
+                  begin
+                    cols = stmt.columns
+                    unless without_prepared_statement?(binds)
+                      stmt.bind_params(type_casted_binds)
+                    end
+                    records = stmt.to_a
+                  ensure
+                    stmt.close
                   end
+                else
+                  stmt = @statements[sql] ||= conn.prepare(sql)
+                  cols = stmt.columns
+                  stmt.reset!
+                  stmt.bind_params(type_casted_binds)
                   records = stmt.to_a
-                ensure
-                  stmt.close
                 end
-              else
-                stmt = @statements[sql] ||= @raw_connection.prepare(sql)
-                cols = stmt.columns
-                stmt.reset!
-                stmt.bind_params(type_casted_binds)
-                records = stmt.to_a
-              end
 
-              build_result(columns: cols, rows: records)
+                build_result(columns: cols, rows: records)
+              end
             end
           end
         end
@@ -84,16 +88,28 @@ module ActiveRecord
         end
 
         def begin_db_transaction # :nodoc:
-          log("begin transaction", "TRANSACTION") { @raw_connection.transaction }
+          log("begin transaction", "TRANSACTION") do
+            with_raw_connection do |conn|
+              conn.transaction
+            end
+          end
         end
 
         def commit_db_transaction # :nodoc:
-          log("commit transaction", "TRANSACTION") { @raw_connection.commit }
+          log("commit transaction", "TRANSACTION") do
+            with_raw_connection do |conn|
+              conn.commit
+            end
+          end
           reset_read_uncommitted
         end
 
         def exec_rollback_db_transaction # :nodoc:
-          log("rollback transaction", "TRANSACTION") { @raw_connection.rollback }
+          log("rollback transaction", "TRANSACTION") do
+            with_raw_connection do |conn|
+              conn.rollback
+            end
+          end
           reset_read_uncommitted
         end
 
@@ -124,7 +140,9 @@ module ActiveRecord
 
             log(sql, name) do
               ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-                @raw_connection.execute_batch2(sql)
+                with_raw_connection do |conn|
+                  conn.execute_batch2(sql)
+                end
               end
             end
           end
