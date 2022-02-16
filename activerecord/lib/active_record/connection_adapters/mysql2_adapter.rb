@@ -124,10 +124,10 @@ module ActiveRecord
         @raw_connection.ping
       end
 
-      def reconnect!
-        super
+      def reconnect!(restore_transactions: false)
         disconnect!
         connect
+        super
       end
       alias :reset! :reconnect!
 

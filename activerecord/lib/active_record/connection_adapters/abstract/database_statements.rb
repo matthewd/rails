@@ -330,7 +330,11 @@ module ActiveRecord
         current_transaction.open?
       end
 
-      def reset_transaction # :nodoc:
+      def reset_transaction(restore: false) # :nodoc:
+        if restore && @transaction_manager
+          return if @transaction_manager.restore_transactions
+        end
+
         @transaction_manager = ConnectionAdapters::TransactionManager.new(self)
       end
 

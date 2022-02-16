@@ -164,12 +164,13 @@ module ActiveRecord
         !@raw_connection.closed?
       end
 
-      def reconnect!
-        unless @raw_connection.closed?
+      def reconnect!(restore_transactions: false)
+        if @raw_connection.closed?
+          connect
+        else
           @raw_connection.rollback rescue nil
         end
         super
-        connect if @raw_connection.closed?
       end
 
       # Disconnects from the database if already connected. Otherwise, this

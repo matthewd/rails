@@ -112,6 +112,8 @@ module ActiveRecord
         )
 
         @default_timezone = self.class.validate_default_timezone(config[:default_timezone])
+
+        @raw_connection_dirty = false
       end
 
       EXCEPTION_NEVER = { Exception => :never }.freeze # :nodoc:
@@ -552,16 +554,15 @@ module ActiveRecord
       # Disconnects from the database if already connected, and establishes a
       # new connection with the database. Implementors should call super if they
       # override the default implementation.
-      def reconnect!
+      def reconnect!(restore_transactions: false)
         clear_cache!(new_connection: true)
-        reset_transaction
+        reset_transaction(restore: restore_transactions)
       end
 
       # Disconnects from the database if already connected. Otherwise, this
       # method does nothing.
       def disconnect!
         clear_cache!(new_connection: true)
-        reset_transaction
       end
 
       # Immediately forget this connection ever existed. Unlike disconnect!,
@@ -629,6 +630,7 @@ module ActiveRecord
       # PostgreSQL's lo_* methods.
       def raw_connection
         disable_lazy_transactions!
+        @raw_connection_dirty = true
         @raw_connection
       end
 
@@ -781,6 +783,10 @@ module ActiveRecord
       EXTENDED_TYPE_MAPS = Concurrent::Map.new
 
       private
+        def reconnect_can_restore_state?
+          transaction_manager.restorable? && !@raw_connection_dirty
+        end
+
         def extended_type_map_key
           if @default_timezone
             { default_timezone: @default_timezone }

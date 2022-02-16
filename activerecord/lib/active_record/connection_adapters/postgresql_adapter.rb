@@ -323,7 +323,7 @@ module ActiveRecord
       end
 
       # Close then reopen the connection.
-      def reconnect!
+      def reconnect!(restore_transactions: false)
         @lock.synchronize do
           @raw_connection.reset
           super
