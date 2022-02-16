@@ -293,6 +293,8 @@ module ActiveRecord
 
       def begin_transaction(isolation: nil, joinable: true, _lazy: true)
         @connection.lock.synchronize do
+          finalize_floating_transaction
+
           run_commit_callbacks = !current_transaction.joinable?
           transaction =
             if @stack.empty?
@@ -358,21 +360,47 @@ module ActiveRecord
         # themselves.
         dirty_current_transaction
 
-        return unless @has_unmaterialized_transactions
+        return unless @has_unmaterialized_transactions || @floating_transaction
 
         @connection.lock.synchronize do
-          begin
-            @materializing_transactions = true
-            @stack.each { |t| t.materialize! unless t.materialized? }
-          ensure
-            @materializing_transactions = false
+          finalize_floating_transaction
+
+          if @has_unmaterialized_transactions
+            begin
+              @materializing_transactions = true
+              @stack.each { |t| t.materialize! unless t.materialized? }
+            ensure
+              @materializing_transactions = false
+            end
+            @has_unmaterialized_transactions = false
           end
-          @has_unmaterialized_transactions = false
         end
+      end
+
+      def finalize_floating_transaction
+        return unless @floating_transaction
+
+        case @floating_operation
+        when :rollback
+          @floating_transaction.rollback
+        when :commit
+          @floating_transaction.commit
+        end
+
+        @floating_transaction = @floating_operation = nil
       end
 
       def commit_transaction
         @connection.lock.synchronize do
+          if @floating_transaction
+            if @floating_operation == :rollback
+              @floating_transaction.rollback
+            end
+
+            # no further action required; just forget about it
+            @floating_transaction = @floating_operation = nil
+          end
+
           transaction = @stack.last
 
           begin
@@ -383,15 +411,34 @@ module ActiveRecord
 
           dirty_current_transaction if transaction.dirty?
 
-          transaction.commit
+          if @stack.last&.joinable? && transaction.materialized? && @connection.supports_lazy_transactions? && lazy_transactions_enabled?
+            @floating_transaction = transaction
+            @floating_operation = :commit
+          else
+            transaction.commit
+          end
+
           transaction.commit_records
         end
       end
 
       def rollback_transaction(transaction = nil)
         @connection.lock.synchronize do
+          if @floating_transaction
+            # no action required; the nested transaction will be discarded along
+            # with the current one
+            @floating_transaction = @floating_operation = nil
+          end
+
           transaction ||= @stack.pop
-          transaction.rollback
+
+          if @stack.last&.joinable? && transaction.materialized? && @connection.supports_lazy_transactions? && lazy_transactions_enabled?
+            @floating_transaction = transaction
+            @floating_operation = :rollback
+          else
+            transaction.rollback
+          end
+
           transaction.rollback_records
         end
       end
