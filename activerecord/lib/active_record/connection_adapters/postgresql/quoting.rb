@@ -6,14 +6,22 @@ module ActiveRecord
       module Quoting
         # Escapes binary strings for bytea input to the database.
         def escape_bytea(value)
-          @raw_connection.escape_bytea(value) if value
+          if value
+            with_raw_connection(allow_retry: true, uses_transaction: false) do |conn|
+              conn.escape_bytea(value)
+            end
+          end
         end
 
         # Unescapes bytea output from a database to the binary string it represents.
         # NOTE: This is NOT an inverse of escape_bytea! This is only to be used
         # on escaped binary output from database drive.
         def unescape_bytea(value)
-          @raw_connection.unescape_bytea(value) if value
+          if value
+            with_raw_connection(allow_retry: true, uses_transaction: false) do |conn|
+              conn.unescape_bytea(value)
+            end
+          end
         end
 
         def quote(value) # :nodoc:

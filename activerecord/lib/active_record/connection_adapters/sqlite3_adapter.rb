@@ -161,15 +161,16 @@ module ActiveRecord
       end
 
       def active?
-        !@raw_connection.closed?
+        @raw_connection && !@raw_connection.closed?
       end
 
       def reconnect!(restore_transactions: false)
-        if @raw_connection.closed?
-          connect
-        else
+        if active?
           @raw_connection.rollback rescue nil
+        else
+          connect
         end
+
         super
       end
 
@@ -177,7 +178,9 @@ module ActiveRecord
       # method does nothing.
       def disconnect!
         super
-        @raw_connection.close rescue nil
+
+        @raw_connection&.close rescue nil
+        @raw_connection = nil
       end
 
       def supports_index_sort_order?
@@ -190,7 +193,9 @@ module ActiveRecord
 
       # Returns the current database encoding format as a string, e.g. 'UTF-8'
       def encoding
-        @raw_connection.encoding.to_s
+        with_raw_connection(allow_retry: true, uses_transaction: false) do |conn|
+          conn.encoding.to_s
+        end
       end
 
       def supports_explain?

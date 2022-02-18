@@ -10,21 +10,7 @@ module ActiveRecord
   module ConnectionHandling # :nodoc:
     # Establishes a connection to the database that's used by all Active Record objects.
     def mysql2_connection(config)
-      config = config.symbolize_keys
-      config[:flags] ||= 0
-
-      if config[:flags].kind_of? Array
-        config[:flags].push "FOUND_ROWS"
-      else
-        config[:flags] |= Mysql2::Client::FOUND_ROWS
-      end
-
-      ConnectionAdapters::Mysql2Adapter.new(
-        ConnectionAdapters::Mysql2Adapter.new_client(config),
-        logger,
-        nil,
-        config,
-      )
+      ConnectionAdapters::Mysql2Adapter.new(config)
     end
   end
 
@@ -55,17 +41,21 @@ module ActiveRecord
         end
       end
 
-      def initialize(connection, logger, connection_options, config)
-        check_prepared_statements_deprecation(config)
-        superclass_config = config.reverse_merge(prepared_statements: false)
-        super(connection, logger, connection_options, superclass_config)
-        configure_connection
-      end
+      def initialize(*)
+        super
 
-      def self.database_exists?(config)
-        !!ActiveRecord::Base.mysql2_connection(config)
-      rescue ActiveRecord::NoDatabaseError
-        false
+        @config[:flags] ||= 0
+
+        if @config[:flags].kind_of? Array
+          @config[:flags].push "FOUND_ROWS"
+        else
+          @config[:flags] |= Mysql2::Client::FOUND_ROWS
+        end
+
+        check_prepared_statements_deprecation(@config)
+        @config[:prepared_statements] = false unless @config.key?(:prepared_statements)
+
+        configure_connection if @raw_connection
       end
 
       def supports_json?
@@ -111,7 +101,9 @@ module ActiveRecord
       #++
 
       def quote_string(string)
-        @raw_connection.escape(string)
+        with_raw_connection(allow_retry: true, uses_transaction: false) do |conn|
+          conn.escape(string)
+        end
       rescue Mysql2::Error => error
         raise translate_exception(error, message: error.message, sql: "<escape>", binds: [])
       end
@@ -121,13 +113,15 @@ module ActiveRecord
       #++
 
       def active?
-        @raw_connection.ping
+        !!@raw_connection&.ping
       end
 
       def reconnect!(restore_transactions: false)
-        disconnect!
-        connect
-        super
+        @lock.synchronize do
+          disconnect!
+          connect
+          super
+        end
       end
       alias :reset! :reconnect!
 
@@ -135,12 +129,13 @@ module ActiveRecord
       # Otherwise, this method does nothing.
       def disconnect!
         super
-        @raw_connection.close
+        @raw_connection&.close
+        @raw_connection = nil
       end
 
       def discard! # :nodoc:
         super
-        @raw_connection.automatic_close = false
+        @raw_connection&.automatic_close = false
         @raw_connection = nil
       end
 
@@ -160,6 +155,7 @@ module ActiveRecord
 
         def configure_connection
           @raw_connection.query_options[:as] = :array
+          @raw_connection.query_options[:database_timezone] = default_timezone
           super
         end
 
@@ -168,7 +164,9 @@ module ActiveRecord
         end
 
         def get_full_version
-          @raw_connection.server_info[:version]
+          with_raw_connection(allow_retry: true, uses_transaction: false) do |conn|
+            conn.server_info[:version]
+          end
         end
 
         def translate_exception(exception, message:, sql:, binds:)

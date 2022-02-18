@@ -24,13 +24,9 @@ module ActiveRecord
           sql = transform_query(sql)
           check_if_write_query(sql)
 
-          materialize_transactions
-
           log(sql, name) do
-            ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-              with_raw_connection do |conn|
-                conn.execute(sql)
-              end
+            with_raw_connection do |conn|
+              conn.execute(sql)
             end
           end
         end
@@ -39,35 +35,31 @@ module ActiveRecord
           sql = transform_query(sql)
           check_if_write_query(sql)
 
-          materialize_transactions
-
           type_casted_binds = type_casted_binds(binds)
 
           log(sql, name, binds, type_casted_binds, async: async) do
-            ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-              with_raw_connection do |conn|
-                # Don't cache statements if they are not prepared
-                unless prepare
-                  stmt = conn.prepare(sql)
-                  begin
-                    cols = stmt.columns
-                    unless without_prepared_statement?(binds)
-                      stmt.bind_params(type_casted_binds)
-                    end
-                    records = stmt.to_a
-                  ensure
-                    stmt.close
-                  end
-                else
-                  stmt = @statements[sql] ||= conn.prepare(sql)
+            with_raw_connection do |conn|
+              # Don't cache statements if they are not prepared
+              unless prepare
+                stmt = conn.prepare(sql)
+                begin
                   cols = stmt.columns
-                  stmt.reset!
-                  stmt.bind_params(type_casted_binds)
+                  unless without_prepared_statement?(binds)
+                    stmt.bind_params(type_casted_binds)
+                  end
                   records = stmt.to_a
+                ensure
+                  stmt.close
                 end
-
-                build_result(columns: cols, rows: records)
+              else
+                stmt = @statements[sql] ||= conn.prepare(sql)
+                cols = stmt.columns
+                stmt.reset!
+                stmt.bind_params(type_casted_binds)
+                records = stmt.to_a
               end
+
+              build_result(columns: cols, rows: records)
             end
           end
         end
@@ -136,13 +128,9 @@ module ActiveRecord
 
             check_if_write_query(sql)
 
-            materialize_transactions
-
             log(sql, name) do
-              ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-                with_raw_connection do |conn|
-                  conn.execute_batch2(sql)
-                end
+              with_raw_connection do |conn|
+                conn.execute_batch2(sql)
               end
             end
           end

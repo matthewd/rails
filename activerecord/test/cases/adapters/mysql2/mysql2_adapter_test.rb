@@ -13,7 +13,7 @@ class Mysql2AdapterTest < ActiveRecord::Mysql2TestCase
 
   def test_connection_error
     assert_raises ActiveRecord::ConnectionNotEstablished do
-      ActiveRecord::Base.mysql2_connection(socket: File::NULL)
+      ActiveRecord::Base.mysql2_connection(socket: File::NULL, prepared_statements: false).connect!
     end
   end
 
@@ -32,7 +32,6 @@ class Mysql2AdapterTest < ActiveRecord::Mysql2TestCase
     @conn = ActiveRecord::ConnectionAdapters::Mysql2Adapter.new(
       fake_connection,
       ActiveRecord::Base.logger,
-      nil,
       { socket: File::NULL, prepared_statements: false }
     )
     assert_raises ActiveRecord::ConnectionNotEstablished do
@@ -57,7 +56,6 @@ class Mysql2AdapterTest < ActiveRecord::Mysql2TestCase
       ActiveRecord::ConnectionAdapters::Mysql2Adapter.new(
         fake_connection,
         ActiveRecord::Base.logger,
-        nil,
         { socket: File::NULL }
       )
     end
@@ -66,7 +64,6 @@ class Mysql2AdapterTest < ActiveRecord::Mysql2TestCase
       ActiveRecord::ConnectionAdapters::Mysql2Adapter.new(
         fake_connection,
         ActiveRecord::Base.logger,
-        nil,
         { socket: File::NULL, prepared_statements: false }
       )
     end

@@ -383,16 +383,15 @@ module ActiveRecord
         return unless @has_unmaterialized_transactions || @floating_transaction
 
         @connection.lock.synchronize do
-          finalize_floating_transaction
-
-          if @has_unmaterialized_transactions
-            begin
-              @materializing_transactions = true
+          begin
+            @materializing_transactions = true
+            finalize_floating_transaction
+            if @has_unmaterialized_transactions
               @stack.each { |t| t.materialize! unless t.materialized? }
-            ensure
-              @materializing_transactions = false
+              @has_unmaterialized_transactions = false
             end
-            @has_unmaterialized_transactions = false
+          ensure
+            @materializing_transactions = false
           end
         end
       end
@@ -431,7 +430,7 @@ module ActiveRecord
 
           dirty_current_transaction if transaction.dirty?
 
-          if @stack.last&.joinable? && transaction.materialized? && @connection.supports_lazy_transactions? && lazy_transactions_enabled?
+          if @stack.last&.joinable? && transaction.materialized? && @connection.allow_floating_transaction? && lazy_transactions_enabled?
             @floating_transaction = transaction
             @floating_operation = :commit
           else
@@ -452,7 +451,7 @@ module ActiveRecord
 
           transaction ||= @stack.pop
 
-          if @stack.last&.joinable? && transaction.materialized? && @connection.supports_lazy_transactions? && lazy_transactions_enabled?
+          if @stack.last&.joinable? && transaction.materialized? && @connection.allow_floating_transaction? && lazy_transactions_enabled?
             @floating_transaction = transaction
             @floating_operation = :rollback
           else
@@ -483,6 +482,8 @@ module ActiveRecord
         ensure
           if transaction
             if error
+              # FIXME: Floating transaction won't be rolled back yet
+
               # @connection still holds an open or invalid transaction, so we must not
               # put it back in the pool for reuse.
               @connection.throw_away! unless transaction.state.rolledback?

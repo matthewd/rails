@@ -113,7 +113,7 @@ if ActiveRecord::Base.connection.supports_views?
     end
 
     teardown do
-      @connection.execute "DROP VIEW paperbacks" if @connection.view_exists? "paperbacks"
+      @connection.execute "DROP VIEW paperbacks" if @connection&.view_exists? "paperbacks"
     end
 
     def test_reading

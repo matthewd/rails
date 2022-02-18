@@ -6,12 +6,15 @@ module ActiveRecord
       module DatabaseStatements
         # Returns an ActiveRecord::Result instance.
         def select_all(*, **) # :nodoc:
-          result = if ExplainRegistry.collect? && prepared_statements
-            unprepared_statement { super }
-          else
-            super
+          result = nil
+          with_raw_connection do |conn|
+            result = if ExplainRegistry.collect? && prepared_statements
+              unprepared_statement { super }
+            else
+              super
+            end
+            conn.abandon_results!
           end
-          @raw_connection.abandon_results!
           result
         end
 
@@ -37,14 +40,6 @@ module ActiveRecord
           elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start
 
           MySQL::ExplainPrettyPrinter.new.pp(result, elapsed)
-        end
-
-        # Executes the SQL statement in the context of this connection.
-        def execute(sql, name = nil, async: false)
-          sql = transform_query(sql)
-          check_if_write_query(sql)
-
-          raw_execute(sql, name, async: async)
         end
 
         def exec_query(sql, name = "SQL", binds = [], prepare: false, async: false) # :nodoc:
@@ -88,19 +83,25 @@ module ActiveRecord
         end
 
         private
-          def raw_execute(sql, name, async: false)
-            # make sure we carry over any changes to ActiveRecord.default_timezone that have been
-            # made since we established the connection
-            @raw_connection.query_options[:database_timezone] = default_timezone
+          def raw_execute(sql, name, async: false, allow_retry: false, uses_transaction: true)
+            log(sql, name, async: async) do
+              with_raw_connection(allow_retry: allow_retry, uses_transaction: uses_transaction) do |conn|
+                # make sure we carry over any changes to ActiveRecord.default_timezone that have been
+                # made since we established the connection
+                conn.query_options[:database_timezone] = default_timezone
 
-            super
+                conn.query(sql)
+              end
+            end
           end
 
           def execute_batch(statements, name = nil)
             statements = statements.map { |sql| transform_query(sql) }
             combine_multi_statements(statements).each do |statement|
-              raw_execute(statement, name)
-              @raw_connection.abandon_results!
+              with_raw_connection do |conn|
+                raw_execute(statement, name)
+                conn.abandon_results!
+              end
             end
           end
 
@@ -109,7 +110,7 @@ module ActiveRecord
           end
 
           def last_inserted_id(result)
-            @raw_connection.last_id
+            with_raw_connection(&:last_id)
           end
 
           def multi_statements_enabled?
@@ -126,13 +127,17 @@ module ActiveRecord
             multi_statements_was = multi_statements_enabled?
 
             unless multi_statements_was
-              @raw_connection.set_server_option(Mysql2::Client::OPTION_MULTI_STATEMENTS_ON)
+              with_raw_connection do |conn|
+                conn.set_server_option(Mysql2::Client::OPTION_MULTI_STATEMENTS_ON)
+              end
             end
 
             yield
           ensure
             unless multi_statements_was
-              @raw_connection.set_server_option(Mysql2::Client::OPTION_MULTI_STATEMENTS_OFF)
+              with_raw_connection do |conn|
+                conn.set_server_option(Mysql2::Client::OPTION_MULTI_STATEMENTS_OFF)
+              end
             end
           end
 
@@ -167,16 +172,14 @@ module ActiveRecord
             sql = transform_query(sql)
             check_if_write_query(sql)
 
-            materialize_transactions
-
-            # make sure we carry over any changes to ActiveRecord.default_timezone that have been
-            # made since we established the connection
-            @raw_connection.query_options[:database_timezone] = default_timezone
-
             type_casted_binds = type_casted_binds(binds)
 
             log(sql, name, binds, type_casted_binds, async: async) do
               with_raw_connection do |conn|
+                # make sure we carry over any changes to ActiveRecord.default_timezone that have been
+                # made since we established the connection
+                conn.query_options[:database_timezone] = default_timezone
+
                 if cache_stmt
                   stmt = @statements[sql] ||= conn.prepare(sql)
                 else

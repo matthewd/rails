@@ -89,29 +89,40 @@ module ActiveRecord
         @quoted_table_names ||= {}
       end
 
-      def initialize(connection, logger = nil, config = {}) # :nodoc:
+      def initialize(config_or_connection = {}, deprecated_logger = nil, deprecated_config = nil, model: ActiveRecord::Base) # :nodoc:
         super()
 
-        @raw_connection      = connection
-        @owner               = nil
-        @instrumenter        = ActiveSupport::Notifications.instrumenter
-        @logger              = logger
-        @config              = config
-        @pool                = ActiveRecord::ConnectionAdapters::NullPool.new
-        @idle_since          = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        if config_or_connection.is_a?(Hash)
+          @raw_connection = nil
+          @config = config_or_connection.symbolize_keys
+          @logger = model.logger
+
+          if deprecated_logger || deprecated_config
+            raise ArgumentError, "new API accepts just one config hash"
+          end
+        else
+          @raw_connection = config_or_connection
+          @logger = deprecated_logger || model.logger
+          @config = (deprecated_config || {}).symbolize_keys
+        end
+
+        @owner = nil
+        @instrumenter = ActiveSupport::Notifications.instrumenter
+        @pool = ActiveRecord::ConnectionAdapters::NullPool.new
+        @idle_since = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         @visitor = arel_visitor
         @statements = build_statement_pool
         @lock = ActiveSupport::Concurrency::LoadInterlockAwareMonitor.new
 
         @prepared_statements = self.class.type_cast_config_to_boolean(
-          config.fetch(:prepared_statements, true)
+          @config.fetch(:prepared_statements, true)
         )
 
         @advisory_locks_enabled = self.class.type_cast_config_to_boolean(
-          config.fetch(:advisory_locks, true)
+          @config.fetch(:advisory_locks, true)
         )
 
-        @default_timezone = self.class.validate_default_timezone(config[:default_timezone])
+        @default_timezone = self.class.validate_default_timezone(@config[:default_timezone])
 
         @raw_connection_dirty = false
       end
@@ -320,7 +331,9 @@ module ActiveRecord
 
       # Does the database for this adapter exist?
       def self.database_exists?(config)
-        raise NotImplementedError
+        !!new(config).connect!
+      rescue ActiveRecord::NoDatabaseError
+        false
       end
 
       # Does this adapter support DDL rollbacks in transactions? That is, would
@@ -473,6 +486,12 @@ module ActiveRecord
         false
       end
 
+      def allow_floating_transaction?
+        # XXX
+        supports_lazy_transactions?
+        false
+      end
+
       def supports_insert_returning?
         false
       end
@@ -558,6 +577,17 @@ module ActiveRecord
       def active?
       end
 
+      def connect!(restore_transactions: false)
+        @lock.synchronize do
+          connect
+          @raw_connection_dirty = false
+          @verified = true
+          clear_cache!(new_connection: true)
+          reset_transaction(restore: restore_transactions)
+        end
+        self
+      end
+
       # Disconnects from the database if already connected, and establishes a
       # new connection with the database. Implementors should call super if they
       # override the default implementation.
@@ -572,6 +602,7 @@ module ActiveRecord
       # method does nothing.
       def disconnect!
         clear_cache!(new_connection: true)
+        reset_transaction
       end
 
       # Immediately forget this connection ever existed. Unlike disconnect!,
@@ -639,9 +670,11 @@ module ActiveRecord
       # This is useful for when you need to call a proprietary method such as
       # PostgreSQL's lo_* methods.
       def raw_connection
-        disable_lazy_transactions!
-        @raw_connection_dirty = true
-        @raw_connection
+        with_raw_connection do |conn|
+          disable_lazy_transactions!
+          @raw_connection_dirty = true
+          conn
+        end
       end
 
       def default_uniqueness_comparison(attribute, value) # :nodoc:
@@ -805,17 +838,13 @@ module ActiveRecord
         # cause an automatic reconnect and re-run of the block, up to
         # the connection's configured +connection_retries+ setting.
         #
-        # If +materialize+ is false, the block will be run without
-        # ensuring virtual transactions have been reflected in the DB
-        # server's state. (This should only be used by transaction
-        # control methods themselves, and optionally internal
-        # transaction-agnostic queries.)
-        #
-        # If +mark_dirty+ is false, the active transaction will remain
-        # clean (if it is not already dirty), meaning it's able to be
-        # restored by reconnecting and opening an equivalent-depth set
-        # of new transaction. (This should only be used by transaction
-        # control methods, and internal transaction-agnostic queries.)
+        # If +uses_transaction+ is false, the block will be run without
+        # ensuring virtual transactions have been materialized in the DB
+        # server's state. The active transaction will also remain clean
+        # (if it is not already dirty), meaning it's able to be restored
+        # by reconnecting and opening an equivalent-depth set of new
+        # transactions. This should only be used by transaction control
+        # methods, and internal transaction-agnostic queries.
         #
         ###
         #
@@ -829,22 +858,24 @@ module ActiveRecord
         # still-yielded connection in the outer block), but we currently
         # provide no special enforcement there.
         #
-        def with_raw_connection(allow_retry: false, materialize: true, mark_dirty: true)
+        def with_raw_connection(allow_retry: false, uses_transaction: true)
           @lock.synchronize do
-            materialize_transactions if materialize
+            connect!(restore_transactions: true) if @raw_connection.nil?
+
+            materialize_transactions if uses_transaction
 
             retries_available = 0
 
             if reconnect_can_restore_state?
               if allow_retry
                 retries_available = connection_retries
-              elsif verify && !verified
+              elsif !verified
                 verify!
               end
             end
 
             begin
-              result = yield @connection
+              result = yield @raw_connection
               @verified = true
               result
             rescue => ex
@@ -856,7 +887,7 @@ module ActiveRecord
 
               raise
             ensure
-              dirty_current_transaction if mark_dirty
+              dirty_current_transaction if uses_transaction
             end
           end
         end
@@ -917,7 +948,7 @@ module ActiveRecord
         def translate_exception(exception, message:, sql:, binds:)
           # override in derived class
           case exception
-          when RuntimeError
+          when RuntimeError, ActiveRecord::ActiveRecordError
             exception
           else
             ActiveRecord::StatementInvalid.new(message, sql: sql, binds: binds)
