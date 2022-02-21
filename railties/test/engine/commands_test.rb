@@ -8,7 +8,7 @@ class Rails::Engine::CommandsTest < ActiveSupport::TestCase
 
   def setup
     @destination_root = Dir.mktmpdir("bukkits")
-    Dir.chdir(@destination_root) { `bundle exec rails plugin new bukkits --mountable` }
+    Dir.chdir(@destination_root) { `#{defined?(::Gel) ? "gel" : "bundle"} exec rails plugin new bukkits --mountable` }
   end
 
   def teardown

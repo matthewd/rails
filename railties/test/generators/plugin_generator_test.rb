@@ -282,7 +282,7 @@ class PluginGeneratorTest < Rails::Generators::TestCase
   def test_ensure_that_migration_tasks_work_with_mountable_option
     run_generator [destination_root, "--mountable"]
     FileUtils.cd destination_root
-    quietly { system "bundle install" }
+    quietly { system "#{bundle_or_gel} install" }
     output = `bin/rails db:migrate 2>&1`
     assert $?.success?, "Command failed: #{output}"
   end

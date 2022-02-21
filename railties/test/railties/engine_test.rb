@@ -32,6 +32,10 @@ module RailtiesTest
       require "#{app_path}/config/environment"
     end
 
+    def bundle_or_gel
+      defined?(::Gel) ? "gel" : "bundle"
+    end
+
     def migrations
       migration_root = File.expand_path(ActiveRecord::Migrator.migrations_paths.first, app_path)
       ActiveRecord::MigrationContext.new(migration_root, ActiveRecord::SchemaMigration).migrations
@@ -59,7 +63,7 @@ module RailtiesTest
       RUBY
 
       Dir.chdir(@plugin.path) do
-        output = `bundle exec rake foo`
+        output = `#{bundle_or_gel} exec rake foo`
         assert_match "Task ran", output
       end
     end
@@ -91,7 +95,7 @@ module RailtiesTest
       boot_rails
 
       Dir.chdir(app_path) do
-        output = `bundle exec rake bukkits:install:migrations`
+        output = `#{bundle_or_gel} exec rake bukkits:install:migrations`
 
         ["CreateUsers", "AddLastNameToUsers", "CreateSessions"].each do |migration_name|
           assert migrations.detect { |migration| migration.name == migration_name }
@@ -104,7 +108,7 @@ module RailtiesTest
 
         assert_equal migrations.length, migrations_count
 
-        output = `bundle exec rake railties:install:migrations`.split("\n")
+        output = `#{bundle_or_gel} exec rake railties:install:migrations`.split("\n")
 
         assert_equal migrations_count, Dir["#{app_path}/db/migrate/*.rb"].length
 
@@ -140,7 +144,7 @@ module RailtiesTest
       boot_rails
 
       Dir.chdir(app_path) do
-        output = `bundle exec rake railties:install:migrations`.split("\n")
+        output = `#{bundle_or_gel} exec rake railties:install:migrations`.split("\n")
 
         assert_match(/Copied migration \d+_create_users\.bukkits\.rb from bukkits/, output.first)
         assert_match(/Copied migration \d+_create_blogs\.blog_engine\.rb from blog_engine/, output.second)
@@ -177,7 +181,7 @@ module RailtiesTest
       boot_rails
 
       Dir.chdir(app_path) do
-        output = `bundle exec rake railties:install:migrations`.split("\n")
+        output = `#{bundle_or_gel} exec rake railties:install:migrations`.split("\n")
 
         assert_match(/Copied migration \d+_create_users\.core_engine\.rb from core_engine/, output.first)
         assert_match(/Copied migration \d+_create_keys\.api_engine\.rb from api_engine/, output.second)
@@ -208,7 +212,7 @@ module RailtiesTest
       boot_rails
 
       Dir.chdir(@plugin.path) do
-        output = `bundle exec rake app:bukkits:install:migrations`
+        output = `#{bundle_or_gel} exec rake app:bukkits:install:migrations`
 
         migration_with_engine_path = migrations.detect { |migration| migration.name == "AddFirstNameToUsers" }
         assert migration_with_engine_path
@@ -1644,7 +1648,7 @@ en:
       RUBY
 
       Dir.chdir(@plugin.path) do
-        output = `bundle exec rake app:active_storage:install`
+        output = `#{bundle_or_gel} exec rake app:active_storage:install`
         assert $?.success?, output
 
         active_storage_migration = migrations.detect { |migration| migration.name == "CreateActiveStorageTables" }
@@ -1659,7 +1663,7 @@ en:
       RUBY
 
       Dir.chdir(@plugin.path) do
-        output = `bundle exec rake app:active_storage:update`
+        output = `#{bundle_or_gel} exec rake app:active_storage:update`
         assert $?.success?, output
 
         assert migrations.detect { |migration| migration.name == "AddServiceNameToActiveStorageBlobs" }

@@ -32,6 +32,7 @@ module ActiveSupport
     def initialize
       @filters, @silencers = [], []
       add_gem_filter
+      add_gel_filter
       add_gem_silencer
       add_stdlib_silencer
     end
@@ -94,6 +95,14 @@ module ActiveSupport
         gems_regexp = %r{\A(#{gems_paths.join('|')})/(bundler/)?gems/([^/]+)-([\w.]+)/(.*)}
         gems_result = '\3 (\4) \5'
         add_filter { |line| line.sub(gems_regexp, gems_result) }
+      end
+
+      def add_gel_filter
+        return unless defined?(::Gel.self_location)
+
+        gel_regexp = %r{\A#{Regexp.escape(Gel.self_location)}/(.*)}
+        gel_result = "gel (#{Gel::VERSION}) \\1"
+        add_filter { |line| line.sub(gel_regexp, gel_result) }
       end
 
       def add_gem_silencer

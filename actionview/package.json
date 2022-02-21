@@ -10,7 +10,7 @@
     "test": "test"
   },
   "scripts": {
-    "build": "bundle exec blade build",
+    "build": "bin/blade build",
     "test": "echo \"See the README: https://github.com/rails/rails/blob/main/actionview/app/assets/javascripts#how-to-run-tests\" && exit 1",
     "lint": "coffeelint app/assets/javascripts && eslint test/ujs/public/test"
   },

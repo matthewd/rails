@@ -102,6 +102,14 @@ class BacktraceCleanerDefaultFilterAndSilencerTest < ActiveSupport::TestCase
     assert_equal "nosuchgem (1.2.3) lib/foo.rb", result[0]
   end
 
+  if defined?(::Gel.self_location)
+    test "should format files belonging to gel" do
+      backtrace = [ "#{Gel.self_location}/lib/gel/foo.rb" ]
+      result = @bc.clean(backtrace, :all)
+      assert_equal "gel (#{Gel::VERSION}) lib/gel/foo.rb", result[0]
+    end
+  end
+
   test "should silence gems from the backtrace" do
     backtrace = [ "#{Gem.path[0]}/gems/nosuchgem-1.2.3/lib/foo.rb" ]
     result = @bc.clean(backtrace)

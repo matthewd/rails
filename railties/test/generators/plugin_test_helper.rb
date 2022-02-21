@@ -4,6 +4,10 @@ require "abstract_unit"
 require "tmpdir"
 
 module PluginTestHelper
+  def bundle_or_gel
+    defined?(::Gel) ? "gel" : "bundle"
+  end
+
   def create_test_file(name, pass: true)
     plugin_file "test/#{name}_test.rb", <<-RUBY
       require "test_helper"

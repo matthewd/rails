@@ -266,7 +266,7 @@ class ScaffoldControllerGeneratorTest < Rails::Generators::TestCase
   end
 
   def test_controller_tests_pass_by_default_inside_mountable_engine
-    Dir.chdir(destination_root) { `bundle exec rails plugin new bukkits --mountable` }
+    Dir.chdir(destination_root) { `#{bundle_or_gel} exec rails plugin new bukkits --mountable` }
 
     engine_path = File.join(destination_root, "bukkits")
 
@@ -278,7 +278,7 @@ class ScaffoldControllerGeneratorTest < Rails::Generators::TestCase
   end
 
   def test_controller_tests_pass_by_default_inside_full_engine
-    Dir.chdir(destination_root) { `bundle exec rails plugin new bukkits --full` }
+    Dir.chdir(destination_root) { `#{bundle_or_gel} exec rails plugin new bukkits --full` }
 
     engine_path = File.join(destination_root, "bukkits")
 
