@@ -374,7 +374,9 @@ module Rails
       end
 
       def bundle_command(command, env = {})
-        say_status :run, "bundle #{command}"
+        exe = defined?(::Gel) ? "gel" : "bundle"
+
+        say_status :run, "#{exe} #{command}"
 
         # We are going to shell out rather than invoking Bundler::CLI.new(command)
         # because `rails new` loads the Thor gem and on the other hand bundler uses
@@ -382,7 +384,7 @@ module Rails
         # things in the same process is a recipe for a night with paracetamol.
         #
         # Thanks to James Tucker for the Gem tricks involved in this call.
-        _bundle_command = Gem.bin_path("bundler", "bundle")
+        _bundle_command = Gem.bin_path(exe == "bundle" ? "bundler" : exe, exe)
 
         require "bundler"
         Bundler.with_original_env do
@@ -463,7 +465,7 @@ module Rails
       end
 
       def generate_bundler_binstub
-        if bundle_install?
+        if bundle_install? && !defined?(::Gel)
           bundle_command("binstubs bundler")
         end
       end

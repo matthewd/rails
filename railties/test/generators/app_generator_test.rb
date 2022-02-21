@@ -629,7 +629,7 @@ class AppGeneratorTest < Rails::Generators::TestCase
 
   def test_pretend_option
     output = run_generator [File.join(destination_root, "myapp"), "--pretend"]
-    assert_no_match(/run  bundle install/, output)
+    assert_no_match(/run  (?:bundle|gel) install/, output)
     assert_no_match(/run  git init/, output)
   end
 
@@ -684,11 +684,13 @@ class AppGeneratorTest < Rails::Generators::TestCase
     end
   end
 
-  def test_bundler_binstub
-    generator([destination_root])
-    run_generator_instance
+  unless defined?(::Gel)
+    def test_bundler_binstub
+      generator([destination_root])
+      run_generator_instance
 
-    assert_equal 1, @bundle_commands.count("binstubs bundler")
+      assert_equal 1, @bundle_commands.count("binstubs bundler")
+    end
   end
 
   def test_skip_active_record_option

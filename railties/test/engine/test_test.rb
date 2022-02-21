@@ -5,7 +5,7 @@ require "abstract_unit"
 class Rails::Engine::TestTest < ActiveSupport::TestCase
   setup do
     @destination_root = Dir.mktmpdir("bukkits")
-    Dir.chdir(@destination_root) { `bundle exec rails plugin new bukkits --mountable` }
+    Dir.chdir(@destination_root) { `#{defined?(::Gel) ? "gel" : "bundle"} exec rails plugin new bukkits --mountable` }
   end
 
   teardown do

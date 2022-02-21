@@ -9,7 +9,7 @@ class TestRunnerInEngineTest < ActiveSupport::TestCase
 
   def setup
     @destination_root = Dir.mktmpdir("bukkits")
-    Dir.chdir(@destination_root) { `bundle exec rails plugin new bukkits --full --skip-bundle` }
+    Dir.chdir(@destination_root) { `#{bundle_or_gel} exec rails plugin new bukkits --full --skip-bundle` }
     fill_in_gemspec_fields
     resolve_rails_gem_to_repository
     plugin_file "test/dummy/db/schema.rb", ""

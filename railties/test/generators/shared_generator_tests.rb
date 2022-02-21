@@ -24,6 +24,10 @@ module SharedGeneratorTests
     Rails.application = TestApp::Application.instance
   end
 
+  def bundle_or_gel
+    defined?(::Gel) ? "gel" : "bundle"
+  end
+
   def application_path
     destination_root
   end

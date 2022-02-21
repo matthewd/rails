@@ -24,7 +24,7 @@ module RailtiesTests
     end
 
     def bundled_rails(cmd)
-      `bundle exec rails #{cmd}`
+      `#{defined?(::Gel) ? "gel" : "bundle"} exec rails #{cmd}`
     end
 
     def rails(cmd)
