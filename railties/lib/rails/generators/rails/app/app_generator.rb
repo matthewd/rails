@@ -72,10 +72,7 @@ module Rails
 
     def version_control
       if !options[:skip_git] && !options[:pretend]
-        run "git init", capture: options[:quiet], abort_on_failure: false
-        if user_default_branch.strip.empty?
-          `git symbolic-ref HEAD refs/heads/main`
-        end
+        run git_init_command, capture: options[:quiet], abort_on_failure: false
       end
     end
 
@@ -248,6 +245,18 @@ module Rails
     private
       def user_default_branch
         @user_default_branch ||= `git config init.defaultbranch`
+      end
+
+      def git_init_command
+        return "git init" if user_default_branch.strip.present?
+
+        git_version = `git --version`[/\d+.\d+.\d+/]
+
+        if Gem::Version.new(git_version) > Gem::Version.new("2.28.0")
+          "git init -b main"
+        else
+          "git init && git symbolic-ref HEAD refs/heads/main"
+        end
       end
   end
 
