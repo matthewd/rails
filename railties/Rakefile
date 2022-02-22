@@ -70,7 +70,7 @@ namespace :test do
     failing_files = []
 
     dirs = (ENV["TEST_DIR"] || ENV["TEST_DIRS"] || "**").split(",")
-    test_options = ENV["TESTOPTS"].to_s.split(/[\s]+/)
+    test_options = ENV["TESTOPTS"].to_s.split(/[\s]+/) + ["-v"]
 
     test_patterns = dirs.map { |dir| "test/#{dir}/*_test.rb" }
     test_files = Dir[*test_patterns].select do |file|
