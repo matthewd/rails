@@ -6,39 +6,39 @@ module ActiveSupport # :nodoc:
   module Dependencies # :nodoc:
     class Interlock
       def initialize # :nodoc:
-        @lock = ActiveSupport::Concurrency::ShareLock.new
+        @lock = Concurrent::ReentrantReadWriteLock.new
       end
 
       def loading(&block)
-        @lock.exclusive(purpose: :load, compatible: [:load], after_compatible: [:load], &block)
+        yield
       end
 
       def unloading(&block)
-        @lock.exclusive(purpose: :unload, compatible: [:load, :unload], after_compatible: [:load, :unload], &block)
+        @lock.with_write_lock(&block)
       end
 
       def start_unloading
-        @lock.start_exclusive(purpose: :unload, compatible: [:load, :unload])
+        @lock.acquire_write_lock
       end
 
       def done_unloading
-        @lock.stop_exclusive(compatible: [:load, :unload])
+        @lock.release_write_lock
       end
 
       def start_running
-        @lock.start_sharing
+        @lock.acquire_read_lock
       end
 
       def done_running
-        @lock.stop_sharing
+        @lock.release_read_lock
       end
 
       def running(&block)
-        @lock.sharing(&block)
+        @lock.with_read_lock(&block)
       end
 
       def permit_concurrent_loads(&block)
-        @lock.yield_shares(compatible: [:load], &block)
+        yield
       end
 
       def raw_state(&block) # :nodoc:
