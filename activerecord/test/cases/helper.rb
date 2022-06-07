@@ -14,6 +14,16 @@ require "active_support/core_ext/kernel/singleton_class"
 require "support/config"
 require "support/connection"
 
+if ENV["BUILDKITE"]
+  require "buildkite/test_collector"
+  require "fileutils"
+  ENV["BUILDKITE_ANALYTICS_EXECUTION_NAME_PREFIX"] = ENV["BUILDKITE_LABEL"]
+
+  FileUtils.mkdir_p("../../../log") if !File.exist?("../../../log")
+  Buildkite::TestCollector.logger = Buildkite::TestCollector::Logger.new("../../../log/buildkite-analytics.log")
+  Buildkite::TestCollector.configure(hook: :minitest, token: ENV["BUILDKITE_ANALYTICS_TOKEN"], url: "https://analytics-api.buildkite.com/v1/uploads")
+end
+
 # TODO: Move all these random hacks into the ARTest namespace and into the support/ dir
 
 Thread.abort_on_exception = true

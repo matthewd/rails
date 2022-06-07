@@ -156,6 +156,9 @@ GEM
     bootsnap (1.9.3)
       msgpack (~> 1.0)
     builder (3.2.4)
+    buildkite-test_collector (1.2.4)
+      activesupport (>= 5.2, < 8)
+      websocket (~> 1.2)
     bunny (2.19.0)
       amq-protocol (~> 2.3, >= 2.3.1)
       sorted_set (~> 1, >= 1.0.2)
@@ -173,7 +176,7 @@ GEM
       coffee-script-source
       execjs
     coffee-script-source (1.12.2)
-    concurrent-ruby (1.1.9)
+    concurrent-ruby (1.1.10)
     connection_pool (2.2.5)
     cookiejar (0.3.3)
     crack (0.4.5)
@@ -287,7 +290,7 @@ GEM
     hashdiff (1.0.1)
     http_parser.rb (0.8.0)
     httpclient (2.8.3)
-    i18n (1.8.11)
+    i18n (1.12.0)
       concurrent-ruby (~> 1.0)
     image_processing (1.12.1)
       mini_magick (>= 4.9.5, < 5)
@@ -521,7 +524,7 @@ GEM
     turbo-rails (1.0.0)
       actionpack (>= 6.0.0)
       railties (>= 6.0.0)
-    tzinfo (2.0.4)
+    tzinfo (2.0.5)
       concurrent-ruby (~> 1.0)
     uber (0.1.0)
     unicode-display_width (2.1.0)
@@ -566,6 +569,7 @@ DEPENDENCIES
   benchmark-ips
   blade
   bootsnap (>= 1.4.4)
+  buildkite-test_collector
   capybara (>= 3.26)
   connection_pool
   cssbundling-rails
