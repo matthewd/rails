@@ -147,8 +147,8 @@ class DateHelperSelectTagsI18nTests < ActiveSupport::TestCase
 
   def test_date_or_time_select_given_no_order_options_translates_order
     mock = Minitest::Mock.new
-    mock.expect(:call, ["year", "month", "day"], [:'date.order', { locale: "en", default: [] }])
-    mock.expect(:call, [], [:'date.month_names', { locale: "en" }])
+    mock.expect(:call, ["year", "month", "day"], [:'date.order'], locale: "en", default: [])
+    mock.expect(:call, [], [:'date.month_names'], locale: "en")
 
     I18n.stub(:translate, mock) do
       datetime_select("post", "updated_at", locale: "en")
@@ -158,7 +158,7 @@ class DateHelperSelectTagsI18nTests < ActiveSupport::TestCase
   end
 
   def test_date_or_time_select_given_invalid_order
-    assert_called_with(I18n, :translate, [:'date.order', locale: "en", default: []], returns: %w(invalid month day)) do
+    assert_called_with(I18n, :translate, [:'date.order'], returns: %w(invalid month day), locale: "en", default: []) do
       assert_raise StandardError do
         datetime_select("post", "updated_at", locale: "en")
       end
@@ -167,8 +167,8 @@ class DateHelperSelectTagsI18nTests < ActiveSupport::TestCase
 
   def test_date_or_time_select_given_symbol_keys
     mock = Minitest::Mock.new
-    mock.expect(:call, [:year, :month, :day], [:'date.order', { locale: "en", default: [] }])
-    mock.expect(:call, [], [:'date.month_names', { locale: "en" }])
+    mock.expect(:call, [:year, :month, :day], [:'date.order'], locale: "en", default: [])
+    mock.expect(:call, [], [:'date.month_names'], locale: "en")
 
     I18n.stub(:translate, mock) do
       datetime_select("post", "updated_at", locale: "en")

@@ -1768,7 +1768,7 @@ class FormWithActsLikeFormForTest < FormWithTest
 
     mock = Minitest::Mock.new
     @post.comments.each do
-      mock.expect(:call, "body", ["post.comments.body", default: [:"comment.body", ""], scope: "helpers.label"])
+      mock.expect(:call, "body", ["post.comments.body"], default: [:"comment.body", ""], scope: "helpers.label")
     end
 
     I18n.stub(:t, mock) do
