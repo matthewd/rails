@@ -23,7 +23,16 @@ module ActiveSupport
           if !kwargs.empty?
             mock.expect(:call, returns, args, **kwargs)
           else
-            mock.expect(:call, returns, args)
+            if RUBY_VERSION.start_with?("2.7")
+              if args.last.is_a?(Hash)
+                options_hash = args.pop
+                mock.expect(:call, returns, args, options_hash)
+              else
+                mock.expect(:call, returns, args)
+              end
+            else
+              mock.expect(:call, returns, args)
+            end
           end
 
           object.stub(method_name, mock, &block)
