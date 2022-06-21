@@ -17,9 +17,14 @@ module ActiveSupport
           assert_equal times, times_called, error
         end
 
-        def assert_called_with(object, method_name, args, returns: nil, &block)
+        def assert_called_with(object, method_name, args, returns: false, **kwargs, &block)
           mock = Minitest::Mock.new
-          mock.expect(:call, returns, args)
+
+          if !kwargs.empty?
+            mock.expect(:call, returns, args, **kwargs)
+          else
+            mock.expect(:call, returns, args)
+          end
 
           object.stub(method_name, mock, &block)
 

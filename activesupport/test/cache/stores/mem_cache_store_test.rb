@@ -260,6 +260,7 @@ class MemCacheStoreTest < ActiveSupport::TestCase
 
   def test_unless_exist_expires_when_configured
     cache = lookup_store(namespace: nil)
+
     assert_called_with client(cache), :add, [ "foo", Object, 1, Hash ] do
       cache.write("foo", "bar", expires_in: 1, unless_exist: true)
     end
