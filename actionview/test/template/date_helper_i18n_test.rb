@@ -147,8 +147,8 @@ class DateHelperSelectTagsI18nTests < ActiveSupport::TestCase
 
   def test_date_or_time_select_given_no_order_options_translates_order
     mock = Minitest::Mock.new
-    mock.expect(:call, ["year", "month", "day"], [:'date.order'], locale: "en", default: [])
-    mock.expect(:call, [], [:'date.month_names'], locale: "en")
+    expect_called_with(mock, [:'date.order'], locale: "en", default: [], returns: ["year", "month", "day"])
+    expect_called_with(mock, [:'date.month_names'], locale: "en", returns: [])
 
     I18n.stub(:translate, mock) do
       datetime_select("post", "updated_at", locale: "en")
@@ -167,8 +167,8 @@ class DateHelperSelectTagsI18nTests < ActiveSupport::TestCase
 
   def test_date_or_time_select_given_symbol_keys
     mock = Minitest::Mock.new
-    mock.expect(:call, [:year, :month, :day], [:'date.order'], locale: "en", default: [])
-    mock.expect(:call, [], [:'date.month_names'], locale: "en")
+    expect_called_with(mock, [:'date.order'], locale: "en", default: [], returns: [:year, :month, :day])
+    expect_called_with(mock, [:'date.month_names'], locale: "en", returns: [])
 
     I18n.stub(:translate, mock) do
       datetime_select("post", "updated_at", locale: "en")
