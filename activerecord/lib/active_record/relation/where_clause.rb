@@ -4,11 +4,231 @@ require "active_support/core_ext/array/extract"
 
 module ActiveRecord
   class Relation
+    class ConditionFromHash
+      attr_reader :opts
+
+      def initialize(opts, relation)
+        @opts = opts
+        @relation = relation
+        @invert = false
+      end
+
+      def ==(other)
+        @opts == other.opts
+      end
+
+      def invert
+        @invert = !@invert
+        self
+      end
+
+      def references
+        PredicateBuilder.references(@opts)
+      end
+
+      def relation_attributes_helper(hash, attrs, path: [])
+        @opts.each do |key, value|
+          if value.is_a?(Hash)
+            relation_attributes_helper(@opts, attrs, path + key)
+          else
+            attrs << path + [key]
+          end
+        end
+        attrs
+      end
+
+      def referenced_attributes
+        x = { comments: { id: 1, body: "foo" } } # => [["comments", "body"], ["comments", "id"]
+
+        relation_attributes_helper(@opts, [])
+      end
+
+      def except_attributes(attributes)
+
+      end
+
+      def predicates
+        @predicate ||= evaluate
+        # puts "predicates are #{@predicate}"
+        @predicate
+      end
+
+      def fetch_attribute(&block)
+        # TODO: this one is for sure wrong
+        []
+      end
+
+      private
+
+      def evaluate
+        parts = @relation.predicate_builder.build_from_hash(opts) do |table_name|
+          @relation.send(:lookup_table_klass_from_join_dependencies, table_name)
+        end
+
+        if @invert
+          inverted_predicates = []
+          if parts.size == 0
+            parts
+          elsif parts.size == 1
+            only_predicate = case parts.first
+            when NilClass
+              raise ArgumentError, "Invalid argument for .where.not(), got nil."
+            when String
+              Arel::Nodes::Not.new(Arel::Nodes::SqlLiteral.new(parts.first))
+            else
+              parts = parts.first.invert
+            end
+            inverted_predicates = [ only_predicate ]
+          else
+            inverted_predicates = [ Arel::Nodes::Not.new(Arel::Nodes::And.new(parts)) ]
+          end
+          parts = inverted_predicates
+        end
+        parts
+      end
+    end
+
+    class ConditionArelNode
+      attr_reader :node
+
+      def initialize(node)
+        @node = node
+      end
+
+      def ==(other)
+        @node == other.node
+      end
+
+      def ===(other)
+        @node === other.node
+      end
+
+      def invert
+        @node = Arel::Nodes::Not.new(@node)
+      end
+
+      def referenced_attributes
+        if attr = extract_attribute(@node)
+          [attr]
+        elsif @node.equality? && @node.left.is_a?(Arel::Predications)
+          [@node.left]
+        else
+          []
+        end
+      end
+
+      def except_attributes(attributes, rewhere: true)
+        attrs = attributes.extract! { |node|
+          node.is_a?(Arel::Attribute)
+        }
+        non_attrs = attributes.extract! { |node|
+          node.is_a?(Arel::Predications)
+        }
+
+        if !non_attrs.empty? && node.equality? && @node.left.is_a?(Arel::Predications) && non_attrs.include?(@node.left)
+          nil
+        else
+          Arel.fetch_attribute(@node) do |attr|
+            if attrs.include?(attr) || attributes.include?(attr.name.to_s)
+              nil
+            else
+              self
+            end
+          end
+        end
+      end
+
+      def extract_attribute(node)
+        attr_node = nil
+        Arel.fetch_attribute(node) do |attr|
+          return if attr_node&.!= attr # all attr nodes should be the same
+          attr_node = attr
+        end
+        attr_node
+      end
+
+      def fetch_attribute(&block)
+        @node.fetch_attribute(&block)
+      end
+
+      def predicates
+        @node
+      end
+
+    end
+
+    class ConditionLiteral
+      attr_reader :opts
+      # TODO: combine with Arel node?
+      def initialize(opts)
+        @opts = opts # .reject { |o| o == "" }
+        @invert = false
+      end
+
+      # These don't get called on literals
+      def ==(other)
+        @opts = other.opts
+      end
+
+      def referenced_attributes
+        []
+      end
+
+      def except_attributes(attributes)
+        self
+      end
+
+      def fetch_attribute(&block)
+        []
+      end
+
+      def invert
+        @invert = !@invert
+        self
+      end
+
+      def predicates
+        pred = case @opts
+        when String
+          Arel.sql(@opts)
+        when Array
+          @opts.map do |node|
+            if ::String === node
+              node = Arel.sql(node)
+            end
+            Arel::Nodes::Grouping.new(node)
+          end
+        else
+          node
+        end
+
+        if @invert
+          Arel::Nodes::Not.new(pred)
+        else
+          pred
+        end
+      end
+    end
+
     class WhereClause # :nodoc:
       delegate :any?, :empty?, to: :predicates
 
       def initialize(predicates)
         @predicates = predicates
+      end
+
+      def realize!
+        preds = []
+        if !self.frozen? && !@predicates.nil?
+          preds = @predicates.map do |p|
+            if p.respond_to?(:predicates)
+              p.predicates
+            else
+              p
+            end
+          end.flatten
+        end
+        @realized_predicates = preds
       end
 
       def +(other)
@@ -24,6 +244,9 @@ module ActiveRecord
       end
 
       def merge(other, rewhere = nil)
+        if rewhere
+          raise "WHO CALLED?"
+        end
         predicates = if rewhere
           except_predicates(other.extract_attributes)
         else
@@ -59,7 +282,9 @@ module ActiveRecord
       end
 
       def to_h(table_name = nil, equality_only: false)
-        equalities(predicates, equality_only).each_with_object({}) do |node, hash|
+        realize!
+
+        equalities(@realized_predicates, equality_only).each_with_object({}) do |node, hash|
           next if table_name&.!= node.left.relation.name
           name = node.left.name.to_s
           value = extract_node_value(node.right)
@@ -69,6 +294,7 @@ module ActiveRecord
 
       def ast
         predicates = predicates_with_wrapped_sql_literals
+
         predicates.one? ? predicates.first : Arel::Nodes::And.new(predicates)
       end
 
@@ -93,11 +319,13 @@ module ActiveRecord
       end
 
       def self.empty
-        @empty ||= new([]).freeze
+        @empty ||= new([])
       end
 
       def contradiction?
-        predicates.any? do |x|
+        realize!
+
+        @realized_predicates.any? do |x|
           case x
           when Arel::Nodes::In
             Array === x.right && x.right.empty?
@@ -124,7 +352,8 @@ module ActiveRecord
 
       private
         def each_attributes
-          predicates.each do |node|
+          realize!
+          @realized_predicates.each do |node|
             attr = extract_attribute(node) || begin
               node.left if equality_node?(node) && node.left.is_a?(Arel::Predications)
             end
@@ -157,9 +386,11 @@ module ActiveRecord
         end
 
         def predicates_unreferenced_by(other)
+          realize!
+
           referenced_columns = other.referenced_columns
 
-          predicates.reject do |node|
+          @realized_predicates.reject do |node|
             attr = extract_attribute(node) || begin
               node.left if equality_node?(node) && node.left.is_a?(Arel::Predications)
             end
@@ -179,15 +410,22 @@ module ActiveRecord
           when String
             Arel::Nodes::Not.new(Arel::Nodes::SqlLiteral.new(node))
           else
+
             node.invert
           end
         end
 
         def except_predicates(columns)
-          attrs = columns.extract! { |node| node.is_a?(Arel::Attribute) }
-          non_attrs = columns.extract! { |node| node.is_a?(Arel::Predications) }
+          attrs = columns.extract! { |node|
+            node.is_a?(Arel::Attribute)
+          }
+          non_attrs = columns.extract! { |node|
+            node.is_a?(Arel::Predications)
+          }
 
-          predicates.reject do |node|
+          realize!
+
+          @realized_predicates.reject do |node|
             if !non_attrs.empty? && node.equality? && node.left.is_a?(Arel::Predications)
               non_attrs.include?(node.left)
             end || Arel.fetch_attribute(node) do |attr|
@@ -208,9 +446,11 @@ module ActiveRecord
 
         ARRAY_WITH_EMPTY_STRING = [""]
         def non_empty_predicates
-          predicates - ARRAY_WITH_EMPTY_STRING
+          realize!
+          @realized_predicates - ARRAY_WITH_EMPTY_STRING
         end
 
+        # TODO: this might not be unneeded anymore
         def wrap_sql_literal(node)
           if ::String === node
             node = Arel.sql(node)

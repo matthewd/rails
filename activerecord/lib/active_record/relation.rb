@@ -807,6 +807,7 @@ module ActiveRecord
     end
 
     def empty_scope? # :nodoc:
+
       @values == klass.unscoped.values
     end
 

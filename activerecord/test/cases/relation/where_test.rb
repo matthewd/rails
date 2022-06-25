@@ -161,6 +161,7 @@ module ActiveRecord
     end
 
     def test_where_not_polymorphic_id_and_type_as_nand
+      # ActiveRecord::Base.logger = Logger.new(STDOUT)
       sapphire = treasures(:sapphire)
 
       all = [treasures(:diamond), sapphire, cars(:honda), sapphire]

@@ -67,6 +67,21 @@ module ActiveRecord
       end
     end
 
+    def test_not_with_string
+      relation = Post.where.not("title = 'hello'")
+      expected_where_clause = Post.where(title: "hello").where_clause.invert
+
+      assert_equal expected_where_clause, relation.where_clause
+    end
+
+    def test_not_with_arel_node
+      clause = Post.arel_table[:title].eq("hello")
+      relation = Post.where.not(clause)
+      expected_where_clause = Post.where(title: "hello").where_clause.invert
+
+      assert_equal expected_where_clause, relation.where_clause
+    end
+
     def test_association_not_eq
       expected = Comment.arel_table["title"].not_eq(Arel::Nodes::BindParam.new(1))
       relation = Post.joins(:comments).where.not(comments: { title: "hello" })

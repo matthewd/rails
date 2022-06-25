@@ -532,6 +532,7 @@ module ActiveRecord
     end
 
     def unscope!(*args) # :nodoc:
+      self.where_clause.realize!
       self.unscope_values += args
 
       args.each do |scope|
@@ -778,6 +779,9 @@ module ActiveRecord
     def rewhere(conditions)
       scope = spawn
       where_clause = scope.build_where_clause(conditions)
+      where_clause.realize!
+      # where_clause = where_clause.realize!
+      scope.where_clause.realize!
 
       scope.unscope!(where: where_clause.extract_attributes)
       scope.where_clause += where_clause
@@ -1301,12 +1305,13 @@ module ActiveRecord
         end
       end
 
-      def build_where_clause(opts, rest = []) # :nodoc:
+      def build_where_clause(opts, rest = [])
         opts = sanitize_forbidden_attributes(opts)
 
         case opts
         when String, Array
-          parts = [klass.sanitize_sql(rest.empty? ? opts : [opts, *rest])]
+          parts = [Relation::ConditionLiteral.new(klass.sanitize_sql(rest.empty? ? opts : [opts, *rest]))]
+          # parts = [klass.sanitize_sql(rest.empty? ? opts : [opts, *rest])]
         when Hash
           opts = opts.transform_keys do |key|
             key = key.to_s
@@ -1315,17 +1320,46 @@ module ActiveRecord
           references = PredicateBuilder.references(opts)
           self.references_values |= references unless references.empty?
 
-          parts = predicate_builder.build_from_hash(opts) do |table_name|
-            lookup_table_klass_from_join_dependencies(table_name)
-          end
+          parts = [Relation::ConditionFromHash.new(opts, self)]
+
+          # parts = predicate_builder.build_from_hash(opts) do |table_name|
+          #   lookup_table_klass_from_join_dependencies(table_name)
+          # end
         when Arel::Nodes::Node
-          parts = [opts]
+          parts = [Relation::ConditionArelNode.new(opts)]
+          # parts = [opts]
         else
           raise ArgumentError, "Unsupported argument type: #{opts} (#{opts.class})"
         end
 
         Relation::WhereClause.new(parts)
       end
+
+      # def build_where_clause(opts, rest = []) # :nodoc:
+      #   opts = sanitize_forbidden_attributes(opts)
+
+      #   case opts
+      #   when String, Array
+      #     parts = [klass.sanitize_sql(rest.empty? ? opts : [opts, *rest])]
+      #   when Hash
+      #     opts = opts.transform_keys do |key|
+      #       key = key.to_s
+      #       klass.attribute_aliases[key] || key
+      #     end
+      #     references = PredicateBuilder.references(opts)
+      #     self.references_values |= references unless references.empty?
+
+      #     parts = predicate_builder.build_from_hash(opts) do |table_name|
+      #       lookup_table_klass_from_join_dependencies(table_name)
+      #     end
+      #   when Arel::Nodes::Node
+      #     parts = [opts]
+      #   else
+      #     raise ArgumentError, "Unsupported argument type: #{opts} (#{opts.class})"
+      #   end
+
+      #   Relation::WhereClause.new(parts)
+      # end
       alias :build_having_clause :build_where_clause
 
       def async!
@@ -1368,6 +1402,8 @@ module ActiveRecord
       end
 
       def build_arel(aliases = nil)
+        self.where_clause.realize!
+
         arel = Arel::SelectManager.new(table)
 
         build_joins(arel.join_sources, aliases)
