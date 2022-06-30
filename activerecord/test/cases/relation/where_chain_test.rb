@@ -69,7 +69,7 @@ module ActiveRecord
 
     def test_not_with_string
       relation = Post.where.not("title = 'hello'")
-      expected_where_clause = Post.where(title: "hello").where_clause.invert
+      expected_where_clause = Post.where("title = 'hello'").where_clause.invert
 
       assert_equal expected_where_clause, relation.where_clause
     end
@@ -77,7 +77,7 @@ module ActiveRecord
     def test_not_with_arel_node
       clause = Post.arel_table[:title].eq("hello")
       relation = Post.where.not(clause)
-      expected_where_clause = Post.where(title: "hello").where_clause.invert
+      expected_where_clause = Post.where(clause).where_clause.invert
 
       assert_equal expected_where_clause, relation.where_clause
     end

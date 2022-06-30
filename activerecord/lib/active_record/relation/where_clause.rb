@@ -26,10 +26,10 @@ module ActiveRecord
         PredicateBuilder.references(@opts)
       end
 
-      def relation_attributes_helper(hash, attrs, path: [])
-        @opts.each do |key, value|
+      def relation_attributes_helper(hash, attrs, path = [])
+        hash.each do |key, value|
           if value.is_a?(Hash)
-            relation_attributes_helper(@opts, attrs, path + key)
+            relation_attributes_helper(value, attrs, path + [key])
           else
             attrs << path + [key]
           end
@@ -38,13 +38,38 @@ module ActiveRecord
       end
 
       def referenced_attributes
-        x = { comments: { id: 1, body: "foo" } } # => [["comments", "body"], ["comments", "id"]
-
         relation_attributes_helper(@opts, [])
       end
 
+      # TODO: consider strings vs symbols
       def except_attributes(attributes)
+        new_opts = {}
 
+        @opts.each do |key, value|
+          if value.is_a?(Hash)
+            new_opts[key] = except_attributes_helper(value, key, attributes)
+          elsif !attributes.include?(key)
+            new_opts[key] = value
+          end
+        end
+
+        self.class.new(new_opts, @relation)
+      end
+
+      def except_attributes_helper(hash, parent, attributes)
+        filtered_attributes = attributes.filter_map { |attr| attr.is_a?(Array) && attr.first == key && attr[1..-1] }
+
+        new_opts = {}
+
+        hash.each do |key, value|
+          if value.is_a?(Hash)
+            new_opts[key] = except_attributes_helper(value, key, filtered_attributes)
+          elsif !filtered_attributes.include?([key])
+            new_opts[key] = value
+          end
+        end
+
+        new_opts
       end
 
       def predicates
@@ -243,21 +268,27 @@ module ActiveRecord
         WhereClause.new(predicates | other.predicates)
       end
 
+      def extract_attributes
+        predicates.flat_map(&:referenced_attributes)
+      end
+
       def merge(other, rewhere = nil)
-        if rewhere
-          raise "WHO CALLED?"
-        end
-        predicates = if rewhere
-          except_predicates(other.extract_attributes)
-        else
-          predicates_unreferenced_by(other)
-        end
+        predicates =
+          if rewhere
+            attributes = other.extract_attributes
+            self.predicates.filter_map { |p| p.except_attributes(attributes) }
+          else
+            predicates_unreferenced_by(other)
+            # TODO next:
+            #attributes = other.predicates.flat_map(&:referenced_attributes)
+            #self.predicates.filter_map { |p| p.except_attributes(attributes, rewhere: false) }
+          end
 
         WhereClause.new(predicates | other.predicates)
       end
 
       def except(*columns)
-        WhereClause.new(except_predicates(columns))
+        WhereClause.new(predicates.filter_map { |p| p.except_attributes(columns) })
       end
 
       def or(other)
@@ -333,12 +364,6 @@ module ActiveRecord
             x.right.respond_to?(:unboundable?) && x.right.unboundable?
           end
         end
-      end
-
-      def extract_attributes
-        attrs = []
-        each_attributes { |attr, _| attrs << attr }
-        attrs
       end
 
       protected
