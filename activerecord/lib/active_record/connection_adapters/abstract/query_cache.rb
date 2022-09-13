@@ -51,8 +51,8 @@ module ActiveRecord
 
       def initialize(*)
         super
-        @query_cache         = Hash.new { |h, sql| h[sql] = {} }
         @query_cache_enabled = false
+        clear_query_cache
       end
 
       # Enable the query cache within the block.
@@ -88,9 +88,15 @@ module ActiveRecord
       # the same SQL query and repeatedly return the same result each time, silently
       # undermining the randomness you were expecting.
       def clear_query_cache
-        @lock.synchronize do
-          @query_cache.clear
-        end
+        # Note that we cannot synchronize here because the query cache is cleared
+        # across all connections upon write queries; if two threads hold competing
+        # locks on different connections (e.g. each having a transaction open) and
+        # then both write, they would deadlock.
+        #
+        # Instead, we support this by ensuring that all reads from the query cache
+        # are done under the expectation that it may be cleared at any time.
+
+        @query_cache = Hash.new { |h, sql| h[sql] = {} }
       end
 
       def select_all(arel, name = nil, binds = [], preparable: nil, async: false)
@@ -114,27 +120,29 @@ module ActiveRecord
       private
         def lookup_sql_cache(sql, name, binds)
           @lock.synchronize do
-            if @query_cache[sql].key?(binds)
+            if cache_entry = @query_cache[sql][binds]
               ActiveSupport::Notifications.instrument(
                 "sql.active_record",
                 cache_notification_info(sql, name, binds)
               )
-              @query_cache[sql][binds]
+              cache_entry
             end
           end
         end
 
         def cache_sql(sql, name, binds)
           @lock.synchronize do
+            cache_for_query = @query_cache[sql]
+
             result =
-              if @query_cache[sql].key?(binds)
+              if cache_entry = cache_for_query[binds]
                 ActiveSupport::Notifications.instrument(
                   "sql.active_record",
                   cache_notification_info(sql, name, binds)
                 )
-                @query_cache[sql][binds]
+                cache_entry
               else
-                @query_cache[sql][binds] = yield
+                cache_for_query[binds] = yield
               end
             result.dup
           end
