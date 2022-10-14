@@ -14,6 +14,8 @@ require "arel/nodes/bind_param"
 require "arel/nodes/terminal"
 require "arel/nodes/true"
 require "arel/nodes/false"
+require "arel/nodes/impossibility"
+require "arel/nodes/tautology"
 
 # unary
 require "arel/nodes/unary"
