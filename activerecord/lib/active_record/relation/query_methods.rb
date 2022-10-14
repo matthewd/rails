@@ -1071,7 +1071,7 @@ module ActiveRecord
     end
 
     def none! # :nodoc:
-      where!("1=0").extending!(NullRelation)
+      where!(Arel::Nodes::Impossibility.new).extending!(NullRelation)
     end
 
     # Mark a relation as readonly. Attempting to update a record will result in
