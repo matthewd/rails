@@ -769,7 +769,11 @@ module Arel # :nodoc: all
               if Arel.arel_node?(value)
                 visit value, collector
               elsif value.is_a?(Array)
-                collector.add_binds(value, &bind_block)
+                if value.empty?
+                  collector << @connection.quote(nil)
+                else
+                  collector.add_binds(value, &bind_block)
+                end
               else
                 collector.add_bind(value, &bind_block)
               end

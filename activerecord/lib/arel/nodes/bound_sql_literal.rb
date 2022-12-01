@@ -23,10 +23,6 @@ module Arel # :nodoc: all
       end
       alias :== :eql?
 
-      def to_sql(formatter = nil)
-        sql_with_placeholders
-      end
-
       def inspect
         "#<#{self.class.name} #{sql_with_placeholders.inspect} #{positional_binds.inspect} #{named_binds.inspect}>"
       end
