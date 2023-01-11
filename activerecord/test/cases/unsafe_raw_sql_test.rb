@@ -7,10 +7,6 @@ require "models/comment"
 class UnsafeRawSqlTest < ActiveRecord::TestCase
   fixtures :posts, :comments
 
-  setup do
-    @escaped_posts = Post.connection.quote_table_name("posts")
-  end
-
   test "order: allows string column name" do
     ids_expected = Post.order(Arel.sql("title")).pluck(:id)
 
