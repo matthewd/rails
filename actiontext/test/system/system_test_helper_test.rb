@@ -9,6 +9,7 @@ class ActionText::SystemTestHelperTest < ApplicationSystemTestCase
 
   test "puts debugging" do
     puts "⭐️"*100
+    p ENV["SELENIUM_DRIVER_URL"]
     p Capybara.app_host
     puts "⭐️"*100
   end
