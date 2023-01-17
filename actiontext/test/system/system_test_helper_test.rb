@@ -7,6 +7,12 @@ class ActionText::SystemTestHelperTest < ApplicationSystemTestCase
     visit new_message_url
   end
 
+  test "puts debugging" do
+    puts "⭐️"*100
+    p Capybara.app_host
+    puts "⭐️"*100
+  end
+
   test "filling in a rich-text area by ID" do
     assert_selector "trix-editor#message_content"
     fill_in_rich_text_area "message_content", with: "Hello world!"
