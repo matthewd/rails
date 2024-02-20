@@ -40,6 +40,17 @@ module ActiveRecord
       end
       alias :sanitize_sql :sanitize_sql_for_conditions
 
+      def assemble_sql_for_conditions(condition)
+        return nil if condition.blank?
+        return condition if Arel.arel_node?(condition)
+
+        case condition
+        when Array;  compile_sql_array(condition)
+        when String; Arel.sql(condition)
+        else         condition
+        end
+      end
+
       # Accepts an array or hash of SQL conditions and sanitizes them into
       # a valid SQL fragment for a SET clause.
       #
@@ -73,6 +84,14 @@ module ActiveRecord
         end
       end
 
+      def assemble_sql_for_assignment(assignments, default_table_name = table_name)
+        case assignments
+        when Array; compile_sql_array(assignments)
+        when Hash;  assemble_sql_hash_for_assignment(assignments, default_table_name)
+        else        assignments
+        end
+      end
+
       # Accepts an array, or string of SQL conditions and sanitizes
       # them into a valid SQL fragment for an ORDER clause.
       #
@@ -100,6 +119,25 @@ module ActiveRecord
         end
       end
 
+      def assemble_sql_for_order(condition)
+        if condition.is_a?(Array) && condition.first.to_s.include?("?")
+          disallow_raw_sql!(
+            [condition.first],
+            permit: connection.column_name_with_order_matcher
+          )
+
+          # Ensure we aren't dealing with a subclass of String that might
+          # override methods we use (e.g. Arel::Nodes::SqlLiteral).
+          if condition.first.kind_of?(String) && !condition.first.instance_of?(String)
+            condition = [String.new(condition.first), *condition[1..-1]]
+          end
+
+          compile_sql_array(condition)
+        else
+          condition
+        end
+      end
+
       # Sanitizes a hash of attribute/value pairs into SQL conditions for a SET clause.
       #
       #   sanitize_sql_hash_for_assignment({ status: nil, group_id: 1 }, "posts")
@@ -111,6 +149,20 @@ module ActiveRecord
           value = type.serialize(type.cast(value))
           "#{c.quote_table_name_for_assignment(table, attr)} = #{c.quote(value)}"
         end.join(", ")
+      end
+
+      def assemble_sql_hash_for_assignment(attrs, table)
+        c = connection
+        values = []
+
+        sql = attrs.map do |attr, value|
+          type = type_for_attribute(attr)
+          values << type.serialize(type.cast(value))
+
+          "#{c.quote_table_name_for_assignment(table, attr)} = ?"
+        end.join(", ")
+
+        Arel.sql(sql, *values)
       end
 
       # Sanitizes a +string+ so that it is safe to use within an SQL
@@ -161,11 +213,16 @@ module ActiveRecord
       #   sanitize_sql_array(["role = ?", 0])
       #   # => "role = '0'"
       def sanitize_sql_array(ary)
+        connection.to_sql(compile_sql_array(ary))
+      end
+
+      def compile_sql_array(ary)
         statement, *values = ary
         if values.first.is_a?(Hash) && /:\w+/.match?(statement)
-          replace_named_bind_variables(statement, values.first)
+          bind_vars = values.first
+          Arel.sql(statement, **bind_vars.transform_values { |v| prepare_bind_value(v) })
         elsif statement.include?("?")
-          replace_bind_variables(statement, values)
+          Arel.sql(statement, *values.map { |v| prepare_bind_value(v) })
         elsif statement.blank?
           statement
         else
@@ -193,54 +250,28 @@ module ActiveRecord
       end
 
       private
-        def replace_bind_variables(statement, values)
-          raise_if_bind_arity_mismatch(statement, statement.count("?"), values.size)
-          bound = values.dup
-          c = connection
-          statement.gsub(/\?/) do
-            replace_bind_variable(bound.shift, c)
-          end
-        end
-
-        def replace_bind_variable(value, c = connection)
+        def prepare_bind_value(value, c = connection)
           if ActiveRecord::Relation === value
-            value.to_sql
-          else
-            quote_bound_value(value, c)
-          end
-        end
-
-        def replace_named_bind_variables(statement, bind_vars)
-          statement.gsub(/([:\\]?):([a-zA-Z]\w*)/) do |match|
-            if $1 == ":" # skip PostgreSQL casts
-              match # return the whole match
-            elsif $1 == "\\" # escaped literal colon
-              match[1..-1] # return match with escaping backlash char removed
-            elsif bind_vars.include?(match = $2.to_sym)
-              replace_bind_variable(bind_vars[match])
+            if value.eager_loading?
+              value.send(:apply_join_dependency) do |relation, join_dependency|
+                relation = join_dependency.apply_column_aliases(relation)
+                relation.arel.ast
+              end
             else
-              raise PreparedStatementInvalid, "missing value for :#{match} in #{statement}"
-            end
-          end
-        end
-
-        def quote_bound_value(value, c = connection)
-          if value.respond_to?(:map) && !value.acts_like?(:string)
-            values = value.map { |v| v.respond_to?(:id_for_database) ? v.id_for_database : v }
-            if values.empty?
-              c.quote(c.cast_bound_value(nil))
-            else
-              values.map! { |v| c.quote(c.cast_bound_value(v)) }.join(",")
+              value.arel.ast
             end
           else
-            value = value.id_for_database if value.respond_to?(:id_for_database)
-            c.quote(c.cast_bound_value(value))
-          end
-        end
-
-        def raise_if_bind_arity_mismatch(statement, expected, provided)
-          unless expected == provided
-            raise PreparedStatementInvalid, "wrong number of bind variables (#{provided} for #{expected}) in: #{statement}"
+            if value.respond_to?(:map) && !value.acts_like?(:string)
+              values = value.map { |v| v.respond_to?(:id_for_database) ? v.id_for_database : v }
+              if values.empty?
+                c.cast_bound_value(nil)
+              else
+                values.map! { |v| c.cast_bound_value(v) }
+              end
+            else
+              value = value.id_for_database if value.respond_to?(:id_for_database)
+              c.cast_bound_value(value)
+            end
           end
         end
     end
