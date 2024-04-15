@@ -149,7 +149,7 @@ module ActiveRecord
 
       def test_full_pool_blocking_shares_load_interlock
         skip_fiber_testing
-        @pool.instance_variable_set(:@size, 1)
+        @pool.instance_variable_set(:@max_size, 1)
 
         load_interlock_latch = Concurrent::CountDownLatch.new
         connection_latch = Concurrent::CountDownLatch.new
@@ -236,7 +236,7 @@ module ActiveRecord
 
       def test_inactive_are_returned_from_dead_thread
         ready = Concurrent::CountDownLatch.new
-        @pool.instance_variable_set(:@size, 1)
+        @pool.instance_variable_set(:@max_size, 1)
 
         child = new_thread do
           @pool.checkout
@@ -280,6 +280,44 @@ module ActiveRecord
 
         @pool.flush
         assert_equal 0, @pool.connections.length
+      end
+
+      def test_min_size_configuration
+        @pool.disconnect!
+
+        @pool = new_pool_with_options(min_size: 1)
+
+        @pool.activate
+        @pool.prepopulate
+        assert_equal 1, @pool.connections.length
+      end
+
+      def test_idle_timeout_configuration_with_min_size
+        @pool.disconnect!
+
+        @pool = new_pool_with_options(idle_timeout: "0.02", min_size: 1)
+        connections = 2.times.map { @pool.checkout }
+        connections.each { |conn| @pool.checkin(conn) }
+
+        connections.each do |conn|
+          conn.instance_variable_set(
+            :@idle_since,
+            Process.clock_gettime(Process::CLOCK_MONOTONIC) - 0.01
+          )
+        end
+
+        @pool.flush
+        assert_equal 2, @pool.connections.length
+
+        connections.each do |conn|
+          conn.instance_variable_set(
+            :@idle_since,
+            Process.clock_gettime(Process::CLOCK_MONOTONIC) - 0.03
+          )
+        end
+
+        @pool.flush
+        assert_equal 1, @pool.connections.length
       end
 
       def test_disable_flush
@@ -344,6 +382,242 @@ module ActiveRecord
         assert_equal [active_conn].sort_by(&:__id__), @pool.connections.sort_by(&:__id__)
       ensure
         @pool.checkin active_conn
+      end
+
+      def test_automatic_activation
+        assert_not_predicate @pool, :activated?
+
+        # Checkout on root thread does not activate the pool
+        own_conn = @pool.checkout
+
+        assert_not_predicate @pool, :activated?
+
+        new_thread do
+          # Checkout on new thread activates the pool
+          conn = @pool.checkout
+
+          assert_predicate @pool, :activated?
+          @pool.checkin conn
+        end.join
+
+        @pool.checkin own_conn
+
+        # Pool remains activated
+        assert_predicate @pool, :activated?
+
+        # flush! deactivates the pool
+        @pool.flush!
+
+        assert_not_predicate @pool, :activated?
+
+        new_thread do
+          @pool.checkin(@pool.checkout)
+        end.join
+
+        # Off-thread checkout re-activates
+        assert_predicate @pool, :activated?
+      end
+
+      def test_prepopulate
+        pool = new_pool_with_options(min_size: 3, max_size: 3, async: false)
+
+        assert_equal 0, pool.connections.length
+        assert_not_predicate pool, :activated?
+
+        # Pool is not activated, so prepopulate is a no-op
+        pool.prepopulate
+
+        assert_equal 0, pool.connections.length
+        pool.activate
+
+        assert_predicate pool, :activated?
+        pool.prepopulate
+
+        assert_equal 3, pool.connections.length
+      end
+
+      def test_preconnect
+        pool = new_pool_with_options(min_size: 3, max_size: 3, async: false)
+        pool.activate
+        pool.prepopulate
+
+        assert_equal 3, pool.connections.length
+        pool.connections.each do |conn|
+          assert_not_predicate conn, :connected?
+        end
+
+        pool.preconnect
+
+        assert_equal 3, pool.connections.length
+        pool.connections.each do |conn|
+          assert_predicate conn, :connected?
+        end
+      end
+
+      def test_max_age
+        pool = new_pool_with_options(max_age: 10, async: false)
+
+        conn = pool.checkout
+
+        assert_not_predicate conn, :connected?
+        assert_nil conn.connection_age
+
+        conn.connect!
+
+        assert_predicate conn, :connected?
+        assert_operator conn.connection_age, :>=, 0
+        assert_operator conn.connection_age, :<, 1
+
+        conn.instance_variable_set(:@connected_since, Process.clock_gettime(Process::CLOCK_MONOTONIC) - 11)
+
+        assert_operator conn.connection_age, :>, 10
+
+        pool.checkin conn
+        pool.retire_old_connections
+
+        assert_not_predicate conn, :connected?
+      end
+
+      def test_explicit_retirement
+        pool = new_pool_with_options(max_age: nil, async: false)
+
+        conn = pool.checkout
+
+        assert_not_predicate conn, :connected?
+        assert_nil conn.connection_age
+
+        conn.connect!
+
+        assert_predicate conn, :connected?
+        assert_operator conn.connection_age, :>=, 0
+        assert_operator conn.connection_age, :<, 1
+
+        pool.recycle!
+
+        assert_equal Float::INFINITY, conn.connection_age
+
+        pool.checkin conn
+        pool.retire_old_connections
+
+        assert_not_predicate conn, :connected?
+      end
+
+      def test_keepalive
+        pool = new_pool_with_options(keepalive: 100, async: false)
+        conn = pool.checkout
+        conn.connect!
+        pool.checkin conn
+
+        assert_operator conn.seconds_since_last_activity, :<, 5
+
+        conn.instance_variable_set(:@last_activity, Process.clock_gettime(Process::CLOCK_MONOTONIC) - 50)
+
+        assert_in_epsilon 50, conn.seconds_since_last_activity, 10
+
+        # we're currently below the threshold, so this is a no-op
+        pool.keep_alive
+
+        # still about the same age
+        assert_in_epsilon 50, conn.seconds_since_last_activity, 10
+
+        conn.instance_variable_set(:@last_activity, Process.clock_gettime(Process::CLOCK_MONOTONIC) - 200)
+
+        pool.keep_alive
+
+        # keep-alive query occurred, so our activity time has reset
+        assert_operator conn.seconds_since_last_activity, :<, 5
+      end
+
+      def test_keepalive_notices_problems
+        pool = new_pool_with_options(keepalive: 100, async: false)
+        conn = pool.checkout
+        conn.connect!
+        pool.checkin conn
+
+        original_broken_connection = conn.instance_variable_get(:@raw_connection)
+
+        assert_predicate conn, :connected?
+
+        # This is a definite API violation -- several nearby tests overstep by
+        # poking around unowned connections' bookkeeping, but actually querying
+        # (as #remote_disconnect does) is a whole other level. If it breaks in
+        # the future, we should find an alternative.
+        remote_disconnect conn
+
+        assert_same original_broken_connection, conn.instance_variable_get(:@raw_connection)
+        assert_not_predicate conn, :active?
+
+        # XXX: Arguably everything after the above assertion is just
+        # codifying a flawed current implementation: the moment we see
+        # the connection is broken, we should probably disconnect it,
+        # regardless of who called #active?, instead of specifically
+        # handling the false case in #keep_alive.
+        #
+        # (Which doesn't change the design/intent of keep_alive itself,
+        # beyond potentially obviating its explicit disconnect... just
+        # the approach of this test.)
+
+        # we're below the threshold; no keep-alive occurs
+        pool.keep_alive
+
+        # connection is still [unknowingly] broken
+        assert_same original_broken_connection, conn.instance_variable_get(:@raw_connection)
+        assert_predicate conn, :connected?
+        assert_not_predicate conn, :active?
+
+        conn.instance_variable_set(:@last_activity, Process.clock_gettime(Process::CLOCK_MONOTONIC) - 200)
+        pool.keep_alive
+
+        # keep-alive noticed the problem and disconnected
+        assert_not_predicate conn, :connected?
+
+        # .. so now preconnect can repair the connection
+        pool.preconnect
+
+        assert_not_same original_broken_connection, conn.instance_variable_get(:@raw_connection)
+        assert_predicate conn, :connected?
+        assert_predicate conn, :active?
+      end
+
+      def test_idle_through_keepalive
+        pool = new_pool_with_options(keepalive: 0.1, idle_timeout: 0.5, async: false)
+        conn = pool.checkout
+        conn.connect!
+        pool.checkin conn
+
+        assert_predicate conn, :connected?
+        assert_operator conn.seconds_since_last_activity, :<, 0.1
+        assert_operator conn.seconds_idle, :<, 0.1
+
+        # This test is about the interaction between multiple "last use"
+        # timers, so manual fudging is a bit too intimate / relies on
+        # knowledge of the implementation. So instead, we have to live
+        # with a bit of sleeping (and hope we don't lose any races).
+
+        sleep 0.2
+
+        assert_operator conn.seconds_since_last_activity, :>, 0.1
+        assert_operator conn.seconds_idle, :>, 0.1
+        assert_operator conn.seconds_idle, :<, 0.5
+
+        pool.keep_alive # sends a keep-alive query
+        pool.flush # no-op
+
+        assert_predicate conn, :connected?
+        assert_operator conn.seconds_since_last_activity, :<, 0.1
+        assert_operator conn.seconds_idle, :>, 0.1
+        assert_operator conn.seconds_idle, :<, 0.5
+
+        sleep 0.4
+
+        assert_predicate conn, :connected?
+        assert_operator conn.seconds_since_last_activity, :>, 0.1
+        assert_operator conn.seconds_idle, :>, 0.5
+
+        pool.keep_alive # sends another query, though it doesn't matter
+        pool.flush # drops the idle connection
+
+        assert_not_predicate conn, :connected?
       end
 
       def test_remove_connection
@@ -421,7 +695,7 @@ module ActiveRecord
       def test_checkout_fairness
         skip_fiber_testing
 
-        @pool.instance_variable_set(:@size, 10)
+        @pool.instance_variable_set(:@max_size, 10)
         expected = (1..@pool.size).to_a.freeze
         # check out all connections so our threads start out waiting
         conns = expected.map { @pool.checkout }
@@ -468,7 +742,7 @@ module ActiveRecord
       def test_checkout_fairness_by_group
         skip_fiber_testing
 
-        @pool.instance_variable_set(:@size, 10)
+        @pool.instance_variable_set(:@max_size, 10)
         # take all the connections
         conns = (1..10).map { @pool.checkout }
         mutex = Mutex.new
