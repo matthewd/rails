@@ -951,6 +951,8 @@ module ActiveRecord
             encoding << ", "
           end
 
+          variables["time_zone"] ||= "+0:00" if default_timezone == :utc
+
           # Gather up all of the SET variables...
           variable_assignments = variables.filter_map do |k, v|
             if defaults.include?(v)
