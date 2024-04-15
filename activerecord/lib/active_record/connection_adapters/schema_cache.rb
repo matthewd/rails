@@ -18,6 +18,10 @@ module ActiveRecord
         @cache_path = cache_path
       end
 
+      def inspect
+        to_s
+      end
+
       def clear!
         @cache = empty_cache
 

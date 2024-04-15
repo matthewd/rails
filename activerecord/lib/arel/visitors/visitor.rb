@@ -11,6 +11,10 @@ module Arel # :nodoc: all
         visit object, collector
       end
 
+      def inspect
+        to_s
+      end
+
       private
         attr_reader :dispatch
 

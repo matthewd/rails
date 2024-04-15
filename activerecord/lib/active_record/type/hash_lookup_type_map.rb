@@ -48,6 +48,10 @@ module ActiveRecord
         @mapping.keys
       end
 
+      def inspect
+        to_s
+      end
+
       private
         def perform_fetch(type, *args, &block)
           @mapping.fetch(type, block).call(type, *args)
