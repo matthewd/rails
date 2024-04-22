@@ -982,6 +982,14 @@ class RelationTest < ActiveRecord::TestCase
     }
   end
 
+  def test_find_all_using_where_with_relation_with_limit
+    david = authors(:david)
+    assert_queries_count(1) {
+      relation = Author.where(id: Author.where(id: david.id).limit(5))
+      assert_equal [david], relation.to_a
+    }
+  end
+
   def test_find_all_using_where_with_relation_with_select_to_build_subquery
     david = authors(:david)
     assert_queries_count(1) {

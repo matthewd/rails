@@ -90,15 +90,15 @@ module Arel # :nodoc: all
 
         # MySQL doesn't automatically create a temporary table for use subquery, so we have
         # to give it some prompting in the form of a subsubquery.
-        def build_subselect(key, o)
+        def _build_subselect(key, o)
           subselect = super
 
           # Materialize subquery by adding distinct
           # to work with MySQL 5.7.6 which sets optimizer_switch='derived_merge=on'
-          unless has_limit_or_offset_or_orders?(subselect)
-            core = subselect.cores.last
-            core.set_quantifier = Arel::Nodes::Distinct.new
-          end
+          #unless has_limit_or_offset_or_orders?(subselect)
+          #  core = subselect.cores.last
+          #  core.set_quantifier = Arel::Nodes::Distinct.new
+          #end
 
           Nodes::SelectStatement.new.tap do |stmt|
             core = stmt.cores.last
