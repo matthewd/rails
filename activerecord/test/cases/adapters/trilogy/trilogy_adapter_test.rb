@@ -13,7 +13,7 @@ class TrilogyAdapterTest < ActiveRecord::TrilogyTestCase
 
   test "connection_error" do
     error = assert_raises ActiveRecord::ConnectionNotEstablished do
-      ActiveRecord::ConnectionAdapters::TrilogyAdapter.new(host: "invalid", port: 12345).connect!
+      ActiveRecord::ConnectionAdapters::TrilogyAdapter.new(host: "invalid.example", port: 12345).connect!
     end
     assert_kind_of ActiveRecord::ConnectionAdapters::NullPool, error.connection_pool
   end
@@ -392,7 +392,7 @@ class TrilogyAdapterTest < ActiveRecord::TrilogyTestCase
 
   test "socket has precedence over host" do
     error = assert_raises ActiveRecord::ConnectionNotEstablished do
-      ActiveRecord::ConnectionAdapters::TrilogyAdapter.new(host: "invalid", port: 12345, socket: "/var/invalid.sock").connect!
+      ActiveRecord::ConnectionAdapters::TrilogyAdapter.new(host: "invalid.example", port: 12345, socket: "/var/invalid.sock").connect!
     end
     assert_includes error.message, "/var/invalid.sock"
   end
