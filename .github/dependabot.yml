@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: bundler
+    directory: /
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-type: all
+    versioning-strategy: lockfile-only
+    groups:
+      aws:
+        patterns:
+          - "aws-*"
+      azure:
+        patterns:
+          - "azure-*"
+      faraday:
+        patterns:
+          - "faraday-*"
+      google:
+        patterns:
+          - "google-*"
