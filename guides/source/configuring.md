@@ -3560,6 +3560,69 @@ development:
   query_cache: false
 ```
 
+### Database Pooling
+
+Active Record database connections are managed by [`ActiveRecord::ConnectionAdapters::ConnectionPool`][] which ensures that a connection pool synchronizes the amount of thread access to a limited number of database connections. Connection pools can be configured in `database.yml`.
+
+```yaml
+development:
+  adapter: sqlite3
+  database: storage/development.sqlite3
+  idle_timeout: 300
+  keepalive: 600
+  max_age: 600
+  max_connections: 5
+  min_connections: 0
+  timeout: 5000
+```
+
+Since the connection pool is managed by Active Record, all application servers
+(Thin, Puma, Unicorn, etc.) should behave the same. The database connection
+pool is initially empty. As demand for connections increases it will create
+them until it reaches the limit defined by `max_connections`. The demand for
+connections will generally be constrained by the number of application threads.
+
+A request will check out a connection when it requires access to the database.
+After completing the query, the connection will be checked back in, and thus
+available to be reused.
+
+Especially when an application has multiple databases, creating new connections
+on demand can be expensive. When `min_connections` is set, Active Record can
+eagerly open and maintain a minimum number of database connections.
+
+Database connections will be recycled/retired in order of creation. Connections
+are retired when their age exceeds `max_age`, or they have been idle for longer
+than `idle_timeout`.
+
+<!-- Suggestions please -->
+Idle database connections can be bad - the database may no longer exist, or
+may assume the application server no longer exists. `keepalive` will check
+open database connections and keep them alive.
+
+<!-- How does this interact with idle_timeoue? -->
+<!-- How does this interact with min_connections? -->
+<!-- How does this interact with INFINITY? -->
+
+#### Connection Pool Timeouts
+
+If your application requests more connections than are available, Active Record
+will queue the requests and wait for a connection from the pool. If it cannot
+get a connection in time, a timeout error will be thrown.
+
+```
+ActiveRecord::ConnectionTimeoutError - could not obtain a database connection within 5.000 seconds (waited 5.000 seconds)
+```
+
+If you get the above error, it may help to increase the size of the connection
+pool by increasing the `max_connections` option in `database.yml`.
+
+NOTE. If you are running in a multi-threaded environment, several threads could
+be accessing multiple connections simultaneously. Depending on your current
+request load, there could be multiple threads contending for a limited number
+of connections.
+
+[`ActiveRecord::ConnectionAdapters::ConnectionPool`]: https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/ConnectionPool.html
+
 ### Creating Rails Environments
 
 By default Rails ships with three environments: "development", "test", and "production". While these are sufficient for most use cases, there are circumstances when you want more environments.
@@ -3975,38 +4038,6 @@ Below is a comprehensive list of all the initializers found in Rails in the orde
 * `disable_dependency_loading`: Disables the automatic dependency loading if the `config.eager_load` is set to `true`.
 
 [`Rails.application.deprecators`]: https://api.rubyonrails.org/classes/Rails/Application.html#method-i-deprecators
-
-Database Pooling
-----------------
-
-Active Record database connections are managed by [`ActiveRecord::ConnectionAdapters::ConnectionPool`][] which ensures that a connection pool synchronizes the amount of thread access to a limited number of database connections. This limit defaults to 5 and can be configured in `database.yml`.
-
-```yaml
-development:
-  adapter: sqlite3
-  database: storage/development.sqlite3
-  pool: 5
-  timeout: 5000
-```
-
-Since the connection pooling is handled inside of Active Record by default, all application servers (Thin, Puma, Unicorn, etc.) should behave the same. The database connection pool is initially empty. As demand for connections increases it will create them until it reaches the connection pool limit.
-
-Any one request will check out a connection the first time it requires access to the database. At the end of the request it will check the connection back in. This means that the additional connection slot will be available again for the next request in the queue.
-
-If you try to use more connections than are available, Active Record will block
-you and wait for a connection from the pool. If it cannot get a connection, a
-timeout error similar to that given below will be thrown.
-
-```
-ActiveRecord::ConnectionTimeoutError - could not obtain a database connection within 5.000 seconds (waited 5.000 seconds)
-```
-
-If you get the above error, you might want to increase the size of the
-connection pool by incrementing the `pool` option in `database.yml`
-
-NOTE. If you are running in a multi-threaded environment, there could be a chance that several threads may be accessing multiple connections simultaneously. So depending on your current request load, you could very well have multiple threads contending for a limited number of connections.
-
-[`ActiveRecord::ConnectionAdapters::ConnectionPool`]: https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/ConnectionPool.html
 
 Custom Configuration
 --------------------
