@@ -315,7 +315,7 @@ module ActiveRecord
         columns = relation.arel_columns(column_names)
         relation.select_values = columns
         result = skip_query_cache_if_necessary do
-          if where_clause.contradiction? && !possible_aggregation?(column_names)
+          if where_clause.contradiction?
             ActiveRecord::Result.empty(async: @async)
           else
             model.with_connection do |c|
@@ -460,13 +460,6 @@ module ActiveRecord
 
       def distinct_select?(column_name)
         column_name.is_a?(::String) && /\bDISTINCT[\s(]/i.match?(column_name)
-      end
-
-      def possible_aggregation?(column_names)
-        column_names.any? do |column_name|
-          Arel.arel_node?(column_name) ||
-            (column_name.is_a?(String) && column_name.include?("("))
-        end
       end
 
       def operation_over_aggregate_column(column, operation, distinct)
