@@ -19,10 +19,6 @@ module ActiveModel
         end
       end
 
-      def mutable? # :nodoc:
-        true
-      end
-
       def to_immutable_string
         ImmutableString.new(
           true: @true,
