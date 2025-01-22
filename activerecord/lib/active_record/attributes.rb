@@ -7,7 +7,6 @@ module ActiveRecord
   module Attributes
     extend ActiveSupport::Concern
     include ActiveModel::AttributeRegistration
-    include ActiveModel::Attributes::Normalization
 
     # = Active Record \Attributes
     module ClassMethods
