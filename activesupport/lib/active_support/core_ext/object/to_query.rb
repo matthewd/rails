@@ -16,11 +16,6 @@ class Object
 end
 
 class NilClass
-  # Returns a CGI-escaped +key+.
-  def to_query(key)
-    CGI.escape(key.to_param)
-  end
-
   # Returns +self+.
   def to_param
     self
