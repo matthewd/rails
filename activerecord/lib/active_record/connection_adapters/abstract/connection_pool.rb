@@ -879,11 +879,13 @@ module ActiveRecord
           connections_visited.compare_by_identity
 
           perform_work = lambda do
+            c1 = nil
             connection_to_maintain = nil
 
             synchronize do
               unless self.discarded?
                 if connection_to_maintain = @connections.select { |conn| !conn.in_use? }.select(&candidate_selector).sort_by(&:seconds_idle).find { |conn| !connections_visited[conn] }
+                  c1 = ActiveSupport::IsolatedExecutionState.context
                   checkout_for_maintenance connection_to_maintain
                 end
               end
@@ -895,6 +897,10 @@ module ActiveRecord
               begin
                 maintenance_work.call connection_to_maintain
               ensure
+                c2 = ActiveSupport::IsolatedExecutionState.context
+                if c1 != c2
+                  raise "Connection was checked out by a different thread. This is not allowed.\n#{c1} checked out the connection, but #{c2} is trying to check it in."
+                end
                 return_from_maintenance connection_to_maintain
               end
 

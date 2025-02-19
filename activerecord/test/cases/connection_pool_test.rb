@@ -42,7 +42,7 @@ module ActiveRecord
 
       def teardown
         super
-        @pools.each(&:disconnect!)
+        @pools&.each(&:disconnect!)
       end
 
       def test_checkout_after_close
