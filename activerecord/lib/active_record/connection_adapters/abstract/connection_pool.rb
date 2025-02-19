@@ -892,10 +892,6 @@ module ActiveRecord
             if connection_to_maintain
               connections_visited[connection_to_maintain] = true
 
-              # If we're running async, we can schedule the next round of work
-              # as soon as we've grabbed a connection to work on.
-              @async_executor&.post(&perform_work)
-
               begin
                 maintenance_work.call connection_to_maintain
               ensure
@@ -906,11 +902,7 @@ module ActiveRecord
             end
           end
 
-          if @async_executor
-            @async_executor.post(&perform_work)
-          else
-            nil while perform_work.call
-          end
+          nil while perform_work.call
         end
 
         # Directly check a specific connection out of the pool. Skips callbacks.
