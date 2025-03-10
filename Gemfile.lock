@@ -187,7 +187,7 @@ GEM
       concurrent-ruby
     childprocess (5.1.0)
       logger (~> 1.5)
-    concurrent-ruby (1.3.4)
+    concurrent-ruby (1.3.5)
     connection_pool (2.5.0)
     crack (1.0.0)
       bigdecimal
@@ -373,7 +373,7 @@ GEM
     mixlib-cli (2.1.8)
     mixlib-config (3.0.27)
       tomlrb
-    mixlib-shellout (3.3.4)
+    mixlib-shellout (3.3.8)
       chef-utils
     mono_logger (1.1.2)
     msgpack (1.7.5)
