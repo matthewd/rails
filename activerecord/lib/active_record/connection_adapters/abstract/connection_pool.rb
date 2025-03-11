@@ -524,6 +524,12 @@ module ActiveRecord
         @connections.nil?
       end
 
+      def maintainable? # :nodoc:
+        synchronize do
+          @connections&.size&.> 0 || (activated? && @min_connections > 0)
+        end
+      end
+
       # Clears the cache which maps classes and re-connects connections that
       # require reloading.
       #
