@@ -43,6 +43,11 @@ module ActiveRecord
       def teardown
         super
         @pools&.each(&:disconnect!)
+        @pool = @pools = nil
+
+        if defined?(@previous_isolation_level)
+          set_isolation_level @previous_isolation_level, restoring: true
+        end
       end
 
       def test_checkout_after_close
@@ -1441,6 +1446,30 @@ module ActiveRecord
           @pools << pool
           pool
         end
+
+        def set_isolation_level(value, restoring: false)
+          return if ActiveSupport::IsolatedExecutionState.isolation_level == value
+
+          ActiveRecord::Base.connection_handler.clear_all_connections!
+
+          GC.start if live_connection_pools.any?
+
+          if live_connection_pools.any?
+            if restoring
+              ActiveSupport::IsolatedExecutionState.isolation_level = value
+              raise "Cannot safely restore the isolation level due to a connection pool being alive"
+            else
+              raise "Cannot change the isolation level while a connection pool is alive"
+            end
+          end
+
+          @previous_isolation_level ||= ActiveSupport::IsolatedExecutionState.isolation_level
+          ActiveSupport::IsolatedExecutionState.isolation_level = value
+        end
+
+        def live_connection_pools
+          ActiveRecord::ConnectionAdapters::ConnectionPool::Reaper.pools
+        end
     end
 
     class ConnectionPoolThreadTest < ActiveRecord::TestCase
@@ -1451,17 +1480,10 @@ module ActiveRecord
       end
 
       def setup
-        @previous_isolation_level = ActiveSupport::IsolatedExecutionState.isolation_level
-
-        ActiveSupport::IsolatedExecutionState.isolation_level = :thread
+        set_isolation_level :thread
         @connection_test_model_class = ThreadConnectionTestModel
 
         super
-      end
-
-      def teardown
-        super
-        ActiveSupport::IsolatedExecutionState.isolation_level = @previous_isolation_level
       end
 
       def test_lock_thread_allow_fiber_reentrency
@@ -1517,17 +1539,10 @@ module ActiveRecord
       end
 
       def setup
-        @previous_isolation_level = ActiveSupport::IsolatedExecutionState.isolation_level
-
-        ActiveSupport::IsolatedExecutionState.isolation_level = :fiber
+        set_isolation_level :fiber
         @connection_test_model_class = FiberConnectionTestModel
 
         super
-      end
-
-      def teardown
-        super
-        ActiveSupport::IsolatedExecutionState.isolation_level = @previous_isolation_level
       end
 
       private
