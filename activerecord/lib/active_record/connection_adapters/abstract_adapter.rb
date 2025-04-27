@@ -1229,7 +1229,7 @@ module ActiveRecord
 
         def attempt_configure_connection
           configure_connection
-        rescue Exception # Need to handle things such as Timeout::ExitException
+        rescue
           disconnect!
           raise
         end
