@@ -395,19 +395,19 @@ module ActiveRecord
       #   end
       def with_pipeline
         return yield unless pipeline_supported?
-        
-        @lock.synchronize do
+
+        with_raw_connection do |raw_connection|
           # Initialize pipeline context if not already present
-          @pipeline_context ||= PostgreSQL::PipelineContext.new(@raw_connection, self)
-          
+          @pipeline_context = PostgreSQL::PipelineContext.new(raw_connection, self)
+
           # Enter pipeline mode
           @pipeline_context.enter_pipeline_mode
-          
+
           begin
             yield
           ensure
-            # Always exit pipeline mode, even on exception
             @pipeline_context.exit_pipeline_mode
+            @pipeline_context = nil
           end
         end
       end
@@ -419,7 +419,7 @@ module ActiveRecord
       private
         def pipeline_supported?
           # Pipeline mode requires PostgreSQL 11+ and a compatible pg gem version
-          connected? && @raw_connection.respond_to?(:enter_pipeline_mode)
+          connected? && any_raw_connection.respond_to?(:enter_pipeline_mode)
         end
 
       public
