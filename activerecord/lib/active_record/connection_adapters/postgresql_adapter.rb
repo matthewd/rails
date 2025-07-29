@@ -18,6 +18,8 @@ require "active_record/connection_adapters/postgresql/schema_dumper"
 require "active_record/connection_adapters/postgresql/schema_statements"
 require "active_record/connection_adapters/postgresql/type_metadata"
 require "active_record/connection_adapters/postgresql/utils"
+require "active_record/connection_adapters/postgresql/pipeline_context"
+require "active_record/pipeline_result"
 
 module ActiveRecord
   module ConnectionAdapters
@@ -338,6 +340,7 @@ module ActiveRecord
         @notice_receiver_sql_warnings = []
 
         @use_insert_returning = @config.key?(:insert_returning) ? self.class.type_cast_config_to_boolean(@config[:insert_returning]) : true
+        @pipeline_context = nil
       end
 
       def connected?
@@ -380,6 +383,46 @@ module ActiveRecord
           super
         end
       end
+
+      # Executes queries within a PostgreSQL pipeline context for improved performance.
+      # All queries executed within the block will be batched and sent together,
+      # reducing network round trips.
+      #
+      #   connection.with_pipeline do
+      #     result1 = connection.exec_query("SELECT * FROM users")
+      #     result2 = connection.exec_query("INSERT INTO logs ...")
+      #     # Both queries are batched and results collected efficiently
+      #   end
+      def with_pipeline
+        return yield unless pipeline_supported?
+        
+        @lock.synchronize do
+          # Initialize pipeline context if not already present
+          @pipeline_context ||= PostgreSQL::PipelineContext.new(@raw_connection, self)
+          
+          # Enter pipeline mode
+          @pipeline_context.enter_pipeline_mode
+          
+          begin
+            yield
+          ensure
+            # Always exit pipeline mode, even on exception
+            @pipeline_context.exit_pipeline_mode
+          end
+        end
+      end
+
+      def pipeline_active?
+        @pipeline_context&.pipeline_active?
+      end
+
+      private
+        def pipeline_supported?
+          # Pipeline mode requires PostgreSQL 11+ and a compatible pg gem version
+          connected? && @raw_connection.respond_to?(:enter_pipeline_mode)
+        end
+
+      public
 
       # Disconnects from the database if already connected. Otherwise, this
       # method does nothing.
