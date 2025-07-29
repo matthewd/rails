@@ -38,18 +38,20 @@ module ActiveRecord
           @mutex.synchronize do
             return unless @pipeline_active
 
-            # Send pipeline sync to mark end of pipeline
-            @raw_connection.pipeline_sync
-
-            @pending_results << SyncResult.new
-
-            collect_remaining_results
-
-            @raw_connection.exit_pipeline_mode
-            @pipeline_active = false
-
-            @pending_results.clear
-            @flushed_through = -1
+            begin
+              # Try proper cleanup - sync and collect results normally
+              @raw_connection.pipeline_sync
+              @pending_results << SyncResult.new
+              collect_remaining_results
+            ensure
+              # Always guarantee connection cleanup regardless of errors above
+              @raw_connection.discard_results
+              @raw_connection.exit_pipeline_mode
+              @pipeline_active = false
+              
+              @pending_results.clear
+              @flushed_through = -1
+            end
           end
         end
 
