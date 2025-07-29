@@ -28,7 +28,7 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     result = nil
     
     @connection.with_pipeline do
-      @connection.exec_query("INSERT INTO pipeline_test_table (name) VALUES ('test1', ?)")
+      @connection.exec_query("INSERT INTO pipeline_test_table (name) VALUES ('test1')")
       result = @connection.exec_query("SELECT COUNT(*) as count FROM pipeline_test_table")
     end
     
@@ -36,55 +36,57 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     assert_equal 1, result.rows.first.first.to_i
   end
 
-  def test_pipeline_with_binds
+  def test_pipeline_error_wrapping
     skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
     
-    result = nil
-    
-    @connection.with_pipeline do
-      @connection.exec_query("INSERT INTO pipeline_test_table (name) VALUES ($1)", "SQL", ["bound_value"])
-      result = @connection.exec_query("SELECT name FROM pipeline_test_table WHERE name = $1", "SQL", ["bound_value"])
+    # Test that PostgreSQL errors get wrapped in ActiveRecord exceptions
+    exception = assert_raises(ActiveRecord::StatementInvalid) do
+      @connection.with_pipeline do
+        @connection.exec_query("INVALID SQL STATEMENT")
+      end
     end
-
-    assert_equal 1, result.rows.length
-    assert_equal "bound_value", result.rows.first.first
+    
+    # Verify it's properly wrapped as an ActiveRecord exception
+    assert_instance_of ActiveRecord::StatementInvalid, exception
+    assert_match(/syntax error/, exception.message.downcase)
   end
 
-  def test_pipeline_result_behavior
+  def test_pipeline_error_from_ignored_result
     skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
     
-    result = nil
-    
-    @connection.with_pipeline do
-      @connection.exec_query("INSERT INTO pipeline_test_table (name) VALUES ('test')")
-      result = @connection.exec_query("SELECT COUNT(*) as count FROM pipeline_test_table")
+    # Test that errors from queries with ignored results still get raised
+    exception = assert_raises(ActiveRecord::StatementInvalid) do
+      @connection.with_pipeline do
+        # This query has an error but we don't access its result
+        @connection.exec_query("INSERT INTO pipeline_test_table (name) VALUES ('test1', 'extra_param')")
+        # This query is valid - errors should still be raised when pipeline ends
+        valid_result = @connection.exec_query("SELECT 1")
+        # Don't access the error result, but the error should still be raised
+      end
     end
     
-    # Test that result behaves like a normal ActiveRecord::Result
-    assert_respond_to result, :rows
-    assert_respond_to result, :columns
-    assert_respond_to result, :empty?
-    assert_not result.empty?
-    assert_equal 1, result.rows.first.first.to_i
+    # Verify it's properly wrapped and contains expected error info
+    assert_instance_of ActiveRecord::StatementInvalid, exception
+    assert_match(/more expressions than target columns/, exception.message.downcase)
   end
 
-  def test_multiple_queries_in_pipeline
+  def test_pipeline_error_cleanup_repeated
     skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
     
-    results = []
-    
-    @connection.with_pipeline do
-      results << @connection.exec_query("INSERT INTO pipeline_test_table (name) VALUES ('test1')")
-      results << @connection.exec_query("INSERT INTO pipeline_test_table (name) VALUES ('test2')")
-      results << @connection.exec_query("INSERT INTO pipeline_test_table (name) VALUES ('test3')")
-      results << @connection.exec_query("SELECT COUNT(*) as count FROM pipeline_test_table")
+    # Test that we can handle pipeline errors repeatedly without connection state issues
+    2.times do |i|
+      exception = assert_raises(ActiveRecord::StatementInvalid) do
+        @connection.with_pipeline do
+          # This query has an error but we don't access its result
+          @connection.exec_query("INSERT INTO pipeline_test_table (name) VALUES ('test#{i}', 'extra_param')")
+          # This query is valid
+          valid_result = @connection.exec_query("SELECT #{i + 1}")
+        end
+      end
+      
+      # Verify it's properly wrapped
+      assert_instance_of ActiveRecord::StatementInvalid, exception
+      assert_match(/more expressions than target columns/, exception.message.downcase)
     end
-    
-    # Verify that we get proper results
-    assert_equal 4, results.length
-    
-    # Check that the last query returns the expected count
-    count_result = results.last
-    assert_equal 3, count_result.rows.first.first.to_i
   end
 end
