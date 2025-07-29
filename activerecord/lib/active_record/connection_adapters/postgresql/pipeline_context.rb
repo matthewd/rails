@@ -45,6 +45,12 @@ module ActiveRecord
               collect_remaining_results
             ensure
               # Always guarantee connection cleanup regardless of errors above
+              
+              # Drain any remaining results that weren't collected during error handling
+              while result = @raw_connection.get_result
+                result.clear rescue nil
+              end
+              
               @raw_connection.discard_results
               @raw_connection.exit_pipeline_mode
               @pipeline_active = false

@@ -3,8 +3,9 @@
 require "cases/helper"
 
 class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
+  self.use_transactional_tests = false
   def setup
-    @connection = ActiveRecord::Base.connection
+    @connection = ActiveRecord::Base.lease_connection
     @connection.execute("DROP TABLE IF EXISTS pipeline_test_table")
     @connection.execute("CREATE TABLE pipeline_test_table (id SERIAL PRIMARY KEY, name VARCHAR(50))")
   end
