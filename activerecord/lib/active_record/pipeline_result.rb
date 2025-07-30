@@ -4,7 +4,7 @@ module ActiveRecord
   class PipelineResult # :nodoc:
     class Complete
       attr_reader :result
-      delegate :empty?, :to_a, to: :result
+      delegate :empty?, :to_a, :rows, :columns, :each, :first, :last, :size, :length, :count, to: :result
 
       def initialize(result)
         @result = result
@@ -12,10 +12,6 @@ module ActiveRecord
 
       def pending?
         false
-      end
-
-      def then(&block)
-        Promise::Complete.new(@result.then(&block))
       end
     end
 
@@ -28,7 +24,7 @@ module ActiveRecord
       end
     end
 
-    delegate :empty?, :to_a, to: :result
+    delegate :empty?, :to_a, :rows, :columns, :each, :first, :last, :size, :length, :count, to: :result
 
     def initialize(pipeline_context)
       @pipeline_context = pipeline_context
@@ -76,38 +72,5 @@ module ActiveRecord
     def pending?
       @pending
     end
-
-    private
-      def method_missing(method, *args, &block)
-        # Avoid infinite recursion by checking if we're already getting the result
-        if @getting_result
-          super
-        else
-          @getting_result = true
-          begin
-            actual_result = result
-            if actual_result.respond_to?(method)
-              actual_result.public_send(method, *args, &block)
-            else
-              super
-            end
-          ensure
-            @getting_result = false
-          end
-        end
-      end
-
-      def respond_to_missing?(method, include_private = false)
-        return false if @getting_result
-        begin
-          @getting_result = true
-          actual_result = result
-          actual_result.respond_to?(method, include_private) || super
-        rescue
-          super
-        ensure
-          @getting_result = false
-        end
-      end
   end
 end
