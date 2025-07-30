@@ -419,10 +419,19 @@ module ActiveRecord
         @pipeline_context&.pipeline_active?
       end
 
-      private
-        def pipeline_supported?
-          ENV['DISABLE_PIPELINE'] != '1' && ::PG::Connection.method_defined?(:enter_pipeline_mode)
+      def pipeline_supported?
+        disabled = ENV['DISABLE_PIPELINE'] == '1'
+        method_exists = ::PG::Connection.method_defined?(:enter_pipeline_mode)
+        result = !disabled && method_exists
+        
+        if ENV['DEBUG_PIPELINE']
+          puts "[PIPELINE_SUPPORT] disabled: #{disabled}, method_exists: #{method_exists}, result: #{result}"
         end
+        
+        result
+      end
+
+      private
 
       public
 

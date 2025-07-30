@@ -562,18 +562,83 @@ module ActiveRecord
         def raw_execute(sql, name = nil, binds = [], prepare: false, async: false, allow_retry: false, materialize_transactions: true, batch: false)
           type_casted_binds = type_casted_binds(binds)
           log(sql, name, binds, type_casted_binds, async: async, allow_retry: allow_retry) do |notification_payload|
-            with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions) do |conn|
-              result = ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-                perform_query(conn, sql, binds, type_casted_binds, prepare: prepare, notification_payload: notification_payload, batch: batch)
+            # Check if we should pipeline transaction commands with this query
+            if materialize_transactions && should_pipeline_transactions?
+              puts "[TRANSACTION_PIPELINE] Using transaction pipelining for query: #{sql.strip}" if ENV['DEBUG_PIPELINE']
+              execute_with_transaction_pipelining(sql, name, binds, type_casted_binds, prepare: prepare, async: async, allow_retry: allow_retry, batch: batch, notification_payload: notification_payload)
+            else
+              with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions) do |conn|
+                result = ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
+                  perform_query(conn, sql, binds, type_casted_binds, prepare: prepare, notification_payload: notification_payload, batch: batch)
+                end
+                handle_warnings(result, sql)
+                result
               end
-              handle_warnings(result, sql)
-              result
             end
           end
         end
 
         def perform_query(raw_connection, sql, binds, type_casted_binds, prepare:, notification_payload:, batch:)
           raise NotImplementedError
+        end
+
+        def should_pipeline_transactions?
+          # Only pipeline if:
+          # 1. We have unmaterialized transactions
+          # 2. Pipeline is supported and not disabled
+          # 3. We're not already in a pipeline (avoid nesting)
+          # 4. This is PostgreSQL adapter with pipeline support
+          has_unmaterialized = transaction_manager.has_unmaterialized_transactions?
+          responds_to_pipeline = respond_to?(:pipeline_supported?)
+          pipeline_supported_result = responds_to_pipeline ? pipeline_supported? : false
+          pipeline_supported = responds_to_pipeline && pipeline_supported_result
+          not_in_pipeline = !pipeline_active?
+          
+          result = has_unmaterialized && pipeline_supported && not_in_pipeline
+          
+          if ENV['DEBUG_PIPELINE']
+            puts "[TRANSACTION_PIPELINE] should_pipeline_transactions? #{result} (unmaterialized: #{has_unmaterialized}, responds_to_pipeline: #{responds_to_pipeline}, pipeline_supported_result: #{pipeline_supported_result}, not_in_pipeline: #{not_in_pipeline})"
+            puts "[TRANSACTION_PIPELINE] Connection class: #{self.class.name}"
+          end
+          
+          result
+        end
+
+        def execute_with_transaction_pipelining(sql, name, binds, type_casted_binds, prepare: false, async: false, allow_retry: false, batch: false, notification_payload:)
+          with_raw_connection(allow_retry: allow_retry, materialize_transactions: false) do |conn|
+            result = nil
+
+            begin
+              with_pipeline do
+                # First, add transaction commands to pipeline
+                materialize_transactions_in_pipeline
+
+                # Then add the user query to pipeline
+                result = ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
+                  perform_query(conn, sql, binds, type_casted_binds, prepare: prepare, notification_payload: notification_payload, batch: batch)
+                end
+              end
+
+              # Resolve the pipeline result to get the actual result
+              resolved_result = result.respond_to?(:result) ? result.result : result
+
+              # After pipeline completes successfully, verify transaction commands succeeded
+              transaction_manager.complete_pipeline_materialization
+
+              handle_warnings(resolved_result, sql) if resolved_result
+              resolved_result
+            rescue => error
+              # For any error, ensure transaction state is properly cleaned up
+              if transaction_manager.pipeline_materialization_active?
+                transaction_manager.invalidate_pipeline_transactions(error)
+              end
+              raise
+            end
+          end
+        end
+
+        def materialize_transactions_in_pipeline
+          transaction_manager.materialize_transactions_in_pipeline(self)
         end
 
         def handle_warnings(raw_result, sql)

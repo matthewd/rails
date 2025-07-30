@@ -31,6 +31,7 @@ module ActiveRecord
         def enter_pipeline_mode
           @mutex.synchronize do
             return if @pipeline_active
+            puts "[PIPELINE] Entering pipeline mode" if ENV['DEBUG_PIPELINE']
             @raw_connection.enter_pipeline_mode
             @pipeline_active = true
           end
@@ -39,6 +40,8 @@ module ActiveRecord
         def exit_pipeline_mode
           @mutex.synchronize do
             return unless @pipeline_active
+
+            puts "[PIPELINE] Exiting pipeline mode (#{@pending_results.length} pending results)" if ENV['DEBUG_PIPELINE']
 
             begin
               # Try proper cleanup - sync and collect results normally
@@ -85,6 +88,11 @@ module ActiveRecord
           @mutex.synchronize do
             raise "Pipeline not active" unless @pipeline_active
 
+            # DEBUG: Log what we're adding to the pipeline
+            if ENV['DEBUG_PIPELINE']
+              puts "[PIPELINE] Adding to pipeline: #{sql}"
+            end
+
             # Send query to pipeline immediately
             # In pipeline mode, we must use send_query_params, not send_query
             if prepare
@@ -104,10 +112,16 @@ module ActiveRecord
           end
         end
 
+        def add_transaction_command(sql)
+          # Just use add_query with no binds for transaction commands
+          add_query(sql, [], [], prepare: false)
+        end
+
         private
           def get_next_result
             prev = nil
             while curr = @raw_connection.get_result
+              puts "[PIPELINE] get_next_result: #{curr.result_status}" if ENV['DEBUG_PIPELINE']
               # Certain result types are not followed by a nil, and so
               # must be returned immediately
               if curr.result_status == PG::PGRES_PIPELINE_SYNC # TODO: .. or COPY-related stuff
@@ -151,6 +165,7 @@ module ActiveRecord
               pending_result.result
             end
           end
+
       end
     end
   end

@@ -3,6 +3,39 @@
 require "active_support/core_ext/digest"
 
 module ActiveRecord
+  class TransactionPipelineError < ActiveRecordError
+    attr_reader :original_error
+
+    def initialize(message = "Transaction pipeline error", original_error = nil)
+      @original_error = original_error
+      super(message)
+    end
+  end
+
+  class TransactionMaterializationError < TransactionPipelineError
+    attr_reader :transaction_index
+
+    def initialize(message = "Transaction materialization error", original_error = nil, transaction_index: nil)
+      @transaction_index = transaction_index
+      super(message, original_error)
+    end
+  end
+
+  class PipelineError < TransactionPipelineError
+    def initialize(message = "Pipeline error")
+      super(message)
+    end
+  end
+
+  class PipelineMaterializationError < TransactionPipelineError
+    attr_reader :materialization_error
+
+    def initialize(message = "Pipeline materialization error", original_error: nil, materialization_error: nil)
+      @materialization_error = materialization_error
+      super(message, original_error)
+    end
+  end
+
   module ConnectionAdapters
     # = Active Record Connection Adapters Transaction State
     class TransactionState
@@ -170,6 +203,7 @@ module ActiveRecord
         @dirty = false
         @user_transaction = joinable ? ActiveRecord::Transaction.new(self) : ActiveRecord::Transaction::NULL_TRANSACTION
         @instrumenter = TransactionInstrumenter.new(connection: connection, transaction: @user_transaction)
+        @pipeline_result = nil
       end
 
       def dirty!
@@ -245,8 +279,12 @@ module ActiveRecord
         @instrumenter.start
       end
 
+      def materialize_in_pipeline!(connection)
+        raise NotImplementedError, "Subclasses must implement"
+      end
+
       def materialized?
-        @materialized
+        @materialized || (@pipeline_result && !@pipeline_result.pending?)
       end
 
       def restore!
@@ -431,6 +469,14 @@ module ActiveRecord
         super
       end
 
+      def materialize_in_pipeline!(connection)
+        sql = "SAVEPOINT #{savepoint_name}"
+        @pipeline_result = connection.add_transaction_command(sql)
+        @materialized = true
+        @instrumenter&.start
+        @pipeline_result
+      end
+
       def restart
         return unless materialized?
 
@@ -473,6 +519,27 @@ module ActiveRecord
         super
       end
 
+      def materialize_in_pipeline!(connection)
+        sql = if joinable?
+          if isolation_level
+            "BEGIN ISOLATION LEVEL #{isolation_level}"
+          else
+            "BEGIN"
+          end
+        else
+          if isolation_level
+            "BEGIN DEFERRABLE ISOLATION LEVEL #{isolation_level}"
+          else
+            "BEGIN DEFERRABLE"
+          end
+        end
+
+        @pipeline_result = connection.add_transaction_command(sql)
+        @materialized = true
+        @instrumenter&.start
+        @pipeline_result
+      end
+
       def restart
         return unless materialized?
 
@@ -513,6 +580,8 @@ module ActiveRecord
         @has_unmaterialized_transactions = false
         @materializing_transactions = false
         @lazy_transactions_enabled = true
+        @pipeline_materialization_active = false
+        @pipeline_transaction_results = []
       end
 
       def begin_transaction(isolation: nil, joinable: true, _lazy: true)
@@ -673,6 +742,84 @@ module ActiveRecord
 
       def current_transaction
         @stack.last || NULL_TRANSACTION
+      end
+
+      def pipeline_materialization_active?
+        @pipeline_materialization_active
+      end
+
+      def has_unmaterialized_transactions?
+        @has_unmaterialized_transactions
+      end
+
+      def materialize_transactions_in_pipeline(connection)
+        return if @materializing_transactions
+
+        if @has_unmaterialized_transactions
+          @connection.lock.synchronize do
+            begin
+              @materializing_transactions = true
+              @pipeline_materialization_active = true
+
+              @stack.each do |transaction|
+                unless transaction.materialized?
+                  pipeline_result = transaction.materialize_in_pipeline!(connection)
+                  @pipeline_transaction_results << pipeline_result
+                end
+              end
+            ensure
+              @materializing_transactions = false
+            end
+            @has_unmaterialized_transactions = false
+          end
+        end
+      end
+
+      def complete_pipeline_materialization
+        @connection.lock.synchronize do
+          if @pipeline_materialization_active
+            begin
+              @pipeline_transaction_results.each_with_index do |result, index|
+                result.result
+              rescue => command_error
+                raise TransactionMaterializationError.new(
+                  "Transaction command failed during pipeline execution: #{command_error.message}",
+                  command_error,
+                  transaction_index: index
+                )
+              end
+
+              @pipeline_transaction_results.clear
+              @pipeline_materialization_active = false
+            rescue => error
+              invalidate_pipeline_transactions(error)
+              raise
+            end
+          end
+        end
+      end
+
+      def invalidate_pipeline_transactions(error)
+        @connection.lock.synchronize do
+          @stack.each do |transaction|
+            transaction.invalidate!
+            transaction.instance_variable_set(:@pipeline_result, nil)
+            transaction.instance_variable_set(:@materialized, false)
+          end
+          @pipeline_transaction_results.clear
+          @pipeline_materialization_active = false
+          @has_unmaterialized_transactions = false
+        end
+      end
+
+      def reset_pipeline_state
+        @connection.lock.synchronize do
+          if @pipeline_materialization_active
+            @pipeline_transaction_results.clear
+            @pipeline_materialization_active = false
+            @has_unmaterialized_transactions = true
+          end
+        end
       end
 
       private

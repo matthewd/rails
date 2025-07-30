@@ -133,6 +133,11 @@ module ActiveRecord
           end
 
           def perform_query(raw_connection, sql, binds, type_casted_binds, prepare:, notification_payload:, batch: false)
+            # DEBUG: Log query execution mode
+            if ENV['DEBUG_PIPELINE']
+              puts "[QUERY] SQL: #{sql.strip} | Pipeline: #{pipeline_active? && !batch ? 'YES' : 'NO'} | Batch: #{batch}"
+            end
+            
             # Check if we're in pipeline mode
             if pipeline_active? && !batch
               return @pipeline_context.add_query(sql, binds, type_casted_binds, prepare: prepare)
@@ -177,6 +182,9 @@ module ActiveRecord
           def cast_result(result)
             # If it's a PipelineResult, return as-is (it handles its own casting)
             return result if result.is_a?(ActiveRecord::PipelineResult)
+            
+            # If it's already an ActiveRecord::Result, return as-is (already cast)
+            return result if result.is_a?(ActiveRecord::Result)
             
             ar_result = if result.fields.empty?
               ActiveRecord::Result.empty(affected_rows: result.cmd_tuples)
