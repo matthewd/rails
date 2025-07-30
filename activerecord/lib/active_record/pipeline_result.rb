@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "monitor"
+
 module ActiveRecord
   class PipelineResult # :nodoc:
     class Complete
@@ -28,7 +30,7 @@ module ActiveRecord
 
     def initialize(pipeline_context)
       @pipeline_context = pipeline_context
-      @mutex = Mutex.new
+      @mutex = Monitor.new
       @result = nil
       @pending = true
       @error = nil
@@ -42,6 +44,20 @@ module ActiveRecord
       @mutex.synchronize do
         @result = result
         @pending = false
+        
+        # Immediately process the result to avoid connection state issues
+        begin
+          # Handle PGRES_PIPELINE_ABORTED results explicitly
+          if @result.result_status == PG::PGRES_PIPELINE_ABORTED
+            @error = ActiveRecord::StatementInvalid.new("Query was aborted due to an earlier error in the pipeline")
+          else
+            @result.check
+            @final_result = @pipeline_context.instance_variable_get(:@adapter).send(:cast_result, @result)
+          end
+        rescue => err
+          # Translate PG exceptions to ActiveRecord exceptions using the adapter's translation
+          @error = @pipeline_context.instance_variable_get(:@adapter).send(:translate_exception_class, err, nil, nil)
+        end
       end
     end
 
@@ -55,17 +71,8 @@ module ActiveRecord
     def result
       @mutex.synchronize do
         @pipeline_context.wait_for(self) if @pending
-
         raise @error if @error
-        return @final_result if @final_result
-
-        begin
-          @result.check
-          @final_result = @pipeline_context.instance_variable_get(:@adapter).send(:cast_result, @result)
-        rescue => err
-          @error = err
-          raise
-        end
+        @final_result
       end
     end
 

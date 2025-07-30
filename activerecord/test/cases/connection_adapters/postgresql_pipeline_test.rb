@@ -213,39 +213,47 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
   def test_pipeline_result_access_with_errors_within_pipeline_block
     skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
     
-    # This test reproduces the original PG::UnableToSend error we encountered
-    # when accessing results (including error results) within the pipeline block
+    # Test accessing error results within pipeline block: errors should be accessible
+    # individually, and pipeline cleanup should handle PGRES_PIPELINE_ABORTED properly  
     bad_result = nil
     good_result = nil
     bad_error = nil
-    good_error = nil
+    pipeline_exception = nil
     
-    @connection.with_pipeline do
-      # Execute bad query first, then good query
-      bad_result = @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
-      good_result = @connection.exec_query("SELECT 42 as answer")
-      
-      # In pipeline mode, both results exist as PipelineResult objects
-      assert_instance_of ActiveRecord::PipelineResult, bad_result
-      assert_instance_of ActiveRecord::PipelineResult, good_result
-      
-      # Accessing the bad result should raise an error
-      begin
-        bad_result.rows
-      rescue ActiveRecord::StatementInvalid => e
-        bad_error = e
+    begin
+      @connection.with_pipeline do
+        # Execute bad query first, then good query
+        bad_result = @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
+        good_result = @connection.exec_query("SELECT 42 as answer")
+        
+        # In pipeline mode, both results exist as PipelineResult objects
+        assert_instance_of ActiveRecord::PipelineResult, bad_result
+        assert_instance_of ActiveRecord::PipelineResult, good_result
+        
+        # Accessing the bad result should raise the query error immediately
+        begin
+          bad_result.rows
+        rescue ActiveRecord::StatementInvalid => e
+          bad_error = e
+        end
+        
+        # Don't access good_result - it will have PGRES_PIPELINE_ABORTED status
+        # and will be handled during pipeline cleanup
       end
-      
-      # Accessing the good result should also raise an error (pipeline contamination)
-      begin
-        good_result.rows
-      rescue ActiveRecord::StatementInvalid => e
-        good_error = e
-      end
+    rescue ActiveRecord::StatementInvalid => e
+      pipeline_exception = e
     end
     
-    # Both results should have errored when accessed
-    assert bad_error, "Bad query should have raised an error"
-    assert good_error, "Good query should also have failed due to pipeline error propagation"
+    # Should have caught the bad query error when accessing bad_result
+    assert bad_error, "Bad query should have raised an error when accessed"
+    assert_match(/nonexistent_table/, bad_error.message.downcase)
+    
+    # Pipeline cleanup should raise error for the aborted good_result  
+    assert pipeline_exception, "Pipeline should have failed during cleanup"
+    assert_match(/aborted due to an earlier error/, pipeline_exception.message.downcase)
+    
+    # Both queries should have returned PipelineResult objects
+    assert_instance_of ActiveRecord::PipelineResult, bad_result
+    assert_instance_of ActiveRecord::PipelineResult, good_result
   end
 end

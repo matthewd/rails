@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "monitor"
+
 module ActiveRecord
   module ConnectionAdapters
     module PostgreSQL
@@ -22,7 +24,7 @@ module ActiveRecord
           @adapter = adapter
           @pending_results = []
           @flushed_through = -1
-          @mutex = Mutex.new
+          @mutex = Monitor.new
           @pipeline_active = false
         end
 
@@ -41,6 +43,7 @@ module ActiveRecord
             begin
               # Try proper cleanup - sync and collect results normally
               @raw_connection.pipeline_sync
+              @raw_connection.flush
               @pending_results << SyncResult.new
               collect_remaining_results
             ensure
@@ -107,7 +110,9 @@ module ActiveRecord
             while curr = @raw_connection.get_result
               # Certain result types are not followed by a nil, and so
               # must be returned immediately
-              return curr if curr.result_status == PG::PGRES_PIPELINE_SYNC # TODO: .. or COPY-related stuff
+              if curr.result_status == PG::PGRES_PIPELINE_SYNC # TODO: .. or COPY-related stuff
+                return curr
+              end
 
               prev = curr
             end
@@ -128,7 +133,6 @@ module ActiveRecord
             while n >= 0 && pending_result = @pending_results.first
               begin
                 raw_result = get_next_result
-
                 pending_result.set_result(raw_result)
               rescue => err
                 pending_result.set_error(err)
