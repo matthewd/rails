@@ -395,6 +395,9 @@ module ActiveRecord
       #   end
       def with_pipeline
         return yield unless pipeline_supported?
+        
+        # If already in a pipeline, just yield to avoid nesting
+        return yield if @pipeline_context&.pipeline_active?
 
         with_raw_connection do |raw_connection|
           # Initialize pipeline context if not already present
@@ -1012,22 +1015,24 @@ module ActiveRecord
             end
           end
 
-          # Use standard-conforming strings so we don't have to do the E'...' dance.
-          set_standard_conforming_strings
+          # Use pipelining to execute all SET statements together for better performance
+          with_pipeline do
+            # Use standard-conforming strings so we don't have to do the E'...' dance.
+            internal_execute("SET standard_conforming_strings = on", "SCHEMA")
 
-          variables = @config.fetch(:variables, {}).stringify_keys
+            # Set interval output format to ISO 8601 for ease of parsing by ActiveSupport::Duration.parse
+            internal_execute("SET intervalstyle = iso_8601", "SCHEMA")
 
-          # Set interval output format to ISO 8601 for ease of parsing by ActiveSupport::Duration.parse
-          internal_execute("SET intervalstyle = iso_8601", "SCHEMA")
-
-          # SET statements from :variables config hash
-          # https://www.postgresql.org/docs/current/static/sql-set.html
-          variables.map do |k, v|
-            if v == ":default" || v == :default
-              # Sets the value to the global or compile default
-              internal_execute("SET SESSION #{k} TO DEFAULT", "SCHEMA")
-            elsif !v.nil?
-              internal_execute("SET SESSION #{k} TO #{quote(v)}", "SCHEMA")
+            # SET statements from :variables config hash
+            # https://www.postgresql.org/docs/current/static/sql-set.html
+            variables = @config.fetch(:variables, {}).stringify_keys
+            variables.each do |k, v|
+              if v == ":default" || v == :default
+                # Sets the value to the global or compile default
+                internal_execute("SET SESSION #{k} TO DEFAULT", "SCHEMA")
+              elsif !v.nil?
+                internal_execute("SET SESSION #{k} TO #{quote(v)}", "SCHEMA")
+              end
             end
           end
 

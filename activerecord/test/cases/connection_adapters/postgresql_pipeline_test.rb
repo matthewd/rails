@@ -256,4 +256,52 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     assert_instance_of ActiveRecord::PipelineResult, bad_result
     assert_instance_of ActiveRecord::PipelineResult, good_result
   end
+
+  def test_pipelined_connection_configuration
+    skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
+    
+    # Test that connection configuration works properly with pipelining during setup
+    # This verifies that the internal pipelining of SET statements doesn't break configuration
+    
+    # First verify that our current connection (which was set up with pipelining) has correct settings
+    conforming_strings_result = @connection.exec_query("SHOW standard_conforming_strings")
+    assert_equal "on", conforming_strings_result.rows.first.first
+    
+    interval_style_result = @connection.exec_query("SHOW intervalstyle")
+    assert_equal "iso_8601", interval_style_result.rows.first.first
+    
+    # Now test the configure_connection pipelining by manually calling it
+    # Save current settings
+    original_timezone = @connection.exec_query("SHOW timezone").rows.first.first
+    original_statement_timeout = @connection.exec_query("SHOW statement_timeout").rows.first.first
+    
+    # Simulate what happens during connection setup with custom variables
+    @connection.instance_variable_set(:@config, @connection.instance_variable_get(:@config).merge(
+      variables: {
+        'timezone' => 'UTC',
+        'statement_timeout' => '45s',
+        'lock_timeout' => '15s'
+      }
+    ))
+    
+    # Call the configure_connection method that uses pipelining
+    @connection.send(:configure_connection)
+    
+    # Verify all settings were applied correctly via pipelining
+    timezone_result = @connection.exec_query("SHOW timezone")
+    assert_equal "UTC", timezone_result.rows.first.first
+    
+    statement_timeout_result = @connection.exec_query("SHOW statement_timeout")
+    assert_equal "45s", statement_timeout_result.rows.first.first
+    
+    lock_timeout_result = @connection.exec_query("SHOW lock_timeout")
+    assert_equal "15s", lock_timeout_result.rows.first.first
+    
+    # Verify standard settings were still applied
+    conforming_strings_result = @connection.exec_query("SHOW standard_conforming_strings")
+    assert_equal "on", conforming_strings_result.rows.first.first
+    
+    interval_style_result = @connection.exec_query("SHOW intervalstyle")
+    assert_equal "iso_8601", interval_style_result.rows.first.first
+  end
 end
