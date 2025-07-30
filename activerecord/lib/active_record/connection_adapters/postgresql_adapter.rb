@@ -418,8 +418,7 @@ module ActiveRecord
 
       private
         def pipeline_supported?
-          # Pipeline mode requires PostgreSQL 11+ and a compatible pg gem version
-          connected? && any_raw_connection.respond_to?(:enter_pipeline_mode)
+          ENV['DISABLE_PIPELINE'] != '1' && ::PG::Connection.method_defined?(:enter_pipeline_mode)
         end
 
       public
