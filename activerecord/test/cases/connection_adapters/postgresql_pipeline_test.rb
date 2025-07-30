@@ -116,53 +116,79 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     assert_equal 2, result2.rows.first.first
   end
 
-  def test_pipeline_error_propagation_vs_individual_query_handling
+  def test_pipeline_error_propagation
     skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
     
     bad_result = nil
     good_result = nil
-    bad_error = nil
     pipeline_exception = nil
     
     begin
       @connection.with_pipeline do
-        # Execute bad query first, rescue individual query errors
-        begin
-          bad_result = @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
-        rescue ActiveRecord::StatementInvalid => e
-          bad_error = e
-        end
-        
-        # Execute good query - in pipeline mode this still gets a result object,
-        # in non-pipeline mode this executes normally after rescuing the first error
+        # Execute bad query first - in pipeline mode, this returns a PipelineResult
+        # In non-pipeline mode, this would raise immediately
+        bad_result = @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
         good_result = @connection.exec_query("SELECT 42 as answer")
         
-        # In pipeline mode, both results should be PipelineResult objects
-        # In non-pipeline mode, bad_result is nil (error was rescued) and good_result is a normal Result
-        if bad_result
-          assert_instance_of ActiveRecord::PipelineResult, bad_result
-          assert_instance_of ActiveRecord::PipelineResult, good_result
-        end
+        # Pipeline mode: both results should be PipelineResult objects
+        assert_instance_of ActiveRecord::PipelineResult, bad_result
+        assert_instance_of ActiveRecord::PipelineResult, good_result
       end
     rescue ActiveRecord::StatementInvalid => e
-      # This should only happen in pipeline mode during cleanup
       pipeline_exception = e
     end
     
-    # Test the behavioral differences
-    if bad_result && good_result.is_a?(ActiveRecord::PipelineResult)
-      # Pipeline mode: both results exist as PipelineResult objects
-      assert_instance_of ActiveRecord::PipelineResult, bad_result  
-      assert_instance_of ActiveRecord::PipelineResult, good_result
-      assert pipeline_exception, "Pipeline should have failed during cleanup"
-      assert_match(/nonexistent_table/, pipeline_exception.message.downcase)
-    else
-      # Non-pipeline mode: bad query raised immediately, good query succeeded
-      assert bad_error, "Bad query should have raised an error"
-      assert_match(/nonexistent_table/, bad_error.message.downcase)
-      assert_nil bad_result, "Bad result should be nil after rescue"
-      assert good_result, "Good query should have succeeded"
-      assert_equal 42, good_result.rows.first.first
+    # In pipeline mode, the error should occur during cleanup
+    assert pipeline_exception, "Pipeline should have failed during cleanup"
+    assert_match(/nonexistent_table/, pipeline_exception.message.downcase)
+    
+    # Both queries should have returned PipelineResult objects
+    assert_instance_of ActiveRecord::PipelineResult, bad_result
+    assert_instance_of ActiveRecord::PipelineResult, good_result
+  end
+
+  def test_pipeline_bad_query_returns_result_object
+    skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
+    
+    # In pipeline mode, even bad queries return PipelineResult objects
+    # In non-pipeline mode, bad queries raise immediately
+    bad_result = nil
+    
+    exception = assert_raises(ActiveRecord::StatementInvalid) do
+      @connection.with_pipeline do
+        bad_result = @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
+        # The bad query should return a PipelineResult object, not raise immediately
+        assert_instance_of ActiveRecord::PipelineResult, bad_result
+      end
     end
+    
+    # Pipeline should fail during cleanup, but we got the result object
+    assert_instance_of ActiveRecord::PipelineResult, bad_result
+    assert_match(/nonexistent_table/, exception.message.downcase)
+  end
+
+  def test_pipeline_good_query_after_bad_query_still_gets_result
+    skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
+    
+    # In pipeline mode, queries after bad queries still return result objects
+    # In non-pipeline mode, execution would stop at the first bad query
+    bad_result = nil
+    good_result = nil
+    
+    exception = assert_raises(ActiveRecord::StatementInvalid) do
+      @connection.with_pipeline do
+        bad_result = @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
+        good_result = @connection.exec_query("SELECT 1")
+        
+        # Both should be PipelineResult objects in pipeline mode
+        assert_instance_of ActiveRecord::PipelineResult, bad_result
+        assert_instance_of ActiveRecord::PipelineResult, good_result
+      end
+    end
+    
+    # Pipeline failed, but both queries returned result objects
+    assert_instance_of ActiveRecord::PipelineResult, bad_result
+    assert_instance_of ActiveRecord::PipelineResult, good_result
+    assert_match(/nonexistent_table/, exception.message.downcase)
   end
 end
