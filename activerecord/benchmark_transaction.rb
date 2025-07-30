@@ -25,12 +25,12 @@ ActiveRecord::Base.establish_connection(
   }
 )
 
-# Get the connection pool for reuse
-connection_pool = ActiveRecord::Base.connection_pool
+# Get a persistent connection for the benchmark
+conn = ActiveRecord::Base.connection
 
 puts "Benchmarking Active Record transaction pipelining..."
 puts "Pipeline support: #{ENV['DISABLE_PIPELINE'] == '1' ? 'DISABLED' : 'ENABLED'}"
-puts "Connection pool size: #{connection_pool.size}"
+puts "Using persistent connection: #{conn.class.name}"
 puts
 
 # Benchmark transaction operations with nested transactions
@@ -40,9 +40,6 @@ puts
 
 time = Benchmark.realtime do
   iterations.times do
-    # Get a new connection from the pool (this triggers configure_connection for new connections)
-    conn = connection_pool.checkout
-    
     # Perform nested transaction operations to test transaction pipelining
     result = conn.transaction do
       # First query in outer transaction - should pipeline with BEGIN if pipelining enabled
@@ -67,9 +64,6 @@ time = Benchmark.realtime do
     
     # Verify result
     raise "Transaction result incorrect: #{result} != 7" unless result == 7
-    
-    # Remove connection to force new connection next time (no checkin needed)
-    connection_pool.remove(conn)
   end
 end
 

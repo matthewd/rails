@@ -399,7 +399,7 @@ module ActiveRecord
         # If already in a pipeline, just yield to avoid nesting
         return yield if @pipeline_context&.pipeline_active?
 
-        with_raw_connection do |raw_connection|
+        with_raw_connection(materialize_transactions: false) do |raw_connection|
           # Initialize pipeline context if not already present
           @pipeline_context = PostgreSQL::PipelineContext.new(raw_connection, self)
 
@@ -417,6 +417,10 @@ module ActiveRecord
 
       def pipeline_active?
         @pipeline_context&.pipeline_active?
+      end
+
+      def add_transaction_command(sql)
+        @pipeline_context.add_transaction_command(sql)
       end
 
       def pipeline_supported?

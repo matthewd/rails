@@ -624,6 +624,9 @@ module ActiveRecord
 
               # After pipeline completes successfully, verify transaction commands succeeded
               transaction_manager.complete_pipeline_materialization
+              
+              # Mark the transaction as dirty to match with_raw_connection(materialize_transactions: true) behavior
+              dirty_current_transaction
 
               handle_warnings(resolved_result, sql) if resolved_result
               resolved_result
