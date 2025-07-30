@@ -1015,23 +1015,51 @@ module ActiveRecord
             end
           end
 
-          # Use pipelining to execute all SET statements together for better performance
-          with_pipeline do
-            # Use standard-conforming strings so we don't have to do the E'...' dance.
-            internal_execute("SET standard_conforming_strings = on", "SCHEMA")
-
-            # Set interval output format to ISO 8601 for ease of parsing by ActiveSupport::Duration.parse
-            internal_execute("SET intervalstyle = iso_8601", "SCHEMA")
-
-            # SET statements from :variables config hash
-            # https://www.postgresql.org/docs/current/static/sql-set.html
+          # Use different strategies based on environment variable for testing
+          if ENV['USE_SET_CONFIG_BATCH'] == '1'
+            # Alternative strategy: Use single SELECT with multiple set_config() calls
+            set_config_calls = []
+            
+            # Add standard settings
+            set_config_calls << "set_config('standard_conforming_strings', 'on', false)"
+            set_config_calls << "set_config('intervalstyle', 'iso_8601', false)"
+            
+            # Add custom variables
             variables = @config.fetch(:variables, {}).stringify_keys
             variables.each do |k, v|
               if v == ":default" || v == :default
-                # Sets the value to the global or compile default
+                # For DEFAULT values, we need to get the default and set it
+                # This is more complex with set_config, so fall back to individual SET for now
                 internal_execute("SET SESSION #{k} TO DEFAULT", "SCHEMA")
               elsif !v.nil?
-                internal_execute("SET SESSION #{k} TO #{quote(v)}", "SCHEMA")
+                set_config_calls << "set_config(#{quote(k)}, #{quote(v)}, false)"
+              end
+            end
+            
+            # Execute all set_config calls in a single SELECT query
+            unless set_config_calls.empty?
+              query = "SELECT #{set_config_calls.join(', ')}"
+              internal_execute(query, "SCHEMA")
+            end
+          else
+            # Use pipelining to execute all SET statements together for better performance
+            with_pipeline do
+              # Use standard-conforming strings so we don't have to do the E'...' dance.
+              internal_execute("SET standard_conforming_strings = on", "SCHEMA")
+
+              # Set interval output format to ISO 8601 for ease of parsing by ActiveSupport::Duration.parse
+              internal_execute("SET intervalstyle = iso_8601", "SCHEMA")
+
+              # SET statements from :variables config hash
+              # https://www.postgresql.org/docs/current/static/sql-set.html
+              variables = @config.fetch(:variables, {}).stringify_keys
+              variables.each do |k, v|
+                if v == ":default" || v == :default
+                  # Sets the value to the global or compile default
+                  internal_execute("SET SESSION #{k} TO DEFAULT", "SCHEMA")
+                elsif !v.nil?
+                  internal_execute("SET SESSION #{k} TO #{quote(v)}", "SCHEMA")
+                end
               end
             end
           end
