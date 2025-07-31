@@ -992,11 +992,26 @@ module ActiveRecord
         # still-yielded connection in the outer block), but we currently
         # provide no special enforcement there.
         #
-        def with_raw_connection(allow_retry: false, materialize_transactions: true)
+        def with_raw_connection(allow_retry: false, materialize_transactions: true, pipeline_mode: false)
           @lock.synchronize do
             connect! if @raw_connection.nil? && reconnect_can_restore_state?
 
-            self.materialize_transactions if materialize_transactions
+            # Handle pipeline mode transitions
+            if pipeline_mode
+              # Framework code requesting pipeline mode
+              self.materialize_transactions if materialize_transactions
+              # Enter pipeline mode if supported and not already active
+              if !pipeline_active?
+                enter_persistent_pipeline_mode
+              end
+            else
+              # User code (or framework code not requesting pipeline mode)
+              # Always sync any pending pipeline results before giving access to user code
+              if has_pending_pipeline_results?
+                sync_pipeline_results
+              end
+              self.materialize_transactions if materialize_transactions
+            end
 
             retries_available = allow_retry ? connection_retries : 0
             deadline = retry_deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) + retry_deadline
@@ -1066,6 +1081,35 @@ module ActiveRecord
         def verified!
           @last_activity = Process.clock_gettime(Process::CLOCK_MONOTONIC)
           @verified = true
+        end
+
+        # Pipeline mode methods - no-op implementations for adapters that don't support pipelining
+        def pipeline_supported?
+          false
+        end
+
+        def pipeline_active?
+          false
+        end
+
+        def enter_persistent_pipeline_mode
+          false
+        end
+
+        def exit_persistent_pipeline_mode
+          false
+        end
+
+        def sync_pipeline_results
+          false
+        end
+
+        def pipeline_mode?
+          pipeline_active?
+        end
+
+        def has_pending_pipeline_results?
+          false
         end
 
         def retryable_connection_error?(exception)

@@ -400,8 +400,8 @@ module ActiveRecord
         return yield if @pipeline_context&.pipeline_active?
 
         with_raw_connection(materialize_transactions: false) do |raw_connection|
-          # Initialize pipeline context if not already present
-          @pipeline_context = PostgreSQL::PipelineContext.new(raw_connection, self)
+          # Initialize pipeline context if not already present (persistent mode)
+          @pipeline_context ||= PostgreSQL::PipelineContext.new(raw_connection, self)
 
           # Enter pipeline mode
           @pipeline_context.enter_pipeline_mode
@@ -409,8 +409,9 @@ module ActiveRecord
           begin
             yield
           ensure
+            # Exit pipeline mode but keep context persistent for future use
             @pipeline_context.exit_pipeline_mode
-            @pipeline_context = nil
+            # Note: @pipeline_context is now persistent, not set to nil
           end
         end
       end
@@ -432,6 +433,45 @@ module ActiveRecord
         result
       end
 
+      # Persistent pipeline mode APIs
+      def enter_persistent_pipeline_mode
+        return false unless pipeline_supported?
+        return true if pipeline_active? # Already in pipeline mode
+
+        with_raw_connection(materialize_transactions: false) do |raw_connection|
+          @pipeline_context ||= PostgreSQL::PipelineContext.new(raw_connection, self)
+          @pipeline_context.enter_pipeline_mode
+        end
+        true
+      end
+
+      def exit_persistent_pipeline_mode
+        return false unless @pipeline_context&.pipeline_active?
+
+        with_raw_connection(materialize_transactions: false) do |raw_connection|
+          @pipeline_context.exit_pipeline_mode
+        end
+        true
+      end
+
+      def sync_pipeline_results
+        return false unless @pipeline_context&.pipeline_active?
+
+        # Don't use with_raw_connection here to avoid recursion
+        @lock.synchronize do
+          @pipeline_context.sync_all_results
+        end
+        true
+      end
+
+      def pipeline_mode?
+        pipeline_active?
+      end
+
+      def has_pending_pipeline_results?
+        @pipeline_context&.has_pending_results?
+      end
+
       private
 
       public
@@ -441,6 +481,11 @@ module ActiveRecord
       def disconnect!
         @lock.synchronize do
           super
+          # Clean up pipeline context before closing connection
+          if @pipeline_context&.pipeline_active?
+            @pipeline_context.exit_pipeline_mode rescue nil
+          end
+          @pipeline_context = nil
           @raw_connection&.close rescue nil
           @raw_connection = nil
         end
@@ -448,6 +493,11 @@ module ActiveRecord
 
       def discard! # :nodoc:
         super
+        # Clean up pipeline context before discarding connection
+        if @pipeline_context&.pipeline_active?
+          @pipeline_context.exit_pipeline_mode rescue nil
+        end
+        @pipeline_context = nil
         @raw_connection&.socket_io&.reopen(IO::NULL) rescue nil
         @raw_connection = nil
       end

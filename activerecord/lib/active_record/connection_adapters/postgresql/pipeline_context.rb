@@ -111,6 +111,27 @@ module ActiveRecord
           add_query(sql, [], [], prepare: false)
         end
 
+        def sync_all_results
+          @mutex.synchronize do
+            return unless @pipeline_active
+            
+            # Send flush and sync, then collect all pending results
+            @raw_connection.send_flush_request
+            @raw_connection.flush
+            @raw_connection.pipeline_sync
+            @pending_results << SyncResult.new
+          end
+          
+          # Collect all results including the sync result
+          collect_remaining_results
+        end
+
+        def has_pending_results?
+          @mutex.synchronize do
+            @pending_results.any?
+          end
+        end
+
         private
           def get_next_result
             prev = nil
