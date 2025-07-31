@@ -438,8 +438,13 @@ module ActiveRecord
         return false unless pipeline_supported?
         return true if pipeline_active? # Already in pipeline mode
 
-        with_raw_connection(materialize_transactions: false) do |raw_connection|
-          @pipeline_context ||= PostgreSQL::PipelineContext.new(raw_connection, self)
+        # Don't use with_raw_connection here to avoid recursion
+        @lock.synchronize do
+          # Ensure connection is established
+          connect! if @raw_connection.nil? && reconnect_can_restore_state?
+          return false if @raw_connection.nil?
+          
+          @pipeline_context ||= PostgreSQL::PipelineContext.new(@raw_connection, self)
           @pipeline_context.enter_pipeline_mode
         end
         true
@@ -448,7 +453,8 @@ module ActiveRecord
       def exit_persistent_pipeline_mode
         return false unless @pipeline_context&.pipeline_active?
 
-        with_raw_connection(materialize_transactions: false) do |raw_connection|
+        # Don't use with_raw_connection here to avoid recursion
+        @lock.synchronize do
           @pipeline_context.exit_pipeline_mode
         end
         true

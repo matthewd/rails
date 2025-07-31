@@ -992,24 +992,29 @@ module ActiveRecord
         # still-yielded connection in the outer block), but we currently
         # provide no special enforcement there.
         #
-        def with_raw_connection(allow_retry: false, materialize_transactions: true, pipeline_mode: false)
+        def with_raw_connection(allow_retry: false, materialize_transactions: true, pipeline_mode: nil)
           @lock.synchronize do
             connect! if @raw_connection.nil? && reconnect_can_restore_state?
 
             # Handle pipeline mode transitions
-            if pipeline_mode
-              # Framework code requesting pipeline mode
+            case pipeline_mode
+            when true
+              # Framework code explicitly requesting pipeline mode
               self.materialize_transactions if materialize_transactions
               # Enter pipeline mode if supported and not already active
               if !pipeline_active?
                 enter_persistent_pipeline_mode
               end
-            else
-              # User code (or framework code not requesting pipeline mode)
-              # Always sync any pending pipeline results before giving access to user code
-              if has_pending_pipeline_results?
-                sync_pipeline_results
+            when false
+              # Framework code explicitly requesting NO pipeline mode
+              # Always fully exit pipeline mode  
+              if pipeline_active?
+                exit_persistent_pipeline_mode
               end
+              self.materialize_transactions if materialize_transactions
+            when nil
+              # Default behavior: maintain current pipeline state
+              # This preserves pipeline mode for internal query calls within framework code
               self.materialize_transactions if materialize_transactions
             end
 

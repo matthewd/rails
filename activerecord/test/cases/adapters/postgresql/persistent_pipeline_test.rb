@@ -135,7 +135,7 @@ module ActiveRecord
       assert @connection.pipeline_mode?
     end
 
-    def test_with_raw_connection_auto_sync_for_user_code
+    def test_with_raw_connection_auto_exit_for_user_code
       # Enter pipeline mode and create pending results
       @connection.enter_persistent_pipeline_mode
       pipeline_result = nil
@@ -145,21 +145,21 @@ module ActiveRecord
         assert pipeline_result.pending?
       end
       
-      # Should have pending results before user code accesses connection
+      # Should have pending results and be in pipeline mode
       assert @connection.has_pending_pipeline_results?
+      assert @connection.pipeline_mode?
       
-      # User code should trigger auto-sync
-      @connection.send(:with_raw_connection) do |raw_conn|
+      # User code should trigger full exit from pipeline mode (explicit pipeline_mode: false)
+      @connection.send(:with_raw_connection, pipeline_mode: false) do |raw_conn|
         result = @connection.exec_query("SELECT 456 as user_query")
         assert_equal 456, result.first["user_query"]
       end
       
-      # Pending results should be cleared by auto-sync
+      # Pipeline mode should be fully exited for user code
+      assert_not @connection.pipeline_mode?
       assert_not @connection.has_pending_pipeline_results?
-      # But pipeline mode should remain active
-      assert @connection.pipeline_mode?
       
-      # Now we can access the pipeline result data
+      # The pipeline result should still be accessible (was resolved during exit)
       assert_equal 123, pipeline_result.first["sync_test"]
     end
 
