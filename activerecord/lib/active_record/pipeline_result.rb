@@ -45,14 +45,15 @@ module ActiveRecord
         @result = result
         @pending = false
         
-        # Immediately process the result to avoid connection state issues
+        # Check for pipeline aborted status and validate result  
         begin
           # Handle PGRES_PIPELINE_ABORTED results explicitly
           if @result.result_status == PG::PGRES_PIPELINE_ABORTED
             @error = ActiveRecord::StatementInvalid.new("Query was aborted due to an earlier error in the pipeline")
           else
             @result.check
-            @final_result = @pipeline_context.instance_variable_get(:@adapter).send(:cast_result, @result)
+            # Store the raw result - let normal casting flow handle type conversion
+            @final_result = @result
           end
         rescue => err
           # Translate PG exceptions to ActiveRecord exceptions using the adapter's translation

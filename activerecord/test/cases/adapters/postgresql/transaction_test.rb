@@ -114,11 +114,10 @@ module ActiveRecord
         begin
           Sample.transaction do
             latch1.wait
-            Sample.lease_connection.execute("SET lock_timeout = 1")
+            Sample.lease_connection.execute("SET LOCAL lock_timeout = 1")
             Sample.lock.find(s.id)
           end
         ensure
-          Sample.lease_connection.execute("SET lock_timeout = DEFAULT")
           latch2.count_down
           thread.join
         end
@@ -142,11 +141,10 @@ module ActiveRecord
         begin
           Sample.transaction do
             latch1.wait
-            Sample.lease_connection.execute("SET statement_timeout = 1")
+            Sample.lease_connection.execute("SET LOCAL statement_timeout = 1")
             Sample.lock.find(s.id)
           end
         ensure
-          Sample.lease_connection.execute("SET statement_timeout = DEFAULT")
           latch2.count_down
           thread.join
         end
