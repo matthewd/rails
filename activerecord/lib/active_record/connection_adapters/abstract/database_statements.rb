@@ -564,7 +564,6 @@ module ActiveRecord
           log(sql, name, binds, type_casted_binds, async: async, allow_retry: allow_retry) do |notification_payload|
             # Check if we should pipeline transaction commands with this query
             if materialize_transactions && should_pipeline_transactions?
-              puts "[TRANSACTION_PIPELINE] Using transaction pipelining for query: #{sql.strip}" if ENV['DEBUG_PIPELINE']
               execute_with_transaction_pipelining(sql, name, binds, type_casted_binds, prepare: prepare, async: async, allow_retry: allow_retry, batch: batch, notification_payload: notification_payload)
             else
               with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions) do |conn|
@@ -596,10 +595,6 @@ module ActiveRecord
           
           result = has_unmaterialized && pipeline_supported && not_in_pipeline
           
-          if ENV['DEBUG_PIPELINE']
-            puts "[TRANSACTION_PIPELINE] should_pipeline_transactions? #{result} (unmaterialized: #{has_unmaterialized}, responds_to_pipeline: #{responds_to_pipeline}, pipeline_supported_result: #{pipeline_supported_result}, not_in_pipeline: #{not_in_pipeline})"
-            puts "[TRANSACTION_PIPELINE] Connection class: #{self.class.name}"
-          end
           
           result
         end

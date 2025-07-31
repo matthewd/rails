@@ -428,9 +428,6 @@ module ActiveRecord
         method_exists = ::PG::Connection.method_defined?(:enter_pipeline_mode)
         result = !disabled && method_exists
         
-        if ENV['DEBUG_PIPELINE']
-          puts "[PIPELINE_SUPPORT] disabled: #{disabled}, method_exists: #{method_exists}, result: #{result}"
-        end
         
         result
       end
