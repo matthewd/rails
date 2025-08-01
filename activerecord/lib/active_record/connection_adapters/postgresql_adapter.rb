@@ -338,6 +338,7 @@ module ActiveRecord
         @notice_receiver_sql_warnings = []
 
         @use_insert_returning = @config.key?(:insert_returning) ? self.class.type_cast_config_to_boolean(@config[:insert_returning]) : true
+        @server_default_timezone = nil
       end
 
       def connected?
@@ -406,7 +407,7 @@ module ActiveRecord
       end
 
       def set_standard_conforming_strings
-        internal_execute("SET standard_conforming_strings = on", "SCHEMA")
+        internal_set_config("standard_conforming_strings", "on")
       end
 
       def supports_ddl_transactions?
@@ -740,6 +741,7 @@ module ActiveRecord
       private
         attr_reader :type_map
 
+
         def initialize_type_map(m = type_map)
           self.class.initialize_type_map(m)
 
@@ -955,6 +957,9 @@ module ActiveRecord
         def configure_connection
           super
 
+          # Capture the server's default timezone value from the fresh connection
+          @server_default_timezone = @raw_connection.parameter_status("TimeZone")
+
           if @config[:encoding]
             @raw_connection.set_client_encoding(@config[:encoding])
           end
@@ -976,16 +981,16 @@ module ActiveRecord
           variables = @config.fetch(:variables, {}).stringify_keys
 
           # Set interval output format to ISO 8601 for ease of parsing by ActiveSupport::Duration.parse
-          internal_execute("SET intervalstyle = iso_8601", "SCHEMA")
+          internal_set_config("IntervalStyle", "iso_8601")
 
           # SET statements from :variables config hash
           # https://www.postgresql.org/docs/current/static/sql-set.html
-          variables.map do |k, v|
+          variables.each do |k, v|
             if v == ":default" || v == :default
               # Sets the value to the global or compile default
-              internal_execute("SET SESSION #{k} TO DEFAULT", "SCHEMA")
+              internal_set_config(k, nil)
             elsif !v.nil?
-              internal_execute("SET SESSION #{k} TO #{quote(v)}", "SCHEMA")
+              internal_set_config(k, v)
             end
           end
 
@@ -1006,9 +1011,21 @@ module ActiveRecord
           # If using Active Record's time zone support configure the connection
           # to return TIMESTAMP WITH ZONE types in UTC.
           if default_timezone == :utc
-            raw_execute("SET SESSION timezone TO 'UTC'", "SCHEMA")
+            internal_set_config("TimeZone", "UTC")
           else
-            raw_execute("SET SESSION timezone TO DEFAULT", "SCHEMA")
+            internal_set_config("TimeZone", @server_default_timezone)
+          end
+        end
+
+        def internal_set_config(setting_name, new_value)
+          with_raw_connection(allow_retry: false, materialize_transactions: false) do |conn|
+            # For the handful of settings that are proactively reported by the
+            # server via parameter_status (and assuming we have the correct case
+            # sensitive spelling), we can skip a redundant SET
+            return if new_value && conn.parameter_status(setting_name) == new_value.to_s
+
+            quoted_value = new_value ? quote(new_value) : "DEFAULT"
+            internal_execute("SET #{setting_name} TO #{quoted_value}", "SCHEMA")
           end
         end
 
