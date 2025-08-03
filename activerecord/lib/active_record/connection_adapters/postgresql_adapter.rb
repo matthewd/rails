@@ -330,6 +330,27 @@ module ActiveRecord
         valid_conn_param_keys = PG::Connection.conndefaults_hash.keys + [:requiressl]
         conn_params.slice!(*valid_conn_param_keys)
 
+        options = []
+
+        # Use standard-conforming strings so we don't have to do the E'...' dance.
+        options << "-c standard_conforming_strings=on"
+
+        # Set interval output format to ISO 8601 for ease of parsing by ActiveSupport::Duration.parse
+        options << "-c IntervalStyle=iso_8601"
+
+        min_messages = @config[:min_messages] || "warning"
+        options << "-c client_min_messages=#{escape_option_value(min_messages)}"
+
+        if search_path = @config[:schema_search_path] || @config[:schema_order]
+          options << "-c search_path=#{escape_option_value(search_path)}"
+        end
+
+        if existing_options = conn_params[:options] || ENV["PGOPTIONS"]
+          options << existing_options
+        end
+
+        conn_params[:options] = options.join(" ") unless options.empty?
+
         @connection_parameters = conn_params
 
         @max_identifier_length = nil
@@ -409,6 +430,7 @@ module ActiveRecord
       def set_standard_conforming_strings
         internal_set_config("standard_conforming_strings", "on")
       end
+      deprecate :set_standard_conforming_strings, deprecator: ActiveRecord.deprecator
 
       def supports_ddl_transactions?
         true
@@ -963,8 +985,6 @@ module ActiveRecord
           if @config[:encoding]
             @raw_connection.set_client_encoding(@config[:encoding])
           end
-          self.client_min_messages = @config[:min_messages] || "warning"
-          self.schema_search_path = @config[:schema_search_path] || @config[:schema_order]
 
           unless ActiveRecord.db_warnings_action.nil?
             @raw_connection.set_notice_receiver do |result|
@@ -975,13 +995,7 @@ module ActiveRecord
             end
           end
 
-          # Use standard-conforming strings so we don't have to do the E'...' dance.
-          set_standard_conforming_strings
-
           variables = @config.fetch(:variables, {}).stringify_keys
-
-          # Set interval output format to ISO 8601 for ease of parsing by ActiveSupport::Duration.parse
-          internal_set_config("IntervalStyle", "iso_8601")
 
           # SET statements from :variables config hash
           # https://www.postgresql.org/docs/current/static/sql-set.html
@@ -1027,6 +1041,10 @@ module ActiveRecord
             quoted_value = new_value ? quote(new_value) : "DEFAULT"
             internal_execute("SET #{setting_name} TO #{quoted_value}", "SCHEMA")
           end
+        end
+
+        def escape_option_value(value)
+          value.to_s.gsub(/[\\ ]/, "\\\\\\&")
         end
 
         # Returns the list of a table's column names, data types, and default values.

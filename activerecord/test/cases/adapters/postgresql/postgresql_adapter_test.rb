@@ -136,6 +136,12 @@ module ActiveRecord
         end
       end
 
+      def test_set_standard_conforming_strings_deprecation
+        assert_deprecated(ActiveRecord.deprecator) do
+          @connection.set_standard_conforming_strings
+        end
+      end
+
       def test_database_exists_returns_false_when_the_database_does_not_exist
         config = { database: "non_extant_database", adapter: "postgresql" }
         assert_not ActiveRecord::ConnectionAdapters::PostgreSQLAdapter.database_exists?(config),
@@ -787,6 +793,24 @@ module ActiveRecord
         assert_not_includes result.to_a, ["hstore"]
       ensure
         @connection.execute("DROP EXTENSION IF EXISTS hstore")
+      end
+
+      def test_search_path_injection_prevention
+        malicious_search_path = "public,\" -c application_name=injected_value\""
+
+        db_config = ActiveRecord::Base.configurations.configs_for(env_name: "arunit", name: "primary")
+        config_with_malicious_path = db_config.configuration_hash.merge(schema_search_path: malicious_search_path)
+
+        connection = ActiveRecord::ConnectionAdapters::PostgreSQLAdapter.new(config_with_malicious_path)
+
+        # Verify the malicious string is treated as search_path, not parsed as separate options
+        actual_search_path = connection.query_value("SHOW search_path")
+        assert_equal malicious_search_path, actual_search_path
+
+        # Verify application_name was not injected
+        if application_name = connection.query_value("SHOW application_name")
+          assert_no_match(/injected/, application_name)
+        end
       end
 
       private
