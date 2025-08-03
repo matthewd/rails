@@ -307,7 +307,11 @@ module ActiveRecord
 
         # Returns the active schema search path.
         def schema_search_path
-          @schema_search_path ||= query_value("SHOW search_path", "SCHEMA")
+          @schema_search_path ||= with_raw_connection(materialize_transactions: false) do |conn|
+            # PostgreSQL 17+ reports search_path via parameter_status so
+            # we can read it for free; older versions require a query.
+            conn.parameter_status("search_path") || query_value("SHOW search_path", "SCHEMA")
+          end
         end
 
         # Returns the current client message level.
