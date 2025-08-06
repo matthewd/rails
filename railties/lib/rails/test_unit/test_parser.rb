@@ -18,7 +18,7 @@ if defined?(Prism)
         # the method was defined.
         def self.definition_for(method)
           filepath, start_line = method.source_location
-          @begins_to_ends[filepath] ||= ranges(filepath)
+          @begins_to_ends[filepath] ||= ranges(filepath) rescue {}
           return unless end_line = @begins_to_ends[filepath][start_line]
           [filepath, start_line..end_line]
         end

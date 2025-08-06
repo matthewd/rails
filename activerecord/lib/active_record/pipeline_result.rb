@@ -26,7 +26,7 @@ module ActiveRecord
       end
     end
 
-    delegate :empty?, :to_a, :rows, :columns, :each, :first, :last, :size, :length, :count, to: :result
+    delegate :empty?, :to_a, :rows, :columns, :each, :first, :last, :size, :length, :count, to: :cast_result
 
     def initialize(pipeline_context)
       @pipeline_context = pipeline_context
@@ -73,8 +73,23 @@ module ActiveRecord
       @mutex.synchronize do
         @pipeline_context.wait_for(self) if @pending
         raise @error if @error
-        @final_result
+        @final_result  # Return raw PG::Result for compatibility
       end
+    end
+
+    def cast_result
+      # Lazily cast the result to ActiveRecord::Result when data is accessed
+      @cast_result ||= begin
+        raw_result = result  # Get the raw PG::Result
+        adapter = @pipeline_context.instance_variable_get(:@adapter)
+        adapter.send(:cast_result, raw_result)
+      end
+    end
+
+    def check
+      # Wait for result and raise any errors, then return consumed ActiveRecord::Result
+      # This preserves pipelining while ensuring errors are raised immediately
+      cast_result  # This triggers waiting, error checking, and casting
     end
 
     def pending?

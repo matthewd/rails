@@ -99,8 +99,10 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     result2 = nil
     
     @connection.with_pipeline do
-      result1 = @connection.exec_query("SELECT 1 as num")
-      result2 = @connection.exec_query("SELECT 2 as num") 
+      # Use internal_exec_query to get PipelineResult objects directly
+      # exec_query always returns immediate results per the public API contract
+      result1 = @connection.send(:internal_exec_query, "SELECT 1 as num", "Test")
+      result2 = @connection.send(:internal_exec_query, "SELECT 2 as num", "Test")
       
       # At this point, results should be PipelineResult objects and pending
       assert_instance_of ActiveRecord::PipelineResult, result1

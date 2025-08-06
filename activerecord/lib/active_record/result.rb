@@ -187,6 +187,13 @@ module ActiveRecord
       self
     end
 
+    # No-op check method for compatibility with PipelineResult
+    # PipelineResult.check waits for result and raises errors
+    # Result.check is a no-op since errors are already raised
+    def check
+      self
+    end
+
     def cast_values(type_overrides = nil) # :nodoc:
       if columns.one?
         # Separated to avoid allocating an array per row
@@ -265,6 +272,8 @@ module ActiveRecord
           column_indexes.transform_values { |index| row[index] }
         end
       end
+
+      private
 
       EMPTY_ARRAY = [].freeze
       EMPTY_HASH = {}.freeze

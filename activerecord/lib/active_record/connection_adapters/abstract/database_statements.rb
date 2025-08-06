@@ -148,7 +148,7 @@ module ActiveRecord
       # will be cleared. If the query is read-only, consider using #select_all
       # instead.
       def exec_query(sql, name = "SQL", binds = [], prepare: false)
-        internal_exec_query(sql, name, binds, prepare: prepare)
+        internal_exec_query(sql, name, binds, prepare: prepare).check
       end
 
       # Executes insert +sql+ statement in the context of this connection using
@@ -566,7 +566,7 @@ module ActiveRecord
             if materialize_transactions && should_pipeline_transactions?
               execute_with_transaction_pipelining(sql, name, binds, type_casted_binds, prepare: prepare, async: async, allow_retry: allow_retry, batch: batch, notification_payload: notification_payload)
             else
-              with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions) do |conn|
+              with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions, pipeline_mode: :preserve) do |conn|
                 result = ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
                   perform_query(conn, sql, binds, type_casted_binds, prepare: prepare, notification_payload: notification_payload, batch: batch)
                 end
