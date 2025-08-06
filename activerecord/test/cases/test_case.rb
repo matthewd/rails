@@ -35,7 +35,41 @@ module ActiveRecord
 
     def after_teardown
       super
+      cleanup_pipeline_state
       check_connection_leaks
+    end
+
+    def cleanup_pipeline_state
+      # Ensure pipeline state is cleaned up between tests to prevent transaction leaks
+      return if in_memory_db?
+
+      ActiveRecord::Base.connection_handler.each_connection_pool do |pool|
+        pool.active_connection&.then do |connection|
+          if connection.respond_to?(:pipeline_mode?) && connection.pipeline_mode?
+            begin
+              connection.exit_persistent_pipeline_mode
+            rescue => e
+              # Log but don't fail the test if pipeline cleanup fails
+              puts "Warning: Failed to cleanup pipeline state: #{e.message}"
+            end
+          end
+          
+          # Also ensure any failed transaction state is cleaned up
+          if connection.respond_to?(:raw_connection) && connection.raw_connection
+            begin
+              # If connection is in a failed transaction state, rollback
+              raw_conn = connection.raw_connection
+              if raw_conn.respond_to?(:transaction_status) && 
+                 raw_conn.transaction_status == PG::PQTRANS_INERROR
+                raw_conn.exec("ROLLBACK")
+              end
+            rescue => e
+              # Log but don't fail test cleanup  
+              puts "Warning: Failed to cleanup transaction state: #{e.message}"
+            end
+          end
+        end
+      end
     end
 
     def check_connection_leaks

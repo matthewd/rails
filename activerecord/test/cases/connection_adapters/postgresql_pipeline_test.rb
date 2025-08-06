@@ -118,7 +118,7 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     assert_equal 2, result2.rows.first.first
   end
 
-  def test_pipeline_error_propagation
+  def test_pipeline_error_propagation_internal_api
     skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
     
     bad_result = nil
@@ -127,12 +127,11 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     
     begin
       @connection.with_pipeline do
-        # Execute bad query first - in pipeline mode, this returns a PipelineResult
-        # In non-pipeline mode, this would raise immediately
-        bad_result = @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
-        good_result = @connection.exec_query("SELECT 42 as answer")
+        # Execute bad query first - internal API returns PipelineResult objects that defer errors
+        bad_result = @connection.send(:internal_exec_query, "INSERT INTO nonexistent_table (col) VALUES ('test')", "Test")
+        good_result = @connection.send(:internal_exec_query, "SELECT 42 as answer", "Test")
         
-        # Pipeline mode: both results should be PipelineResult objects
+        # Pipeline mode: both results should be PipelineResult objects with deferred errors
         assert_instance_of ActiveRecord::PipelineResult, bad_result
         assert_instance_of ActiveRecord::PipelineResult, good_result
       end
@@ -149,16 +148,35 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     assert_instance_of ActiveRecord::PipelineResult, good_result
   end
 
-  def test_pipeline_bad_query_returns_result_object
+  def test_pipeline_error_propagation_public_api
     skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
     
-    # In pipeline mode, even bad queries return PipelineResult objects
-    # In non-pipeline mode, bad queries raise immediately
+    # Test that public API (exec_query) properly materializes errors immediately
+    # even when inside pipeline blocks
+    error_raised = false
+    
+    begin
+      @connection.with_pipeline do
+        # Execute bad query - public API should call .check and raise immediately
+        @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
+      end
+    rescue ActiveRecord::StatementInvalid => e
+      error_raised = true
+      assert_match(/nonexistent_table/, e.message.downcase)
+    end
+    
+    assert error_raised, "exec_query should have raised error immediately due to .check call"
+  end
+
+  def test_pipeline_bad_query_returns_result_object_internal_api
+    skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
+    
+    # Test internal API: bad queries return PipelineResult objects that defer errors
     bad_result = nil
     
     exception = assert_raises(ActiveRecord::StatementInvalid) do
       @connection.with_pipeline do
-        bad_result = @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
+        bad_result = @connection.send(:internal_exec_query, "INSERT INTO nonexistent_table (col) VALUES ('test')")
         # The bad query should return a PipelineResult object, not raise immediately
         assert_instance_of ActiveRecord::PipelineResult, bad_result
       end
@@ -169,18 +187,36 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     assert_match(/nonexistent_table/, exception.message.downcase)
   end
 
-  def test_pipeline_good_query_after_bad_query_still_gets_result
+  def test_pipeline_bad_query_returns_result_object_public_api
     skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
     
-    # In pipeline mode, queries after bad queries still return result objects
-    # In non-pipeline mode, execution would stop at the first bad query
+    # Test public API: bad queries should raise immediately due to .check call
+    error_raised = false
+    
+    begin
+      @connection.with_pipeline do
+        # exec_query should raise immediately even in pipeline blocks
+        @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
+      end
+    rescue ActiveRecord::StatementInvalid => e
+      error_raised = true
+      assert_match(/nonexistent_table/, e.message.downcase)
+    end
+    
+    assert error_raised, "exec_query should have raised error immediately due to .check call"
+  end
+
+  def test_pipeline_good_query_after_bad_query_still_gets_result_internal_api
+    skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
+    
+    # Test internal API: queries after bad queries still return result objects
     bad_result = nil
     good_result = nil
     
     exception = assert_raises(ActiveRecord::StatementInvalid) do
       @connection.with_pipeline do
-        bad_result = @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
-        good_result = @connection.exec_query("SELECT 1")
+        bad_result = @connection.send(:internal_exec_query, "INSERT INTO nonexistent_table (col) VALUES ('test')")
+        good_result = @connection.send(:internal_exec_query, "SELECT 1")
         
         # Both should be PipelineResult objects in pipeline mode
         assert_instance_of ActiveRecord::PipelineResult, bad_result
@@ -194,17 +230,37 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     assert_match(/nonexistent_table/, exception.message.downcase)
   end
 
-  def test_pipeline_result_access_within_pipeline_block
+  def test_pipeline_good_query_after_bad_query_still_gets_result_public_api
     skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
     
-    # This test demonstrates a bug: accessing PipelineResult data within the pipeline block
-    # should work but currently causes issues during pipeline cleanup
+    # Test public API: first bad query should raise immediately, second never executes
+    error_raised = false
+    
+    begin
+      @connection.with_pipeline do
+        # This should raise immediately due to .check call
+        @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
+        # This line should never be reached
+        @connection.exec_query("SELECT 1")
+      end
+    rescue ActiveRecord::StatementInvalid => e
+      error_raised = true
+      assert_match(/nonexistent_table/, e.message.downcase)
+    end
+    
+    assert error_raised, "exec_query should have raised error immediately, preventing second query"
+  end
+
+  def test_pipeline_result_access_within_pipeline_block_internal_api
+    skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
+    
+    # Test internal API: accessing PipelineResult data within the pipeline block
     result1 = nil
     result2 = nil
     
     @connection.with_pipeline do
-      result1 = @connection.exec_query("SELECT 1 as num")
-      result2 = @connection.exec_query("SELECT 2 as num")
+      result1 = @connection.send(:internal_exec_query, "SELECT 1 as num")
+      result2 = @connection.send(:internal_exec_query, "SELECT 2 as num")
       
       # These should work - results should be accessible on demand within the pipeline
       assert_equal 1, result1.rows.first.first
@@ -212,11 +268,29 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     end
   end
 
-  def test_pipeline_result_access_with_errors_within_pipeline_block
+  def test_pipeline_result_access_within_pipeline_block_public_api
     skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
     
-    # Test accessing error results within pipeline block: errors should be accessible
-    # individually, and pipeline cleanup should handle PGRES_PIPELINE_ABORTED properly  
+    # Test public API: exec_query should return materialized results immediately
+    result1 = nil
+    result2 = nil
+    
+    @connection.with_pipeline do
+      result1 = @connection.exec_query("SELECT 1 as num")
+      result2 = @connection.exec_query("SELECT 2 as num")
+      
+      # exec_query calls .check, so these should be immediate ActiveRecord::Result objects
+      assert_instance_of ActiveRecord::Result, result1
+      assert_instance_of ActiveRecord::Result, result2
+      assert_equal 1, result1.rows.first.first
+      assert_equal 2, result2.rows.first.first
+    end
+  end
+
+  def test_pipeline_result_access_with_errors_within_pipeline_block_internal_api
+    skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
+    
+    # Test internal API: accessing error results within pipeline block 
     bad_result = nil
     good_result = nil
     bad_error = nil
@@ -224,9 +298,9 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     
     begin
       @connection.with_pipeline do
-        # Execute bad query first, then good query
-        bad_result = @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
-        good_result = @connection.exec_query("SELECT 42 as answer")
+        # Execute bad query first, then good query - using internal API
+        bad_result = @connection.send(:internal_exec_query, "INSERT INTO nonexistent_table (col) VALUES ('test')")
+        good_result = @connection.send(:internal_exec_query, "SELECT 42 as answer")
         
         # In pipeline mode, both results exist as PipelineResult objects
         assert_instance_of ActiveRecord::PipelineResult, bad_result
@@ -257,6 +331,27 @@ class PostgreSQLPipelineTest < ActiveRecord::PostgreSQLTestCase
     # Both queries should have returned PipelineResult objects
     assert_instance_of ActiveRecord::PipelineResult, bad_result
     assert_instance_of ActiveRecord::PipelineResult, good_result
+  end
+
+  def test_pipeline_result_access_with_errors_within_pipeline_block_public_api
+    skip "Pipeline functionality not available" unless @connection.respond_to?(:with_pipeline)
+    
+    # Test public API: first bad query should raise immediately via .check
+    error_raised = false
+    
+    begin
+      @connection.with_pipeline do
+        # This should raise immediately due to .check call in exec_query
+        @connection.exec_query("INSERT INTO nonexistent_table (col) VALUES ('test')")
+        # This line should never be reached
+        @connection.exec_query("SELECT 42 as answer")
+      end
+    rescue ActiveRecord::StatementInvalid => e
+      error_raised = true
+      assert_match(/nonexistent_table/, e.message.downcase)
+    end
+    
+    assert error_raised, "exec_query should have raised error immediately due to .check call"
   end
 
   def test_pipelined_connection_configuration

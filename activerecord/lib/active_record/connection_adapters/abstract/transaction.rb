@@ -801,6 +801,21 @@ module ActiveRecord
 
       def invalidate_pipeline_transactions(error)
         @connection.lock.synchronize do
+          # First, clean up PostgreSQL connection state by issuing ROLLBACK
+          # This gets the connection out of PQTRANS_INERROR state
+          begin
+            if @connection.respond_to?(:cancel_any_running_query)
+              @connection.send(:cancel_any_running_query)
+            end
+            # Issue ROLLBACK to reset PostgreSQL transaction state
+            # Use materialize_transactions: false to avoid recursive pipelining
+            @connection.send(:internal_execute, "ROLLBACK", "TRANSACTION", allow_retry: false, materialize_transactions: false)
+          rescue => _rollback_error
+            # If ROLLBACK itself fails, log but continue with cleanup
+            # The connection might be completely broken at this point
+          end
+          
+          # Then clean up Rails transaction state
           @stack.each do |transaction|
             transaction.invalidate!
             transaction.instance_variable_set(:@pipeline_result, nil)

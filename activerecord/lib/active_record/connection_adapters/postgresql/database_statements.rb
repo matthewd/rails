@@ -174,6 +174,7 @@ module ActiveRecord
             result
           end
 
+
           def cast_result(result)
             # If it's a PipelineResult, return as-is (preserves pipelining performance)
             return result if result.is_a?(ActiveRecord::PipelineResult)

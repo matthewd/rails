@@ -545,9 +545,17 @@ module ActiveRecord
         cast_result(raw_execute(...))
       end
 
-      # Execute a query and returns an ActiveRecord::Result
-      def internal_exec_query(...) # :nodoc:
-        cast_result(internal_execute(...))
+      # Execute a query and returns an ActiveRecord::Result or PipelineResult
+      def internal_exec_query(sql, name = "SQL", binds = [], prepare: false, allow_retry: false, materialize_transactions: true) # :nodoc:
+        # When inside a with_pipeline block, return PipelineResult objects that defer materialization
+        # When not in pipeline mode, return immediately materialized ActiveRecord::Result objects
+        if materialize_transactions && respond_to?(:pipeline_active?) && pipeline_active?
+          # Return PipelineResult directly from pipelined execution 
+          execute_with_deferred_materialization(sql, name, binds, prepare: prepare, allow_retry: allow_retry, materialize_transactions: materialize_transactions)
+        else
+          # Normal path: materialize immediately
+          cast_result(internal_execute(sql, name, binds, prepare: prepare, allow_retry: allow_retry, materialize_transactions: materialize_transactions))
+        end
       end
 
       def default_insert_value(column) # :nodoc:
@@ -595,7 +603,6 @@ module ActiveRecord
           
           result = has_unmaterialized && pipeline_supported && not_in_pipeline
           
-          
           result
         end
 
@@ -631,6 +638,24 @@ module ActiveRecord
             ensure
               # Mark the transaction as dirty to match with_raw_connection(materialize_transactions: true) behavior
               dirty_current_transaction
+            end
+          end
+        end
+
+        def execute_with_deferred_materialization(sql, name, binds, prepare: false, allow_retry: false, materialize_transactions: true)
+          type_casted_binds = type_casted_binds(binds)
+          log(sql, name, binds, type_casted_binds, allow_retry: allow_retry) do |notification_payload|
+            # We're already inside a with_pipeline block, so don't create another one
+            # Just add the query directly to the existing pipeline
+            with_raw_connection(allow_retry: allow_retry, materialize_transactions: false, pipeline_mode: :preserve) do |conn|
+              # Add transaction commands to pipeline if needed
+              materialize_transactions_in_pipeline
+
+              # Then add the user query to pipeline and return PipelineResult
+              # This should always return a PipelineResult, even for queries that will error
+              ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
+                perform_query(conn, sql, binds, type_casted_binds, prepare: prepare, notification_payload: notification_payload, batch: false)
+              end
             end
           end
         end
