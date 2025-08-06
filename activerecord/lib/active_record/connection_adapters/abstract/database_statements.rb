@@ -595,13 +595,15 @@ module ActiveRecord
           # 2. Pipeline is supported and not disabled
           # 3. We're not already in a pipeline (avoid nesting)
           # 4. This is PostgreSQL adapter with pipeline support
+          # 5. We're not already inside a database transaction (no nested transaction pipelining)
           has_unmaterialized = transaction_manager.has_unmaterialized_transactions?
           responds_to_pipeline = respond_to?(:pipeline_supported?)
           pipeline_supported_result = responds_to_pipeline ? pipeline_supported? : false
           pipeline_supported = responds_to_pipeline && pipeline_supported_result
           not_in_pipeline = !pipeline_active?
+          not_in_db_transaction = !transaction_open?
           
-          result = has_unmaterialized && pipeline_supported && not_in_pipeline
+          result = has_unmaterialized && pipeline_supported && not_in_pipeline && not_in_db_transaction
           
           result
         end
