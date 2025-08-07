@@ -576,7 +576,7 @@ module ActiveRecord
           else
             # Non-pipelined path - use existing log instrumentation
             log(sql, name, binds, type_casted_binds, async: async, allow_retry: allow_retry) do |notification_payload|
-              with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions, pipeline_mode: :preserve) do |conn|
+              with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions) do |conn|
                 result = ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
                   perform_query(conn, sql, binds, type_casted_binds, prepare: prepare, notification_payload: notification_payload, batch: batch)
                 end
