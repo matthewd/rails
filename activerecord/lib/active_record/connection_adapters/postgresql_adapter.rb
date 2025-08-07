@@ -421,7 +421,7 @@ module ActiveRecord
       end
 
       def add_transaction_command(sql)
-        @pipeline_context.add_transaction_command(sql)
+        @pipeline_context.add_transaction_command(sql, adapter: self)
       end
 
       def pipeline_supported?

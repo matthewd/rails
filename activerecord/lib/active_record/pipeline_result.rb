@@ -28,21 +28,13 @@ module ActiveRecord
 
     delegate :empty?, :to_a, :rows, :columns, :each, :first, :last, :size, :length, :count, to: :cast_result
 
-    def initialize(pipeline_context)
+    def initialize(pipeline_context, sql: nil, name: nil, binds: nil, type_casted_binds: nil, adapter: nil)
       @pipeline_context = pipeline_context
       @mutex = Monitor.new
       @result = nil
       @pending = true
       @error = nil
       @instrumentation_emitted = false
-      @sql = nil
-      @name = nil
-      @binds = nil
-      @type_casted_binds = nil
-      @adapter = nil
-    end
-
-    def set_instrumentation_context(sql:, name:, binds:, type_casted_binds:, adapter:)
       @sql = sql
       @name = name
       @binds = binds

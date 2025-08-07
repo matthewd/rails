@@ -82,7 +82,7 @@ module ActiveRecord
           nil
         end
 
-        def add_query(sql, binds, type_casted_binds, prepare:)
+        def add_query(sql, binds, type_casted_binds, prepare:, name: nil, adapter: nil)
           @mutex.synchronize do
             raise "Pipeline not active" unless @pipeline_active
 
@@ -98,7 +98,14 @@ module ActiveRecord
               @raw_connection.send_query_params(sql, type_casted_binds || [])
             end
 
-            result = ActiveRecord::PipelineResult.new(self)
+            result = ActiveRecord::PipelineResult.new(
+              self,
+              sql: sql,
+              name: name,
+              binds: binds,
+              type_casted_binds: type_casted_binds,
+              adapter: adapter
+            )
 
             @pending_results << result
 
@@ -106,9 +113,9 @@ module ActiveRecord
           end
         end
 
-        def add_transaction_command(sql)
+        def add_transaction_command(sql, adapter: nil)
           # Just use add_query with no binds for transaction commands
-          add_query(sql, [], [], prepare: false)
+          add_query(sql, [], [], prepare: false, name: "TRANSACTION", adapter: adapter)
         end
 
         def sync_all_results
