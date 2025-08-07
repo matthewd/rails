@@ -617,30 +617,17 @@ module ActiveRecord
         end
 
         def execute_pipelined_query(sql, name, binds, type_casted_binds, prepare: false, async: false, allow_retry: false, batch: false, materialize_transactions: true)
-          with_raw_connection(allow_retry: allow_retry, materialize_transactions: false) do |conn|
-            if pipeline_active?
-              # Already in pipeline - just add the query directly  
-              @pipeline_context.add_query(
-                sql, binds, type_casted_binds, 
-                prepare: prepare, 
-                name: name, 
-                adapter: self
-              )
-            else
-              # Not in pipeline - create new pipeline and materialize transactions
-              with_pipeline do
-                # First, add transaction commands to pipeline if requested
-                materialize_transactions_in_pipeline if materialize_transactions
+          with_raw_connection(allow_retry: allow_retry, materialize_transactions: false, pipeline_mode: true) do |conn|
+            # Materialize transactions if requested
+            materialize_transactions_in_pipeline if materialize_transactions
 
-                # Then add the user query to pipeline
-                @pipeline_context.add_query(
-                  sql, binds, type_casted_binds, 
-                  prepare: prepare, 
-                  name: name, 
-                  adapter: self
-                )
-              end
-            end
+            # Add the user query to pipeline
+            @pipeline_context.add_query(
+              sql, binds, type_casted_binds, 
+              prepare: prepare, 
+              name: name, 
+              adapter: self
+            )
           end
         end
 
