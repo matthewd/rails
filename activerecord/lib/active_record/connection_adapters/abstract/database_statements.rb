@@ -595,15 +595,13 @@ module ActiveRecord
           # 2. Pipeline is supported and not disabled
           # 3. We're not already in a pipeline (avoid nesting)
           # 4. This is PostgreSQL adapter with pipeline support
-          # 5. We're not already inside a database transaction (no nested transaction pipelining)
           has_unmaterialized = transaction_manager.has_unmaterialized_transactions?
           responds_to_pipeline = respond_to?(:pipeline_supported?)
           pipeline_supported_result = responds_to_pipeline ? pipeline_supported? : false
           pipeline_supported = responds_to_pipeline && pipeline_supported_result
           not_in_pipeline = !pipeline_active?
-          not_in_db_transaction = !transaction_open?
           
-          result = has_unmaterialized && pipeline_supported && not_in_pipeline && not_in_db_transaction
+          result = has_unmaterialized && pipeline_supported && not_in_pipeline
           
           result
         end
@@ -633,7 +631,8 @@ module ActiveRecord
               raw_result
             rescue Exception => error
               # For any error, ensure transaction state is properly cleaned up
-              if transaction_manager.pipeline_materialization_active?
+              # But don't invalidate for recoverable errors like RecordNotUnique which are expected business logic
+              if transaction_manager.pipeline_materialization_active? && !recoverable_pipeline_error?(error)
                 transaction_manager.invalidate_pipeline_transactions(error)
               end
               raise
@@ -664,6 +663,14 @@ module ActiveRecord
 
         def materialize_transactions_in_pipeline
           transaction_manager.materialize_transactions_in_pipeline(self)
+        end
+
+        def recoverable_pipeline_error?(error)
+          # Recoverable errors are business logic errors that don't require transaction invalidation
+          # RecordNotUnique is expected by create_or_find_by and similar patterns
+          error.is_a?(ActiveRecord::RecordNotUnique) ||
+            error.is_a?(ActiveRecord::RecordInvalid) ||
+            error.is_a?(ActiveRecord::RecordNotSaved)
         end
 
         def handle_warnings(raw_result, sql)
