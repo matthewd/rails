@@ -569,11 +569,13 @@ module ActiveRecord
         # Lowest level way to execute a query. Doesn't check for illegal writes, doesn't annotate queries, yields a native result object.
         def raw_execute(sql, name = nil, binds = [], prepare: false, async: false, allow_retry: false, materialize_transactions: true, batch: false)
           type_casted_binds = type_casted_binds(binds)
-          log(sql, name, binds, type_casted_binds, async: async, allow_retry: allow_retry) do |notification_payload|
-            # Check if we should pipeline transaction commands with this query
-            if materialize_transactions && should_pipeline_transactions?
-              execute_with_transaction_pipelining(sql, name, binds, type_casted_binds, prepare: prepare, async: async, allow_retry: allow_retry, batch: batch, notification_payload: notification_payload)
-            else
+          
+          # Check if this query should be pipelined before entering log block
+          if should_pipeline_this_query?(materialize_transactions, batch)
+            execute_pipelined_query(sql, name, binds, type_casted_binds, prepare: prepare, async: async, allow_retry: allow_retry, batch: batch)
+          else
+            # Non-pipelined path - use existing log instrumentation
+            log(sql, name, binds, type_casted_binds, async: async, allow_retry: allow_retry) do |notification_payload|
               with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions, pipeline_mode: :preserve) do |conn|
                 result = ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
                   perform_query(conn, sql, binds, type_casted_binds, prepare: prepare, notification_payload: notification_payload, batch: batch)
@@ -604,6 +606,55 @@ module ActiveRecord
           result = has_unmaterialized && pipeline_supported && not_in_pipeline
           
           result
+        end
+
+        def should_pipeline_this_query?(materialize_transactions, batch)
+          # Don't pipeline batch queries
+          return false if batch
+          
+          # Use pipeline if we're already in an active pipeline OR we should start transaction pipelining
+          pipeline_active? || (materialize_transactions && should_pipeline_transactions?)
+        end
+
+        def execute_pipelined_query(sql, name, binds, type_casted_binds, prepare: false, async: false, allow_retry: false, batch: false)
+          with_raw_connection(allow_retry: allow_retry, materialize_transactions: false) do |conn|
+            pipeline_result = nil
+
+            if pipeline_active?
+              # Already in pipeline - just add the query directly  
+              pipeline_result = @pipeline_context.add_query(sql, binds, type_casted_binds, prepare: prepare)
+            else
+              # Not in pipeline - create new pipeline and materialize transactions
+              begin
+                with_pipeline do
+                  # First, add transaction commands to pipeline
+                  materialize_transactions_in_pipeline
+
+                  # Then add the user query to pipeline
+                  pipeline_result = @pipeline_context.add_query(sql, binds, type_casted_binds, prepare: prepare)
+                end
+              rescue => err
+                # Make sure pipeline cleanup happens even on errors
+                if pipeline_result&.respond_to?(:set_error)
+                  pipeline_result.set_error(err)
+                end
+                raise
+              end
+            end
+            
+            # Set instrumentation context on the pipeline result
+            if pipeline_result.respond_to?(:set_instrumentation_context)
+              pipeline_result.set_instrumentation_context(
+                sql: sql,
+                name: name,
+                binds: binds,
+                type_casted_binds: type_casted_binds,
+                adapter: self
+              )
+            end
+
+            pipeline_result
+          end
         end
 
         def execute_with_transaction_pipelining(sql, name, binds, type_casted_binds, prepare: false, async: false, allow_retry: false, batch: false, notification_payload:)

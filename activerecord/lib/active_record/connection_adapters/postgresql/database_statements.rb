@@ -133,11 +133,6 @@ module ActiveRecord
           end
 
           def perform_query(raw_connection, sql, binds, type_casted_binds, prepare:, notification_payload:, batch: false)
-            # Check if we're in pipeline mode
-            if pipeline_active? && !batch
-              return @pipeline_context.add_query(sql, binds, type_casted_binds, prepare: prepare)
-            end
-
             update_typemap_for_default_timezone
             result = if prepare
               begin

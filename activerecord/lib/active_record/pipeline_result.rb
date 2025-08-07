@@ -34,6 +34,20 @@ module ActiveRecord
       @result = nil
       @pending = true
       @error = nil
+      @instrumentation_emitted = false
+      @sql = nil
+      @name = nil
+      @binds = nil
+      @type_casted_binds = nil
+      @adapter = nil
+    end
+
+    def set_instrumentation_context(sql:, name:, binds:, type_casted_binds:, adapter:)
+      @sql = sql
+      @name = name
+      @binds = binds
+      @type_casted_binds = type_casted_binds
+      @adapter = adapter
     end
 
     def then(&block)
@@ -71,7 +85,16 @@ module ActiveRecord
 
     def result
       @mutex.synchronize do
-        @pipeline_context.wait_for(self) if @pending
+        # Emit instrumentation if we have context and haven't emitted yet
+        if @adapter && !@instrumentation_emitted
+          @adapter.log(@sql, @name, @binds, @type_casted_binds) do
+            @instrumentation_emitted = true
+            @pipeline_context.wait_for(self) if @pending
+          end
+        else
+          @pipeline_context.wait_for(self) if @pending
+        end
+        
         raise @error if @error
         @final_result  # Return raw PG::Result for compatibility
       end
