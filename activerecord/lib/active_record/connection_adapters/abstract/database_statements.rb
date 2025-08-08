@@ -148,7 +148,7 @@ module ActiveRecord
       # will be cleared. If the query is read-only, consider using #select_all
       # instead.
       def exec_query(sql, name = "SQL", binds = [], prepare: false)
-        internal_exec_query(sql, name, binds, prepare: prepare).check
+        internal_exec_query(sql, name, binds, prepare: prepare)
       end
 
       # Executes insert +sql+ statement in the context of this connection using
