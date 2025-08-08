@@ -8,6 +8,38 @@ require "active_support/concurrency/load_interlock_aware_monitor"
 require "arel/collectors/bind"
 require "arel/collectors/composite"
 require "arel/collectors/sql_string"
+
+# Pipeline debugging trace methods
+def pipeline_trace(keyword, pipeline_result_id = nil, sql = nil, binds = nil, extra = nil)
+  colors = {
+    'PIPE_SEND' => "\e[38;2;0;255;0m",      # Bright Green
+    'PIPE_TXN' => "\e[38;2;0;200;50m",      # Green-Yellow  
+    'BLOCKING_SEND' => "\e[38;2;100;255;100m", # Light Green
+    'PIPE_SYNC' => "\e[38;2;0;150;255m",    # Bright Blue
+    'PIPE_FLUSH' => "\e[38;2;50;100;255m",  # Blue-Purple
+    'PIPE_ENTER' => "\e[38;2;0;200;200m",   # Cyan
+    'PIPE_EXIT' => "\e[38;2;0;150;150m",    # Dark Cyan
+    'PIPE_WAIT' => "\e[38;2;255;255;0m",    # Bright Yellow
+    'PIPE_RESULT' => "\e[38;2;255;0;255m",  # Bright Magenta
+    'PIPE_ERROR' => "\e[38;2;255;100;100m"  # Light Red
+  }
+  
+  reset = "\e[0m"
+  color = colors[keyword] || ""
+  
+  output = "#{color}#{keyword}#{reset}"
+  output += "[#{pipeline_result_id.to_s(16)}]" if pipeline_result_id
+  output += ": #{sql_snippet(sql)} (binds: #{binds&.length || 0})" if sql
+  output += " → #{extra}" if extra
+  
+  puts output
+end
+
+def sql_snippet(sql)
+  return "nil" unless sql
+  clean = sql.gsub(/\s+/, ' ').strip
+  clean.length > 50 ? "#{clean[0..47]}..." : clean
+end
 require "arel/collectors/substitute_binds"
 
 module ActiveRecord
