@@ -626,44 +626,6 @@ module ActiveRecord
           end
         end
 
-        def execute_with_transaction_pipelining(sql, name, binds, type_casted_binds, prepare: false, async: false, allow_retry: false, batch: false, notification_payload:)
-          with_raw_connection(allow_retry: allow_retry, materialize_transactions: false) do |conn|
-            pipeline_result = nil
-
-            begin
-              with_pipeline do
-                # First, add transaction commands to pipeline
-                materialize_transactions_in_pipeline
-
-                # Then add the user query to pipeline
-                pipeline_result = ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-                  perform_query(conn, sql, binds, type_casted_binds, prepare: prepare, notification_payload: notification_payload, batch: batch)
-                end
-              end
-
-              # Resolve the pipeline result to get the raw PG result
-              raw_result = pipeline_result.result
-
-              # After pipeline completes successfully, verify transaction commands succeeded
-              transaction_manager.complete_pipeline_materialization
-              
-              handle_warnings(raw_result, sql) if raw_result
-              raw_result
-            rescue Exception => error
-              # For any error, ensure transaction state is properly cleaned up
-              # But don't invalidate for recoverable errors like RecordNotUnique which are expected business logic
-              if transaction_manager.pipeline_materialization_active? && !recoverable_pipeline_error?(error)
-                transaction_manager.invalidate_pipeline_transactions(error)
-              end
-              raise
-            ensure
-              # Mark the transaction as dirty to match with_raw_connection(materialize_transactions: true) behavior
-              dirty_current_transaction
-            end
-          end
-        end
-
-
         def materialize_transactions_in_pipeline
           transaction_manager.materialize_transactions_in_pipeline(self)
         end

@@ -27,14 +27,6 @@ module ActiveRecord
     end
   end
 
-  class PipelineMaterializationError < TransactionPipelineError
-    attr_reader :materialization_error
-
-    def initialize(message = "Pipeline materialization error", original_error: nil, materialization_error: nil)
-      @materialization_error = materialization_error
-      super(message, original_error)
-    end
-  end
 
   module ConnectionAdapters
     # = Active Record Connection Adapters Transaction State
