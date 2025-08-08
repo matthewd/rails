@@ -107,7 +107,7 @@ module ActiveRecord
               adapter: adapter
             )
             
-            pipeline_trace('PIPE_SEND', @adapter, result.__id__, sql, binds)
+            pipeline_trace('PIPE_SEND', @adapter, result, sql, binds)
 
             @pending_results << result
 
@@ -118,7 +118,7 @@ module ActiveRecord
         def add_transaction_command(sql, adapter: nil)
           # Just use add_query with no binds for transaction commands
           result = add_query(sql, [], [], prepare: false, name: "TRANSACTION", adapter: adapter)
-          pipeline_trace('PIPE_TXN', @adapter, result.__id__, sql)
+          pipeline_trace('PIPE_TXN', @adapter, result, sql)
           result
         end
 

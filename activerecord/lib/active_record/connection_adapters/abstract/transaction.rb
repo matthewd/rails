@@ -429,7 +429,7 @@ module ActiveRecord
 
       def materialize!(pipeline_result: false)
         # Trace savepoint creation
-        pipeline_trace('TXN_SAVEPOINT_CREATE', connection, self.__id__, nil, nil, "savepoint: #{savepoint_name}")
+        pipeline_trace('TXN_SAVEPOINT_CREATE', connection, self, nil, nil, "savepoint: #{savepoint_name}")
         
         result = connection.create_savepoint(savepoint_name, pipeline_result: pipeline_result)
         super
@@ -449,7 +449,7 @@ module ActiveRecord
         unless @state.invalidated?
           if materialized? && connection.active?
             # Trace savepoint rollback
-            pipeline_trace('TXN_SAVEPOINT_ROLLBACK', connection, self.__id__, nil, nil, "savepoint: #{savepoint_name}")
+            pipeline_trace('TXN_SAVEPOINT_ROLLBACK', connection, self, nil, nil, "savepoint: #{savepoint_name}")
             
             connection.rollback_to_savepoint(savepoint_name)
           end
@@ -461,7 +461,7 @@ module ActiveRecord
       def commit
         if materialized?
           # Trace savepoint release
-          pipeline_trace('TXN_SAVEPOINT_RELEASE', connection, self.__id__, nil, nil, "savepoint: #{savepoint_name}")
+          pipeline_trace('TXN_SAVEPOINT_RELEASE', connection, self, nil, nil, "savepoint: #{savepoint_name}")
           
           connection.release_savepoint(savepoint_name)
         end
@@ -476,7 +476,7 @@ module ActiveRecord
     class RealTransaction < Transaction
       def materialize!(pipeline_result: false)
         # Trace transaction DB operation
-        pipeline_trace('TXN_DB_BEGIN', connection, self.__id__, nil, nil, "isolation: #{isolation_level || 'default'}")
+        pipeline_trace('TXN_DB_BEGIN', connection, self, nil, nil, "isolation: #{isolation_level || 'default'}")
         
         result = if joinable?
           if isolation_level
@@ -509,7 +509,7 @@ module ActiveRecord
       def rollback
         if materialized?
           # Trace transaction DB rollback
-          pipeline_trace('TXN_DB_ROLLBACK', connection, self.__id__, nil, nil, "real transaction")
+          pipeline_trace('TXN_DB_ROLLBACK', connection, self, nil, nil, "real transaction")
           
           connection.rollback_db_transaction
           connection.reset_isolation_level if isolation_level
@@ -521,7 +521,7 @@ module ActiveRecord
       def commit
         if materialized?
           # Trace transaction DB commit
-          pipeline_trace('TXN_DB_COMMIT', connection, self.__id__, nil, nil, "real transaction")
+          pipeline_trace('TXN_DB_COMMIT', connection, self, nil, nil, "real transaction")
           
           connection.commit_db_transaction
           connection.reset_isolation_level if isolation_level
@@ -580,7 +580,7 @@ module ActiveRecord
           @stack.push(transaction)
           
           # Trace transaction begin
-          pipeline_trace('TXN_BEGIN', @connection, transaction.__id__, nil, nil, "depth: #{@stack.size}")
+          pipeline_trace('TXN_BEGIN', @connection, transaction, nil, nil, "depth: #{@stack.size}")
           
           transaction
         end
@@ -627,7 +627,7 @@ module ActiveRecord
               @stack.each do |transaction|
                 unless transaction.materialized?
                   # Trace transaction materialization
-                  pipeline_trace('TXN_MATERIALIZE', @connection, transaction.__id__, nil, nil, "depth: #{@stack.index(transaction) + 1}")
+                  pipeline_trace('TXN_MATERIALIZE', @connection, transaction, nil, nil, "depth: #{@stack.index(transaction) + 1}")
                   
                   result = transaction.materialize!(pipeline_result: pipeline_result)
                   results << result if pipeline_result
@@ -650,7 +650,7 @@ module ActiveRecord
           transaction = @stack.last
           
           # Trace transaction commit
-          pipeline_trace('TXN_COMMIT', @connection, transaction.__id__, nil, nil, "depth: #{@stack.size}")
+          pipeline_trace('TXN_COMMIT', @connection, transaction, nil, nil, "depth: #{@stack.size}")
 
           begin
             transaction.before_commit_records
@@ -664,7 +664,7 @@ module ActiveRecord
           transaction.commit_records
           
           # Trace transaction end  
-          pipeline_trace('TXN_END', @connection, transaction.__id__, nil, nil, "depth: #{@stack.size}")
+          pipeline_trace('TXN_END', @connection, transaction, nil, nil, "depth: #{@stack.size}")
         end
       end
 
@@ -673,7 +673,7 @@ module ActiveRecord
           transaction ||= @stack.last
           
           # Trace transaction rollback
-          pipeline_trace('TXN_ROLLBACK', @connection, transaction.__id__, nil, nil, "depth: #{@stack.size}")
+          pipeline_trace('TXN_ROLLBACK', @connection, transaction, nil, nil, "depth: #{@stack.size}")
           
           begin
             transaction.rollback
@@ -683,7 +683,7 @@ module ActiveRecord
           transaction.rollback_records
           
           # Trace transaction end
-          pipeline_trace('TXN_END', @connection, transaction.__id__, nil, nil, "depth: #{@stack.size}")
+          pipeline_trace('TXN_END', @connection, transaction, nil, nil, "depth: #{@stack.size}")
         end
       end
 

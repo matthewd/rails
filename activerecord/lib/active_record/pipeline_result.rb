@@ -56,17 +56,17 @@ module ActiveRecord
           # Handle PGRES_PIPELINE_ABORTED results explicitly
           if @result.result_status == PG::PGRES_PIPELINE_ABORTED
             @error = ActiveRecord::StatementInvalid.new("Query was aborted due to an earlier error in the pipeline")
-            pipeline_trace('PIPE_ERROR', @adapter, self.__id__, @sql, nil, @error.message)
+            pipeline_trace('PIPE_ERROR', @adapter, self, @sql, nil, @error.message)
           else
             @result.check
             # Store the raw result - let normal casting flow handle type conversion
             @final_result = @result
-            pipeline_trace('PIPE_RESULT', @adapter, self.__id__, @sql, nil, 'OK')
+            pipeline_trace('PIPE_RESULT', @adapter, self, @sql, nil, 'OK')
           end
         rescue => err
           # Translate PG exceptions to ActiveRecord exceptions using the adapter's translation
           @error = @pipeline_context.instance_variable_get(:@adapter).send(:translate_exception_class, err, nil, nil)
-          pipeline_trace('PIPE_ERROR', @adapter, self.__id__, @sql, nil, @error.message)
+          pipeline_trace('PIPE_ERROR', @adapter, self, @sql, nil, @error.message)
         end
       end
     end
@@ -75,14 +75,14 @@ module ActiveRecord
       @mutex.synchronize do
         @error = error
         @pending = false
-        pipeline_trace('PIPE_ERROR', @adapter, self.__id__, @sql, nil, error.message)
+        pipeline_trace('PIPE_ERROR', @adapter, self, @sql, nil, error.message)
       end
     end
 
     def result
       @mutex.synchronize do
         if @pending
-          pipeline_trace('PIPE_WAIT', @adapter, self.__id__, @sql)
+          pipeline_trace('PIPE_WAIT', @adapter, self, @sql)
         end
         
         # Emit instrumentation if we have context and haven't emitted yet

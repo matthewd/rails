@@ -10,7 +10,7 @@ require "arel/collectors/composite"
 require "arel/collectors/sql_string"
 
 # Pipeline debugging trace methods
-def pipeline_trace(keyword, adapter_instance, pipeline_result_id = nil, sql = nil, binds = nil, extra = nil)
+def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = nil, binds = nil, extra = nil)
   colors = {
     # Pipeline Operations (Blue family) - query sending/receiving
     'PIPE_SEND' => "\e[38;2;100;150;255m",     # Light Blue
@@ -59,11 +59,15 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_id = nil, sql = ni
   adapter_hex = adapter_instance&.__id__&.to_s(16) || "nil"
   
   output = "[#{adapter_hex}] #{color}#{keyword}#{reset}"
-  output += "[#{pipeline_result_id.to_s(16)}]" if pipeline_result_id
+  if pipeline_result_obj
+    class_name = pipeline_result_obj.class.name.split('::').last
+    obj_hex = pipeline_result_obj.__id__.to_s(16)
+    output += "[#{class_name} #{obj_hex}]"
+  end
   output += ": #{sql_snippet(sql)} (binds: #{binds&.length || 0})" if sql
   output += " → #{extra}" if extra
   
-  puts output
+  $stderr.puts output
 end
 
 def sql_snippet(sql)
@@ -1337,11 +1341,11 @@ module ActiveRecord
         # holding @lock (or from #initialize).
         def configure_connection
           check_version
-          pipeline_trace('ADAPTER_CONFIGURED', self)
         end
 
         def attempt_configure_connection
           configure_connection
+          pipeline_trace('ADAPTER_CONFIGURED', self)
         rescue Exception # Need to handle things such as Timeout::ExitException
           disconnect!
           raise
