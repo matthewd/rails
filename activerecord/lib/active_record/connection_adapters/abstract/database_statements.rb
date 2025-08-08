@@ -546,16 +546,9 @@ module ActiveRecord
       end
 
       # Execute a query and returns an ActiveRecord::Result or PipelineResult
-      def internal_exec_query(sql, name = "SQL", binds = [], prepare: false, allow_retry: false, materialize_transactions: true) # :nodoc:
-        # When inside a with_pipeline block, return PipelineResult objects that defer materialization
-        # When not in pipeline mode, return immediately materialized ActiveRecord::Result objects
-        if materialize_transactions && respond_to?(:pipeline_active?) && pipeline_active?
-          # Return PipelineResult directly from pipelined execution 
-          execute_with_deferred_materialization(sql, name, binds, prepare: prepare, allow_retry: allow_retry, materialize_transactions: materialize_transactions)
-        else
-          # Normal path: materialize immediately
-          cast_result(internal_execute(sql, name, binds, prepare: prepare, allow_retry: allow_retry, materialize_transactions: materialize_transactions))
-        end
+      def internal_exec_query(sql, name = "SQL", binds = [], prepare: false, allow_retry: false, materialize_transactions: true, pipeline_result: false) # :nodoc:
+        # Always route through internal_execute -> raw_execute which handles pipeline vs non-pipeline logic
+        cast_result(internal_execute(sql, name, binds, prepare: prepare, allow_retry: allow_retry, materialize_transactions: materialize_transactions, pipeline_result: pipeline_result))
       end
 
       def default_insert_value(column) # :nodoc:
@@ -567,15 +560,19 @@ module ActiveRecord
         private_constant :DEFAULT_INSERT_VALUE
 
         # Lowest level way to execute a query. Doesn't check for illegal writes, doesn't annotate queries, yields a native result object.
-        def raw_execute(sql, name = nil, binds = [], prepare: false, async: false, allow_retry: false, materialize_transactions: true, batch: false)
+        def raw_execute(sql, name = nil, binds = [], prepare: false, async: false, allow_retry: false, materialize_transactions: true, batch: false, pipeline_result: false)
           type_casted_binds = type_casted_binds(binds)
           
           # Check if this query should be pipelined before entering log block
           if should_pipeline_this_query?(materialize_transactions, batch)
-            execute_pipelined_query(sql, name, binds, type_casted_binds, prepare: prepare, async: async, allow_retry: allow_retry, batch: batch, materialize_transactions: materialize_transactions)
+            pipeline_result_value = execute_pipelined_query(sql, name, binds, type_casted_binds, prepare: prepare, async: async, allow_retry: allow_retry, batch: batch, materialize_transactions: materialize_transactions)
+
+            # If the caller isn't expecting a pipeline result, we'll
+            # need to resolve it
+            pipeline_result ? pipeline_result_value : pipeline_result_value.result
           else
             # Non-pipelined path - use existing log instrumentation
-            log(sql, name, binds, type_casted_binds, async: async, allow_retry: allow_retry) do |notification_payload|
+            result = log(sql, name, binds, type_casted_binds, async: async, allow_retry: allow_retry) do |notification_payload|
               with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions) do |conn|
                 result = ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
                   perform_query(conn, sql, binds, type_casted_binds, prepare: prepare, notification_payload: notification_payload, batch: batch)
@@ -584,6 +581,8 @@ module ActiveRecord
                 result
               end
             end
+
+            pipeline_result ? PipelineResult.wrap(result) : result
           end
         end
 
@@ -595,15 +594,11 @@ module ActiveRecord
           # Only pipeline if:
           # 1. We have unmaterialized transactions
           # 2. Pipeline is supported and not disabled
-          # 3. We're not already in a pipeline (avoid nesting)
-          # 4. This is PostgreSQL adapter with pipeline support
           has_unmaterialized = transaction_manager.has_unmaterialized_transactions?
           responds_to_pipeline = respond_to?(:pipeline_supported?)
-          pipeline_supported_result = responds_to_pipeline ? pipeline_supported? : false
-          pipeline_supported = responds_to_pipeline && pipeline_supported_result
-          not_in_pipeline = !pipeline_active?
+          pipeline_supported = responds_to_pipeline && pipeline_supported?
           
-          result = has_unmaterialized && pipeline_supported && not_in_pipeline
+          result = has_unmaterialized && pipeline_supported
           
           result
         end
@@ -668,23 +663,6 @@ module ActiveRecord
           end
         end
 
-        def execute_with_deferred_materialization(sql, name, binds, prepare: false, allow_retry: false, materialize_transactions: true)
-          type_casted_binds = type_casted_binds(binds)
-          log(sql, name, binds, type_casted_binds, allow_retry: allow_retry) do |notification_payload|
-            # We're already inside a with_pipeline block, so don't create another one
-            # Just add the query directly to the existing pipeline
-            with_raw_connection(allow_retry: allow_retry, materialize_transactions: false, pipeline_mode: :preserve) do |conn|
-              # Add transaction commands to pipeline if needed
-              materialize_transactions_in_pipeline
-
-              # Then add the user query to pipeline and return PipelineResult
-              # This should always return a PipelineResult, even for queries that will error
-              ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-                perform_query(conn, sql, binds, type_casted_binds, prepare: prepare, notification_payload: notification_payload, batch: false)
-              end
-            end
-          end
-        end
 
         def materialize_transactions_in_pipeline
           transaction_manager.materialize_transactions_in_pipeline(self)
@@ -725,9 +703,9 @@ module ActiveRecord
         end
 
         # Same as #internal_exec_query, but yields a native adapter result
-        def internal_execute(sql, name = "SQL", binds = [], prepare: false, async: false, allow_retry: false, materialize_transactions: true, &block)
+        def internal_execute(sql, name = "SQL", binds = [], prepare: false, async: false, allow_retry: false, materialize_transactions: true, pipeline_result: false, &block)
           sql = preprocess_query(sql)
-          raw_execute(sql, name, binds, prepare: prepare, async: async, allow_retry: allow_retry, materialize_transactions: materialize_transactions, &block)
+          raw_execute(sql, name, binds, prepare: prepare, async: async, allow_retry: allow_retry, materialize_transactions: materialize_transactions, pipeline_result: pipeline_result, &block)
         end
 
         def execute_batch(statements, name = nil, **kwargs)

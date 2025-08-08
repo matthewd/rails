@@ -208,7 +208,7 @@ module ActiveRecord
       # The error should be raised immediately, not deferred
       error = assert_raises(ActiveRecord::StatementInvalid) do
         @connection.send(:log, "SELECT 1", "Test") do
-          @connection.send(:with_raw_connection, pipeline_mode: :preserve) do
+          @connection.send(:with_raw_connection, pipeline_mode: true) do
             raise MockDatabaseError, "Test database error"
           end
         end

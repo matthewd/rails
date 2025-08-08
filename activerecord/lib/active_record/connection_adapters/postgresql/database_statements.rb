@@ -175,7 +175,7 @@ module ActiveRecord
             return result if result.is_a?(ActiveRecord::PipelineResult)
             
             # If it's already an ActiveRecord::Result, return as-is (already cast)
-            return result if result.is_a?(ActiveRecord::Result)
+            raise "Double-casting AR::Result" if result.is_a?(ActiveRecord::Result)
             
             ar_result = if result.fields.empty?
               ActiveRecord::Result.empty(affected_rows: result.cmd_tuples)

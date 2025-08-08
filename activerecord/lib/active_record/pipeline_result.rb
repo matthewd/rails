@@ -79,7 +79,7 @@ module ActiveRecord
       @mutex.synchronize do
         # Emit instrumentation if we have context and haven't emitted yet
         if @adapter && !@instrumentation_emitted
-          @adapter.log(@sql, @name, @binds, @type_casted_binds) do
+          @adapter.send(:log, @sql, @name, @binds, @type_casted_binds) do
             @instrumentation_emitted = true
             @pipeline_context.wait_for(self) if @pending
           end

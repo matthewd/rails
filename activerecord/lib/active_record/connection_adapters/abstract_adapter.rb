@@ -1012,11 +1012,6 @@ module ActiveRecord
                 exit_persistent_pipeline_mode
               end
               self.materialize_transactions if materialize_transactions
-            when :preserve
-              # Framework code explicitly requesting to preserve current pipeline state
-              # This preserves pipeline mode for internal query calls within framework code
-              # Use with extreme caution - all callers must be framework-only code
-              self.materialize_transactions if materialize_transactions
             end
 
             retries_available = allow_retry ? connection_retries : 0
