@@ -614,20 +614,31 @@ module ActiveRecord
         @stack.none?(&:dirty?)
       end
 
-      def materialize_transactions
-        return if @materializing_transactions
+      def materialize_transactions(pipeline_result: false)
+        return [] if @materializing_transactions
 
         if @has_unmaterialized_transactions
           @connection.lock.synchronize do
             begin
               @materializing_transactions = true
-              @stack.each { |t| t.materialize! unless t.materialized? }
+              
+              results = []
+              @stack.each do |transaction|
+                unless transaction.materialized?
+                  result = transaction.materialize!(pipeline_result: pipeline_result)
+                  results << result if pipeline_result
+                end
+              end
+              
+              return results
             ensure
               @materializing_transactions = false
             end
             @has_unmaterialized_transactions = false
           end
         end
+        
+        []
       end
 
       def commit_transaction
@@ -708,31 +719,6 @@ module ActiveRecord
         @has_unmaterialized_transactions
       end
 
-      def materialize_transactions_in_pipeline(connection)
-        return if @materializing_transactions
-
-        if @has_unmaterialized_transactions
-          @connection.lock.synchronize do
-            begin
-              @materializing_transactions = true
-
-              pipeline_results = []
-              @stack.each do |transaction|
-                unless transaction.materialized?
-                  pipeline_result = transaction.materialize!(pipeline_result: true)
-                  pipeline_results << pipeline_result
-                end
-              end
-              
-              # Return the results for the caller to handle
-              return pipeline_results
-            ensure
-              @materializing_transactions = false
-            end
-            @has_unmaterialized_transactions = false
-          end
-        end
-      end
 
 
       private

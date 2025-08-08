@@ -614,7 +614,10 @@ module ActiveRecord
         def execute_pipelined_query(sql, name, binds, type_casted_binds, prepare: false, async: false, allow_retry: false, batch: false, materialize_transactions: true)
           with_raw_connection(allow_retry: allow_retry, materialize_transactions: false, pipeline_mode: true) do |conn|
             # Materialize transactions if requested
-            materialize_transactions_in_pipeline if materialize_transactions
+            if materialize_transactions
+              pipeline_results = transaction_manager.materialize_transactions(pipeline_result: true)
+              @transaction_pipeline_results = pipeline_results unless pipeline_results.empty?
+            end
 
             # Add the user query to pipeline
             @pipeline_context.add_query(
@@ -626,11 +629,6 @@ module ActiveRecord
           end
         end
 
-        def materialize_transactions_in_pipeline
-          pipeline_results = transaction_manager.materialize_transactions_in_pipeline(self)
-          # Store results for potential error handling, but don't resolve them yet
-          @transaction_pipeline_results = pipeline_results if pipeline_results
-        end
 
         def recoverable_pipeline_error?(error)
           # Recoverable errors are business logic errors that don't require transaction invalidation
