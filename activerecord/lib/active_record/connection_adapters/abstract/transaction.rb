@@ -195,7 +195,6 @@ module ActiveRecord
         @dirty = false
         @user_transaction = joinable ? ActiveRecord::Transaction.new(self) : ActiveRecord::Transaction::NULL_TRANSACTION
         @instrumenter = TransactionInstrumenter.new(connection: connection, transaction: @user_transaction)
-        @pipeline_result = nil
       end
 
       def dirty!
@@ -273,7 +272,7 @@ module ActiveRecord
       end
 
       def materialized?
-        @materialized || (@pipeline_result && !@pipeline_result.pending?)
+        @materialized
       end
 
       def restore!
@@ -542,8 +541,6 @@ module ActiveRecord
         @has_unmaterialized_transactions = false
         @materializing_transactions = false
         @lazy_transactions_enabled = true
-        @pipeline_materialization_active = false
-        @pipeline_transaction_results = []
       end
 
       def begin_transaction(isolation: nil, joinable: true, _lazy: true)
@@ -706,9 +703,6 @@ module ActiveRecord
         @stack.last || NULL_TRANSACTION
       end
 
-      def pipeline_materialization_active?
-        @pipeline_materialization_active
-      end
 
       def has_unmaterialized_transactions?
         @has_unmaterialized_transactions
@@ -721,14 +715,17 @@ module ActiveRecord
           @connection.lock.synchronize do
             begin
               @materializing_transactions = true
-              @pipeline_materialization_active = true
 
+              pipeline_results = []
               @stack.each do |transaction|
                 unless transaction.materialized?
                   pipeline_result = transaction.materialize!(pipeline_result: true)
-                  @pipeline_transaction_results << pipeline_result
+                  pipeline_results << pipeline_result
                 end
               end
+              
+              # Return the results for the caller to handle
+              return pipeline_results
             ensure
               @materializing_transactions = false
             end
@@ -737,67 +734,6 @@ module ActiveRecord
         end
       end
 
-      def complete_pipeline_materialization
-        @connection.lock.synchronize do
-          if @pipeline_materialization_active
-            begin
-              @pipeline_transaction_results.each_with_index do |result, index|
-                result.result
-              rescue => command_error
-                raise TransactionMaterializationError.new(
-                  "Transaction command failed during pipeline execution: #{command_error.message}",
-                  command_error,
-                  transaction_index: index
-                )
-              end
-
-              @pipeline_transaction_results.clear
-              @pipeline_materialization_active = false
-            rescue => error
-              invalidate_pipeline_transactions(error)
-              raise
-            end
-          end
-        end
-      end
-
-      def invalidate_pipeline_transactions(error)
-        @connection.lock.synchronize do
-          # First, clean up PostgreSQL connection state by issuing ROLLBACK
-          # This gets the connection out of PQTRANS_INERROR state
-          begin
-            if @connection.respond_to?(:cancel_any_running_query)
-              @connection.send(:cancel_any_running_query)
-            end
-            # Issue ROLLBACK to reset PostgreSQL transaction state
-            # Use materialize_transactions: false to avoid recursive pipelining
-            @connection.send(:internal_execute, "ROLLBACK", "TRANSACTION", allow_retry: false, materialize_transactions: false)
-          rescue => _rollback_error
-            # If ROLLBACK itself fails, log but continue with cleanup
-            # The connection might be completely broken at this point
-          end
-          
-          # Then clean up Rails transaction state
-          @stack.each do |transaction|
-            transaction.invalidate!
-            transaction.instance_variable_set(:@pipeline_result, nil)
-            transaction.instance_variable_set(:@materialized, false)
-          end
-          @pipeline_transaction_results.clear
-          @pipeline_materialization_active = false
-          @has_unmaterialized_transactions = false
-        end
-      end
-
-      def reset_pipeline_state
-        @connection.lock.synchronize do
-          if @pipeline_materialization_active
-            @pipeline_transaction_results.clear
-            @pipeline_materialization_active = false
-            @has_unmaterialized_transactions = true
-          end
-        end
-      end
 
       private
         NULL_TRANSACTION = NullTransaction.new.freeze

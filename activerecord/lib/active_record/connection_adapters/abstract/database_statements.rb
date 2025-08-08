@@ -627,7 +627,9 @@ module ActiveRecord
         end
 
         def materialize_transactions_in_pipeline
-          transaction_manager.materialize_transactions_in_pipeline(self)
+          pipeline_results = transaction_manager.materialize_transactions_in_pipeline(self)
+          # Store results for potential error handling, but don't resolve them yet
+          @transaction_pipeline_results = pipeline_results if pipeline_results
         end
 
         def recoverable_pipeline_error?(error)
