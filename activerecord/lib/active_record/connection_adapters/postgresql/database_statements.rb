@@ -133,7 +133,7 @@ module ActiveRecord
           end
 
           def perform_query(raw_connection, sql, binds, type_casted_binds, prepare:, notification_payload:, batch: false)
-            pipeline_trace('BLOCKING_SEND', nil, sql, binds)
+            pipeline_trace('BLOCKING_SEND', self, nil, sql, binds)
             update_typemap_for_default_timezone
             result = if prepare
               begin

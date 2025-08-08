@@ -107,7 +107,7 @@ module ActiveRecord
               adapter: adapter
             )
             
-            pipeline_trace('PIPE_SEND', result.__id__, sql, binds)
+            pipeline_trace('PIPE_SEND', @adapter, result.__id__, sql, binds)
 
             @pending_results << result
 
@@ -118,7 +118,7 @@ module ActiveRecord
         def add_transaction_command(sql, adapter: nil)
           # Just use add_query with no binds for transaction commands
           result = add_query(sql, [], [], prepare: false, name: "TRANSACTION", adapter: adapter)
-          pipeline_trace('PIPE_TXN', result.__id__, sql)
+          pipeline_trace('PIPE_TXN', @adapter, result.__id__, sql)
           result
         end
 
@@ -126,7 +126,7 @@ module ActiveRecord
           @mutex.synchronize do
             return unless @pipeline_active
 
-            pipeline_trace('PIPE_SYNC')
+            pipeline_trace('PIPE_SYNC', @adapter)
             
             # Send flush and sync, then collect all pending results
             @raw_connection.send_flush_request
@@ -163,7 +163,7 @@ module ActiveRecord
           def flush_queries_through(target_index)
             return if target_index < @flushed_through
 
-            pipeline_trace('PIPE_FLUSH')
+            pipeline_trace('PIPE_FLUSH', @adapter)
             @raw_connection.send_flush_request
             @raw_connection.flush
             @flushed_through = @pending_results.length - 1

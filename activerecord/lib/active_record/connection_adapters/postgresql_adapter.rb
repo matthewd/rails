@@ -446,7 +446,7 @@ module ActiveRecord
 
           @pipeline_context ||= PostgreSQL::PipelineContext.new(@raw_connection, self)
           @pipeline_context.enter_pipeline_mode
-          pipeline_trace('PIPE_ENTER')
+          pipeline_trace('PIPE_ENTER', self)
         end
         true
       end
@@ -456,7 +456,7 @@ module ActiveRecord
 
         # Don't use with_raw_connection here to avoid recursion
         @lock.synchronize do
-          pipeline_trace('PIPE_EXIT')
+          pipeline_trace('PIPE_EXIT', self)
           @pipeline_context.exit_pipeline_mode
         end
         true

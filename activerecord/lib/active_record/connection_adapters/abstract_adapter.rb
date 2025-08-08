@@ -10,24 +10,55 @@ require "arel/collectors/composite"
 require "arel/collectors/sql_string"
 
 # Pipeline debugging trace methods
-def pipeline_trace(keyword, pipeline_result_id = nil, sql = nil, binds = nil, extra = nil)
+def pipeline_trace(keyword, adapter_instance, pipeline_result_id = nil, sql = nil, binds = nil, extra = nil)
   colors = {
-    'PIPE_SEND' => "\e[38;2;0;255;0m",      # Bright Green
-    'PIPE_TXN' => "\e[38;2;0;200;50m",      # Green-Yellow  
-    'BLOCKING_SEND' => "\e[38;2;100;255;100m", # Light Green
-    'PIPE_SYNC' => "\e[38;2;0;150;255m",    # Bright Blue
-    'PIPE_FLUSH' => "\e[38;2;50;100;255m",  # Blue-Purple
-    'PIPE_ENTER' => "\e[38;2;0;200;200m",   # Cyan
-    'PIPE_EXIT' => "\e[38;2;0;150;150m",    # Dark Cyan
-    'PIPE_WAIT' => "\e[38;2;255;255;0m",    # Bright Yellow
-    'PIPE_RESULT' => "\e[38;2;255;0;255m",  # Bright Magenta
-    'PIPE_ERROR' => "\e[38;2;255;100;100m"  # Light Red
+    # Pipeline Operations (Blue family) - query sending/receiving
+    'PIPE_SEND' => "\e[38;2;100;150;255m",     # Light Blue
+    'PIPE_TXN' => "\e[38;2;80;120;255m",       # Medium Blue  
+    'BLOCKING_SEND' => "\e[38;2;120;180;255m", # Bright Light Blue
+    'PIPE_SYNC' => "\e[38;2;60;100;255m",      # Deep Blue
+    'PIPE_FLUSH' => "\e[38;2;140;160;255m",    # Periwinkle
+    'PIPE_ENTER' => "\e[38;2;70;130;255m",     # Royal Blue
+    'PIPE_EXIT' => "\e[38;2;90;140;255m",      # Sky Blue
+    
+    # Status/Results (Bright distinctive colors)
+    'PIPE_WAIT' => "\e[38;2;255;255;100m",     # Bright Yellow
+    'PIPE_RESULT' => "\e[38;2;100;255;100m",   # Bright Green
+    'PIPE_ERROR' => "\e[38;2;255;100;100m",    # Bright Red
+    
+    # Adapter Lifecycle (Cyan family) - connection management
+    'ADAPTER_NEW' => "\e[38;2;100;255;255m",      # Bright Cyan
+    'ADAPTER_CONNECT' => "\e[38;2;80;220;255m",   # Light Blue-Cyan
+    'ADAPTER_CONFIGURED' => "\e[38;2;120;200;255m", # Pale Blue-Cyan
+    'ADAPTER_DISCONNECT' => "\e[38;2;60;180;200m", # Muted Cyan
+    
+    # Transaction Management (Purple family) - transaction lifecycle
+    'TXN_BEGIN' => "\e[38;2;200;100;255m",     # Bright Purple
+    'TXN_END' => "\e[38;2;180;80;240m",        # Medium Purple
+    'TXN_MATERIALIZE' => "\e[38;2;220;120;255m", # Light Purple
+    
+    # Transaction Operations - Success (Green family)
+    'TXN_COMMIT' => "\e[38;2;100;255;150m",    # Bright Green
+    'TXN_DB_COMMIT' => "\e[38;2;80;220;120m",  # Medium Green
+    
+    # Transaction Operations - Failure (Red family)  
+    'TXN_ROLLBACK' => "\e[38;2;255;100;150m",  # Bright Red-Pink
+    'TXN_DB_ROLLBACK' => "\e[38;2;220;80;120m", # Medium Red
+    
+    # Transaction Operations - Begin (Purple-Blue family)
+    'TXN_DB_BEGIN' => "\e[38;2;150;100;255m",  # Purple-Blue
+    
+    # Savepoint Operations (Orange/Yellow family) - nested transactions
+    'TXN_SAVEPOINT_CREATE' => "\e[38;2;255;180;100m",   # Golden Orange
+    'TXN_SAVEPOINT_RELEASE' => "\e[38;2;255;200;120m",  # Light Orange  
+    'TXN_SAVEPOINT_ROLLBACK' => "\e[38;2;255;150;80m"   # Deep Orange
   }
   
   reset = "\e[0m"
   color = colors[keyword] || ""
+  adapter_hex = adapter_instance&.__id__&.to_s(16) || "nil"
   
-  output = "#{color}#{keyword}#{reset}"
+  output = "[#{adapter_hex}] #{color}#{keyword}#{reset}"
   output += "[#{pipeline_result_id.to_s(16)}]" if pipeline_result_id
   output += ": #{sql_snippet(sql)} (binds: #{binds&.length || 0})" if sql
   output += " → #{extra}" if extra
@@ -159,6 +190,8 @@ module ActiveRecord
 
         @raw_connection = nil
         @unconfigured_connection = nil
+        
+        pipeline_trace('ADAPTER_NEW', self)
 
         if config_or_deprecated_connection.is_a?(Hash)
           @config = config_or_deprecated_connection.symbolize_keys
@@ -739,6 +772,7 @@ module ActiveRecord
       # method does nothing.
       def disconnect!
         @lock.synchronize do
+          pipeline_trace('ADAPTER_DISCONNECT', self)
           clear_cache!(new_connection: true)
           reset_transaction
           @raw_connection_dirty = false
@@ -816,6 +850,7 @@ module ActiveRecord
       end
 
       def connect!
+        pipeline_trace('ADAPTER_CONNECT', self)
         verify!
         self
       end
@@ -1302,6 +1337,7 @@ module ActiveRecord
         # holding @lock (or from #initialize).
         def configure_connection
           check_version
+          pipeline_trace('ADAPTER_CONFIGURED', self)
         end
 
         def attempt_configure_connection
