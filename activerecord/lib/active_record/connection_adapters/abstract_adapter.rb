@@ -62,7 +62,20 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
   if pipeline_result_obj
     class_name = pipeline_result_obj.class.name.split('::').last
     obj_hex = pipeline_result_obj.__id__.to_s(16)
-    output += "[#{class_name} #{obj_hex}]"
+    
+    # Generate and cache a random color for this object
+    unless pipeline_result_obj.instance_variable_defined?(:@__trace_color)
+      # Generate a bright random color (avoid dark colors for terminal readability)
+      r = rand(128) + 127  # 127-255
+      g = rand(128) + 127  # 127-255  
+      b = rand(128) + 127  # 127-255
+      obj_color = "\e[38;2;#{r};#{g};#{b}m"
+      pipeline_result_obj.instance_variable_set(:@__trace_color, obj_color)
+    else
+      obj_color = pipeline_result_obj.instance_variable_get(:@__trace_color)
+    end
+    
+    output += "#{obj_color}[#{class_name} #{obj_hex}]#{reset}"
   end
   output += ": #{sql_snippet(sql)} (binds: #{binds&.length || 0})" if sql
   output += " → #{extra}" if extra
