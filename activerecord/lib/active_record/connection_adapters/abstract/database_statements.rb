@@ -615,8 +615,7 @@ module ActiveRecord
           with_raw_connection(allow_retry: allow_retry, materialize_transactions: false, pipeline_mode: true) do |conn|
             # Materialize transactions if requested
             if materialize_transactions
-              pipeline_results = transaction_manager.materialize_transactions(pipeline_result: true)
-              @transaction_pipeline_results = pipeline_results unless pipeline_results.empty?
+              transaction_manager.materialize_transactions(pipeline_result: true)
             end
 
             # Add the user query to pipeline
@@ -630,13 +629,6 @@ module ActiveRecord
         end
 
 
-        def recoverable_pipeline_error?(error)
-          # Recoverable errors are business logic errors that don't require transaction invalidation
-          # RecordNotUnique is expected by create_or_find_by and similar patterns
-          error.is_a?(ActiveRecord::RecordNotUnique) ||
-            error.is_a?(ActiveRecord::RecordInvalid) ||
-            error.is_a?(ActiveRecord::RecordNotSaved)
-        end
 
         def handle_warnings(raw_result, sql)
         end

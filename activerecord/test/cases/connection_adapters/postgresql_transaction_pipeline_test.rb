@@ -133,7 +133,7 @@ class PostgreSQLTransactionPipelineTest < ActiveRecord::PostgreSQLTestCase
     # Override with_pipeline to simulate failure
     original_with_pipeline = @connection.method(:with_pipeline) if @connection.respond_to?(:with_pipeline)
     @connection.define_singleton_method(:with_pipeline) do |&block|
-      raise ActiveRecord::PipelineError.new("Simulated pipeline failure")
+      raise StandardError.new("Simulated pipeline failure")
     end
     
     # This should still work via fallback

@@ -3,31 +3,6 @@
 require "active_support/core_ext/digest"
 
 module ActiveRecord
-  class TransactionPipelineError < ActiveRecordError
-    attr_reader :original_error
-
-    def initialize(message = "Transaction pipeline error", original_error = nil)
-      @original_error = original_error
-      super(message)
-    end
-  end
-
-  class TransactionMaterializationError < TransactionPipelineError
-    attr_reader :transaction_index
-
-    def initialize(message = "Transaction materialization error", original_error = nil, transaction_index: nil)
-      @transaction_index = transaction_index
-      super(message, original_error)
-    end
-  end
-
-  class PipelineError < TransactionPipelineError
-    def initialize(message = "Pipeline error")
-      super(message)
-    end
-  end
-
-
   module ConnectionAdapters
     # = Active Record Connection Adapters Transaction State
     class TransactionState
