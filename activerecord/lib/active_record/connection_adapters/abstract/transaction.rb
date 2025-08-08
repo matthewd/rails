@@ -266,20 +266,10 @@ module ActiveRecord
         @instrumenter.finish(:incomplete) if materialized?
       end
 
-      def materialize!
+      def materialize!(pipeline_result: false)
         @materialized = true
         @instrumenter.start
-      end
-
-      def materialize_in_pipeline!(connection)
-        @pipeline_result = materialize_with_pipeline_flag!(connection)
-        @materialized = true
-        @instrumenter&.start
-        @pipeline_result
-      end
-
-      def materialize_with_pipeline_flag!(connection)
-        raise NotImplementedError, "Subclasses must implement"
+        nil
       end
 
       def materialized?
@@ -463,13 +453,10 @@ module ActiveRecord
         @parent_transaction.isolation
       end
 
-      def materialize!
-        connection.create_savepoint(savepoint_name)
+      def materialize!(pipeline_result: false)
+        result = connection.create_savepoint(savepoint_name, pipeline_result: pipeline_result)
         super
-      end
-
-      def materialize_with_pipeline_flag!(connection)
-        connection.create_savepoint(savepoint_name, pipeline_result: true)
+        result
       end
 
       def restart
@@ -500,30 +487,19 @@ module ActiveRecord
 
     # = Active Record Real \Transaction
     class RealTransaction < Transaction
-      def materialize!
-        if joinable?
+      def materialize!(pipeline_result: false)
+        result = if joinable?
           if isolation_level
-            connection.begin_isolated_db_transaction(isolation_level)
+            connection.begin_isolated_db_transaction(isolation_level, pipeline_result: pipeline_result)
           else
-            connection.begin_db_transaction
+            connection.begin_db_transaction(pipeline_result: pipeline_result)
           end
         else
-          connection.begin_deferred_transaction(isolation_level)
+          connection.begin_deferred_transaction(isolation_level, pipeline_result: pipeline_result)
         end
 
         super
-      end
-
-      def materialize_with_pipeline_flag!(connection)
-        if joinable?
-          if isolation_level
-            connection.begin_isolated_db_transaction(isolation_level, pipeline_result: true)
-          else
-            connection.begin_db_transaction(pipeline_result: true)
-          end
-        else
-          connection.begin_deferred_transaction(isolation_level, pipeline_result: true)
-        end
+        result
       end
 
       def restart
@@ -749,7 +725,7 @@ module ActiveRecord
 
               @stack.each do |transaction|
                 unless transaction.materialized?
-                  pipeline_result = transaction.materialize_in_pipeline!(connection)
+                  pipeline_result = transaction.materialize!(pipeline_result: true)
                   @pipeline_transaction_results << pipeline_result
                 end
               end
