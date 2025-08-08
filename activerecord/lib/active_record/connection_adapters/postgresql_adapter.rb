@@ -395,7 +395,7 @@ module ActiveRecord
       #   end
       def with_pipeline
         return yield unless pipeline_supported?
-        
+
         # If already in a pipeline, just yield to avoid nesting
         return yield if @pipeline_context&.pipeline_active?
 
@@ -425,11 +425,11 @@ module ActiveRecord
       end
 
       def pipeline_supported?
-        disabled = ENV['DISABLE_PIPELINE'] == '1'
+        disabled = ENV["DISABLE_PIPELINE"] == "1"
         method_exists = ::PG::Connection.method_defined?(:enter_pipeline_mode)
         result = !disabled && method_exists
-        
-        
+
+
         result
       end
 
@@ -443,7 +443,7 @@ module ActiveRecord
           # Ensure connection is established
           connect! if @raw_connection.nil? && reconnect_can_restore_state?
           return false if @raw_connection.nil?
-          
+
           @pipeline_context ||= PostgreSQL::PipelineContext.new(@raw_connection, self)
           @pipeline_context.enter_pipeline_mode
         end
@@ -477,10 +477,6 @@ module ActiveRecord
       def has_pending_pipeline_results?
         @pipeline_context&.has_pending_results?
       end
-
-      private
-
-      public
 
       # Disconnects from the database if already connected. Otherwise, this
       # method does nothing.
@@ -1082,14 +1078,14 @@ module ActiveRecord
           end
 
           # Use different strategies based on environment variable for testing
-          if ENV['USE_SET_CONFIG_BATCH'] == '1'
+          if ENV["USE_SET_CONFIG_BATCH"] == "1"
             # Alternative strategy: Use single SELECT with multiple set_config() calls
             set_config_calls = []
-            
+
             # Add standard settings
             set_config_calls << "set_config('standard_conforming_strings', 'on', false)"
             set_config_calls << "set_config('intervalstyle', 'iso_8601', false)"
-            
+
             # Add custom variables
             variables = @config.fetch(:variables, {}).stringify_keys
             variables.each do |k, v|
@@ -1101,7 +1097,7 @@ module ActiveRecord
                 set_config_calls << "set_config(#{quote(k)}, #{quote(v)}, false)"
               end
             end
-            
+
             # Execute all set_config calls in a single SELECT query
             unless set_config_calls.empty?
               query = "SELECT #{set_config_calls.join(', ')}"

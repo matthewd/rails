@@ -562,7 +562,7 @@ module ActiveRecord
         # Lowest level way to execute a query. Doesn't check for illegal writes, doesn't annotate queries, yields a native result object.
         def raw_execute(sql, name = nil, binds = [], prepare: false, async: false, allow_retry: false, materialize_transactions: true, batch: false, pipeline_result: false)
           type_casted_binds = type_casted_binds(binds)
-          
+
           # Check if this query should be pipelined before entering log block
           if should_pipeline_this_query?(materialize_transactions, batch)
             pipeline_result_value = execute_pipelined_query(sql, name, binds, type_casted_binds, prepare: prepare, async: async, allow_retry: allow_retry, batch: batch, materialize_transactions: materialize_transactions)
@@ -597,16 +597,16 @@ module ActiveRecord
           has_unmaterialized = transaction_manager.has_unmaterialized_transactions?
           responds_to_pipeline = respond_to?(:pipeline_supported?)
           pipeline_supported = responds_to_pipeline && pipeline_supported?
-          
+
           result = has_unmaterialized && pipeline_supported
-          
+
           result
         end
 
         def should_pipeline_this_query?(materialize_transactions, batch)
           # Don't pipeline batch queries
           return false if batch
-          
+
           # Use pipeline if we're already in an active pipeline OR we should start transaction pipelining
           pipeline_active? || (materialize_transactions && should_pipeline_transactions?)
         end
@@ -620,9 +620,9 @@ module ActiveRecord
 
             # Add the user query to pipeline
             @pipeline_context.add_query(
-              sql, binds, type_casted_binds, 
-              prepare: prepare, 
-              name: name, 
+              sql, binds, type_casted_binds,
+              prepare: prepare,
+              name: name,
               adapter: self
             )
           end

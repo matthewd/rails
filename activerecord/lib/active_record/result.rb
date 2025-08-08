@@ -273,8 +273,6 @@ module ActiveRecord
         end
       end
 
-      private
-
       EMPTY_ARRAY = [].freeze
       EMPTY_HASH = {}.freeze
       private_constant :EMPTY_ARRAY, :EMPTY_HASH

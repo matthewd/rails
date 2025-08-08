@@ -1007,7 +1007,7 @@ module ActiveRecord
               end
             when false
               # Default behavior: always exit pipeline mode (safe for user code)
-              # Always fully exit pipeline mode  
+              # Always fully exit pipeline mode
               if pipeline_active?
                 exit_persistent_pipeline_mode
               end

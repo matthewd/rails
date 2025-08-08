@@ -53,18 +53,18 @@ module ActiveRecord
               puts "Warning: Failed to cleanup pipeline state: #{e.message}"
             end
           end
-          
+
           # Also ensure any failed transaction state is cleaned up
           if connection.respond_to?(:raw_connection) && connection.raw_connection
             begin
               # If connection is in a failed transaction state, rollback
               raw_conn = connection.raw_connection
-              if raw_conn.respond_to?(:transaction_status) && 
+              if raw_conn.respond_to?(:transaction_status) &&
                  raw_conn.transaction_status == PG::PQTRANS_INERROR
                 raw_conn.exec("ROLLBACK")
               end
             rescue => e
-              # Log but don't fail test cleanup  
+              # Log but don't fail test cleanup
               puts "Warning: Failed to cleanup transaction state: #{e.message}"
             end
           end

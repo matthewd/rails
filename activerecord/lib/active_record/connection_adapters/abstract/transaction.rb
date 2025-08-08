@@ -596,7 +596,7 @@ module ActiveRecord
           @connection.lock.synchronize do
             begin
               @materializing_transactions = true
-              
+
               results = []
               @stack.each do |transaction|
                 unless transaction.materialized?
@@ -604,7 +604,7 @@ module ActiveRecord
                   results << result if pipeline_result
                 end
               end
-              
+
               return results
             ensure
               @materializing_transactions = false
@@ -612,7 +612,7 @@ module ActiveRecord
             @has_unmaterialized_transactions = false
           end
         end
-        
+
         []
       end
 

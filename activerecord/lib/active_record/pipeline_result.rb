@@ -50,8 +50,8 @@ module ActiveRecord
       @mutex.synchronize do
         @result = result
         @pending = false
-        
-        # Check for pipeline aborted status and validate result  
+
+        # Check for pipeline aborted status and validate result
         begin
           # Handle PGRES_PIPELINE_ABORTED results explicitly
           if @result.result_status == PG::PGRES_PIPELINE_ABORTED
@@ -86,7 +86,7 @@ module ActiveRecord
         else
           @pipeline_context.wait_for(self) if @pending
         end
-        
+
         raise @error if @error
         @final_result  # Return raw PG::Result for compatibility
       end

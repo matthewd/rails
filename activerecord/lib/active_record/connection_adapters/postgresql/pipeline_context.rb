@@ -49,16 +49,16 @@ module ActiveRecord
               collect_remaining_results
             ensure
               # Always guarantee connection cleanup regardless of errors above
-              
+
               # Drain any remaining results that weren't collected during error handling
               while result = @raw_connection.get_result
                 result.clear rescue nil
               end
-              
+
               @raw_connection.discard_results
               @raw_connection.exit_pipeline_mode
               @pipeline_active = false
-              
+
               @pending_results.clear
               @flushed_through = -1
             end
@@ -121,14 +121,14 @@ module ActiveRecord
         def sync_all_results
           @mutex.synchronize do
             return unless @pipeline_active
-            
+
             # Send flush and sync, then collect all pending results
             @raw_connection.send_flush_request
             @raw_connection.flush
             @raw_connection.pipeline_sync
             @pending_results << SyncResult.new
           end
-          
+
           # Collect all results including the sync result
           collect_remaining_results
         end
@@ -186,7 +186,6 @@ module ActiveRecord
               pending_result.result
             end
           end
-
       end
     end
   end
