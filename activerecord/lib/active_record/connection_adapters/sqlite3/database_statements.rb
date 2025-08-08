@@ -21,16 +21,16 @@ module ActiveRecord
           SQLite3::ExplainPrettyPrinter.new.pp(result)
         end
 
-        def begin_deferred_transaction(isolation = nil) # :nodoc:
-          internal_begin_transaction(:deferred, isolation)
+        def begin_deferred_transaction(isolation = nil, pipeline_result: false) # :nodoc:
+          internal_begin_transaction(:deferred, isolation, pipeline_result: pipeline_result)
         end
 
-        def begin_isolated_db_transaction(isolation) # :nodoc:
-          internal_begin_transaction(:deferred, isolation)
+        def begin_isolated_db_transaction(isolation, pipeline_result: false) # :nodoc:
+          internal_begin_transaction(:deferred, isolation, pipeline_result: pipeline_result)
         end
 
-        def begin_db_transaction # :nodoc:
-          internal_begin_transaction(:immediate, nil)
+        def begin_db_transaction(pipeline_result: false) # :nodoc:
+          internal_begin_transaction(:immediate, nil, pipeline_result: pipeline_result)
         end
 
         def commit_db_transaction # :nodoc:
@@ -70,17 +70,18 @@ module ActiveRecord
         end
 
         private
-          def internal_begin_transaction(mode, isolation)
+          def internal_begin_transaction(mode, isolation, pipeline_result: false)
             if isolation
               raise TransactionIsolationError, "SQLite3 only supports the `read_uncommitted` transaction isolation level" if isolation != :read_uncommitted
               raise StandardError, "You need to enable the shared-cache mode in SQLite mode before attempting to change the transaction isolation level" unless shared_cache?
             end
 
-            internal_execute("BEGIN #{mode} TRANSACTION", "TRANSACTION", allow_retry: true, materialize_transactions: false)
+            result = internal_execute("BEGIN #{mode} TRANSACTION", "TRANSACTION", allow_retry: true, materialize_transactions: false, pipeline_result: pipeline_result)
             if isolation
               @previous_read_uncommitted = query_value("PRAGMA read_uncommitted")
               internal_execute("PRAGMA read_uncommitted=ON", "TRANSACTION", allow_retry: true, materialize_transactions: false)
             end
+            result
           end
 
           def perform_query(raw_connection, sql, binds, type_casted_binds, prepare:, notification_payload:, batch: false)

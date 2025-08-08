@@ -234,11 +234,11 @@ module ActiveRecord
       # DATABASE STATEMENTS ======================================
       #++
 
-      def begin_db_transaction # :nodoc:
-        internal_execute("BEGIN", "TRANSACTION", allow_retry: true, materialize_transactions: false)
+      def begin_db_transaction(pipeline_result: false) # :nodoc:
+        internal_execute("BEGIN", "TRANSACTION", allow_retry: true, materialize_transactions: false, pipeline_result: pipeline_result)
       end
 
-      def begin_isolated_db_transaction(isolation) # :nodoc:
+      def begin_isolated_db_transaction(isolation, pipeline_result: false) # :nodoc:
         # From MySQL manual: The [SET TRANSACTION] statement applies only to the next single transaction performed within the session.
         # So we don't need to implement #reset_isolation_level
         execute_batch(
@@ -246,6 +246,7 @@ module ActiveRecord
           "TRANSACTION",
           allow_retry: true,
           materialize_transactions: false,
+          pipeline_result: pipeline_result,
         )
       end
 

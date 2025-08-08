@@ -272,6 +272,13 @@ module ActiveRecord
       end
 
       def materialize_in_pipeline!(connection)
+        @pipeline_result = materialize_with_pipeline_flag!(connection)
+        @materialized = true
+        @instrumenter&.start
+        @pipeline_result
+      end
+
+      def materialize_with_pipeline_flag!(connection)
         raise NotImplementedError, "Subclasses must implement"
       end
 
@@ -461,12 +468,8 @@ module ActiveRecord
         super
       end
 
-      def materialize_in_pipeline!(connection)
-        sql = "SAVEPOINT #{savepoint_name}"
-        @pipeline_result = connection.add_transaction_command(sql)
-        @materialized = true
-        @instrumenter&.start
-        @pipeline_result
+      def materialize_with_pipeline_flag!(connection)
+        connection.create_savepoint(savepoint_name, pipeline_result: true)
       end
 
       def restart
@@ -511,25 +514,16 @@ module ActiveRecord
         super
       end
 
-      def materialize_in_pipeline!(connection)
-        sql = if joinable?
+      def materialize_with_pipeline_flag!(connection)
+        if joinable?
           if isolation_level
-            "BEGIN ISOLATION LEVEL #{isolation_level}"
+            connection.begin_isolated_db_transaction(isolation_level, pipeline_result: true)
           else
-            "BEGIN"
+            connection.begin_db_transaction(pipeline_result: true)
           end
         else
-          if isolation_level
-            "BEGIN DEFERRABLE ISOLATION LEVEL #{isolation_level}"
-          else
-            "BEGIN DEFERRABLE"
-          end
+          connection.begin_deferred_transaction(isolation_level, pipeline_result: true)
         end
-
-        @pipeline_result = connection.add_transaction_command(sql)
-        @materialized = true
-        @instrumenter&.start
-        @pipeline_result
       end
 
       def restart

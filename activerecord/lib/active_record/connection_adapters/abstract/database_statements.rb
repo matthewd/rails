@@ -410,13 +410,13 @@ module ActiveRecord
       end
 
       # Begins the transaction (and turns off auto-committing).
-      def begin_db_transaction()    end
+      def begin_db_transaction(pipeline_result: false)    end
 
-      def begin_deferred_transaction(isolation_level = nil) # :nodoc:
+      def begin_deferred_transaction(isolation_level = nil, pipeline_result: false) # :nodoc:
         if isolation_level
-          begin_isolated_db_transaction(isolation_level)
+          begin_isolated_db_transaction(isolation_level, pipeline_result: pipeline_result)
         else
-          begin_db_transaction
+          begin_db_transaction(pipeline_result: pipeline_result)
         end
       end
 
@@ -432,7 +432,7 @@ module ActiveRecord
       # Begins the transaction with the isolation level set. Raises an error by
       # default; adapters that support setting the isolation level should implement
       # this method.
-      def begin_isolated_db_transaction(isolation)
+      def begin_isolated_db_transaction(isolation, pipeline_result: false)
         raise ActiveRecord::TransactionIsolationError, "adapter does not support setting transaction isolation"
       end
 

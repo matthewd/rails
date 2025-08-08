@@ -61,12 +61,12 @@ module ActiveRecord
         end
 
         # Begins a transaction.
-        def begin_db_transaction # :nodoc:
-          internal_execute("BEGIN", "TRANSACTION", allow_retry: true, materialize_transactions: false)
+        def begin_db_transaction(pipeline_result: false) # :nodoc:
+          internal_execute("BEGIN", "TRANSACTION", allow_retry: true, materialize_transactions: false, pipeline_result: pipeline_result)
         end
 
-        def begin_isolated_db_transaction(isolation) # :nodoc:
-          internal_execute("BEGIN ISOLATION LEVEL #{transaction_isolation_levels.fetch(isolation)}", "TRANSACTION", allow_retry: true, materialize_transactions: false)
+        def begin_isolated_db_transaction(isolation, pipeline_result: false) # :nodoc:
+          internal_execute("BEGIN ISOLATION LEVEL #{transaction_isolation_levels.fetch(isolation)}", "TRANSACTION", allow_retry: true, materialize_transactions: false, pipeline_result: pipeline_result)
         end
 
         # Commits a transaction.

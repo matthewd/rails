@@ -8,8 +8,8 @@ module ActiveRecord
         current_transaction.savepoint_name
       end
 
-      def create_savepoint(name = current_savepoint_name)
-        internal_execute("SAVEPOINT #{name}", "TRANSACTION", materialize_transactions: false)
+      def create_savepoint(name = current_savepoint_name, pipeline_result: false)
+        internal_execute("SAVEPOINT #{name}", "TRANSACTION", materialize_transactions: false, pipeline_result: pipeline_result)
       end
 
       def exec_rollback_to_savepoint(name = current_savepoint_name)
