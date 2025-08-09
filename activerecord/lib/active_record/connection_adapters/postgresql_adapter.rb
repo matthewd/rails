@@ -396,23 +396,11 @@ module ActiveRecord
       def with_pipeline
         return yield unless pipeline_supported?
 
-        # If already in a pipeline, just yield to avoid nesting
-        return yield if @pipeline_context&.pipeline_active?
+        # TODO: Can we just remove this whole method now that we have
+        # persistent pipeline mode?
 
-        with_raw_connection(materialize_transactions: false) do |raw_connection|
-          # Initialize pipeline context if not already present (persistent mode)
-          @pipeline_context ||= PostgreSQL::PipelineContext.new(raw_connection, self)
-
-          # Enter pipeline mode
-          @pipeline_context.enter_pipeline_mode
-
-          begin
-            yield
-          ensure
-            # Exit pipeline mode but keep context persistent for future use
-            @pipeline_context.exit_pipeline_mode
-            # Note: @pipeline_context is now persistent, not set to nil
-          end
+        with_raw_connection(materialize_transactions: false, pipeline_mode: true) do |raw_connection|
+          yield
         end
       end
 
@@ -444,9 +432,9 @@ module ActiveRecord
           connect! if @raw_connection.nil? && reconnect_can_restore_state?
           return false if @raw_connection.nil?
 
+          pipeline_trace('PERSISTENT_PIPE_ENTER', self)
           @pipeline_context ||= PostgreSQL::PipelineContext.new(@raw_connection, self)
           @pipeline_context.enter_pipeline_mode
-          pipeline_trace('PIPE_ENTER', self)
         end
         true
       end
@@ -456,7 +444,7 @@ module ActiveRecord
 
         # Don't use with_raw_connection here to avoid recursion
         @lock.synchronize do
-          pipeline_trace('PIPE_EXIT', self)
+          pipeline_trace('PERSISTENT_PIPE_EXIT', self)
           @pipeline_context.exit_pipeline_mode
         end
         true
@@ -484,11 +472,12 @@ module ActiveRecord
       # method does nothing.
       def disconnect!
         @lock.synchronize do
-          super
           # Clean up pipeline context before closing connection
           if @pipeline_context&.pipeline_active?
-            @pipeline_context.exit_pipeline_mode rescue nil
+            pipeline_trace('DISCONNECT_PIPE_EXIT', self)
+            @pipeline_context.exit_pipeline_mode
           end
+          super
           @pipeline_context = nil
           @raw_connection&.close rescue nil
           @raw_connection = nil
@@ -496,12 +485,6 @@ module ActiveRecord
       end
 
       def discard! # :nodoc:
-        super
-        # Clean up pipeline context before discarding connection
-        if @pipeline_context&.pipeline_active?
-          @pipeline_context.exit_pipeline_mode rescue nil
-        end
-        @pipeline_context = nil
         @raw_connection&.socket_io&.reopen(IO::NULL) rescue nil
         @raw_connection = nil
       end
@@ -596,11 +579,11 @@ module ActiveRecord
       end
 
       def extension_available?(name)
-        query_value("SELECT true FROM pg_available_extensions WHERE name = #{quote(name)}", "SCHEMA")
+        query_value("SELECT true FROM pg_available_extensions WHERE name = #{quote(name)}", "SCHEMA", materialize_transactions: false)
       end
 
       def extension_enabled?(name)
-        query_value("SELECT installed_version IS NOT NULL FROM pg_available_extensions WHERE name = #{quote(name)}", "SCHEMA")
+        query_value("SELECT installed_version IS NOT NULL FROM pg_available_extensions WHERE name = #{quote(name)}", "SCHEMA", materialize_transactions: false)
       end
 
       def extensions
@@ -723,7 +706,7 @@ module ActiveRecord
 
       # Returns the configured maximum supported identifier length supported by PostgreSQL
       def max_identifier_length
-        @max_identifier_length ||= query_value("SHOW max_identifier_length", "SCHEMA").to_i
+        @max_identifier_length ||= query_value("SHOW max_identifier_length", "SCHEMA", materialize_transactions: false).to_i
       end
 
       # Set the authorized user for this session
@@ -738,7 +721,7 @@ module ActiveRecord
 
       # Returns the version of the connected PostgreSQL server.
       def get_database_version # :nodoc:
-        with_raw_connection do |conn|
+        with_raw_connection(materialize_transactions: false, pipeline_mode: :ignore) do |conn|
           version = conn.server_version
           if version == 0
             raise ActiveRecord::ConnectionNotEstablished, "Could not determine PostgreSQL version"
@@ -974,10 +957,14 @@ module ActiveRecord
 
         def load_additional_types(oids = nil)
           initializer = OID::TypeMapInitializer.new(type_map)
+          #results = []
           load_types_queries(initializer, oids) do |query|
-            records = internal_execute(query, "SCHEMA", [], allow_retry: true, materialize_transactions: false)
-            initializer.run(records)
+            result = internal_execute(query, "SCHEMA", [], allow_retry: true, materialize_transactions: false, pipeline_result: true)
+            initializer.run(result.result)
           end
+          #results.each do |result|
+          #  initializer.run(result.result)
+          #end
         end
 
         def load_types_queries(initializer, oids)
@@ -986,12 +973,16 @@ module ActiveRecord
             FROM pg_type as t
             LEFT JOIN pg_range as r ON oid = rngtypid
           SQL
+          conditions = []
           if oids
-            yield query + "WHERE t.oid IN (%s)" % oids.join(", ")
+            conditions << "WHERE t.oid IN (%s)" % oids.join(", ") unless oids.empty?
           else
-            yield query + initializer.query_conditions_for_known_type_names
-            yield query + initializer.query_conditions_for_known_type_types
-            yield query + initializer.query_conditions_for_array_types
+            conditions << initializer.query_conditions_for_known_type_names
+            conditions << initializer.query_conditions_for_known_type_types
+            conditions << initializer.query_conditions_for_array_types
+          end
+          conditions.compact.each do |condition|
+            yield query + condition
           end
         end
 
@@ -1106,13 +1097,14 @@ module ActiveRecord
               internal_execute(query, "SCHEMA")
             end
           else
+            results = []
             # Use pipelining to execute all SET statements together for better performance
-            with_pipeline do
+            #with_pipeline do
               # Use standard-conforming strings so we don't have to do the E'...' dance.
-              internal_execute("SET standard_conforming_strings = on", "SCHEMA")
+              results << internal_execute("SET standard_conforming_strings = on", "SCHEMA", pipeline_result: true)
 
               # Set interval output format to ISO 8601 for ease of parsing by ActiveSupport::Duration.parse
-              internal_execute("SET intervalstyle = iso_8601", "SCHEMA")
+              results << internal_execute("SET intervalstyle = iso_8601", "SCHEMA", pipeline_result: true)
 
               # SET statements from :variables config hash
               # https://www.postgresql.org/docs/current/static/sql-set.html
@@ -1120,12 +1112,13 @@ module ActiveRecord
               variables.each do |k, v|
                 if v == ":default" || v == :default
                   # Sets the value to the global or compile default
-                  internal_execute("SET SESSION #{k} TO DEFAULT", "SCHEMA")
+                  results << internal_execute("SET SESSION #{k} TO DEFAULT", "SCHEMA", pipeline_result: true)
                 elsif !v.nil?
-                  internal_execute("SET SESSION #{k} TO #{quote(v)}", "SCHEMA")
+                  results << internal_execute("SET SESSION #{k} TO #{quote(v)}", "SCHEMA", pipeline_result: true)
                 end
               end
-            end
+            #end
+            results.each(&:check)
           end
 
           add_pg_encoders
@@ -1170,7 +1163,7 @@ module ActiveRecord
         #  - format_type includes the column size constraint, e.g. varchar(50)
         #  - ::regclass is a function that gives the id for a table name
         def column_definitions(table_name)
-          query(<<~SQL, "SCHEMA")
+          query(<<~SQL, "SCHEMA", materialize_transactions: false)
               SELECT a.attname, format_type(a.atttypid, a.atttypmod),
                      pg_get_expr(d.adbin, d.adrelid), a.attnotnull, a.atttypid, a.atttypmod,
                      c.collname, col_description(a.attrelid, a.attnum) AS comment,

@@ -28,9 +28,16 @@ module ActiveRecord
           @pipeline_active = false
         end
 
+        def pending?
+          @mutex.synchronize do
+            @pending_results.any? { |result| !result.is_a?(SyncResult) }
+          end
+        end
+
         def enter_pipeline_mode
           @mutex.synchronize do
             return if @pipeline_active
+            pipeline_trace('PIPE_ENTER', @adapter, nil, nil, nil, :call_chain)
             @raw_connection.enter_pipeline_mode
             @pipeline_active = true
           end
@@ -40,12 +47,17 @@ module ActiveRecord
           @mutex.synchronize do
             return unless @pipeline_active
 
+            if @raw_connection.pipeline_status == PG::PQ_PIPELINE_OFF
+              pipeline_trace('PIPE_GONE', @adapter, nil, nil, nil, :call_chain)
+              @pipeline_active = false
+              return
+            end
+
+            pipeline_trace('PIPE_EXITING', @adapter, nil, nil, nil, :call_chain)
 
             begin
               # Try proper cleanup - sync and collect results normally
-              @raw_connection.pipeline_sync
-              @raw_connection.flush
-              @pending_results << SyncResult.new
+              send_sync
               collect_remaining_results
             ensure
               # Always guarantee connection cleanup regardless of errors above
@@ -58,9 +70,29 @@ module ActiveRecord
               @raw_connection.discard_results
               @raw_connection.exit_pipeline_mode
               @pipeline_active = false
+              pipeline_trace('PIPE_EXIT', @adapter, nil, nil, nil, :call_chain)
 
-              @pending_results.clear
-              @flushed_through = -1
+              clear_pending_results
+            end
+          end
+        end
+
+        def clear_pending_results
+          @mutex.synchronize do
+            return if @pending_results.empty?
+
+            results_to_clear = @pending_results.dup
+
+            @pending_results.clear
+            @flushed_through = -1
+            pipeline_trace('PIPE_CLEAR', @adapter, nil, nil, nil, :call_chain)
+
+            results_to_clear.each do |result|
+              if result.is_a?(SyncResult)
+                # no-op
+              else
+                result.set_error(ActiveRecord::StatementInvalid.new("Pipeline was cleared before query could be retrieved"))
+              end
             end
           end
         end
@@ -72,7 +104,12 @@ module ActiveRecord
         def wait_for(result)
           @mutex.synchronize do
             if index = @pending_results.index(result)
-              flush_queries_through index
+              if index >= @flushed_through
+                pipeline_trace('PIPE_FLUSH', @adapter, result, result.sql) unless result.quiet
+                flush_queries_through index
+              else
+                pipeline_trace('PIPE_WAIT', @adapter, result, result.sql) unless result.quiet
+              end
               collect_results_through index
             else
               raise "Unknown result"
@@ -82,9 +119,16 @@ module ActiveRecord
           nil
         end
 
-        def add_query(sql, binds, type_casted_binds, prepare:, name: nil, adapter: nil)
+        def add_query(sql, binds, type_casted_binds, prepare:, name: nil, adapter: nil, ongoing_multi_query: false, quiet: false)
           @mutex.synchronize do
             raise "Pipeline not active" unless @pipeline_active
+
+            if @raw_connection.pipeline_status == PG::PQ_PIPELINE_OFF
+              pipeline_trace('PIPE_RESTORE', @adapter, nil, nil, nil, :call_chain)
+              @raw_connection.enter_pipeline_mode
+              @pipeline_active = true
+              clear_pending_results
+            end
 
 
             # Send query to pipeline immediately
@@ -104,12 +148,17 @@ module ActiveRecord
               name: name,
               binds: binds,
               type_casted_binds: type_casted_binds,
-              adapter: adapter
+              adapter: adapter,
+              quiet: quiet,
             )
             
-            pipeline_trace('PIPE_SEND', @adapter, result, sql, binds)
+            pipeline_trace('PIPE_SEND', @adapter, result, sql, binds, :call_chain) unless quiet
 
             @pending_results << result
+
+            unless ongoing_multi_query
+              send_sync
+            end
 
             result
           end
@@ -122,18 +171,17 @@ module ActiveRecord
           result
         end
 
-        def sync_all_results
+        def send_sync
           @mutex.synchronize do
-            return unless @pipeline_active
-
-            pipeline_trace('PIPE_SYNC', @adapter)
-            
-            # Send flush and sync, then collect all pending results
-            @raw_connection.send_flush_request
-            @raw_connection.flush
             @raw_connection.pipeline_sync
+            @raw_connection.flush
             @pending_results << SyncResult.new
           end
+        end
+
+        def sync_all_results
+          pipeline_trace('PIPE_SYNC', @adapter)
+          send_sync
 
           # Collect all results including the sync result
           collect_remaining_results
@@ -149,6 +197,8 @@ module ActiveRecord
           def get_next_result
             prev = nil
             while curr = @raw_connection.get_result
+              #result_status_name = PG::Result.constants.grep(/^PGRES_/).find { |c| PG::Result.const_get(c) == curr.result_status }
+              #$stderr.puts "get_result -> #{result_status_name}"
               # Certain result types are not followed by a nil, and so
               # must be returned immediately
               if curr.result_status == PG::PGRES_PIPELINE_SYNC # TODO: .. or COPY-related stuff
@@ -157,13 +207,13 @@ module ActiveRecord
 
               prev = curr
             end
+            #$stderr.puts "get_result -> nil"
             prev
           end
 
           def flush_queries_through(target_index)
-            return if target_index < @flushed_through
-
-            pipeline_trace('PIPE_FLUSH', @adapter)
+            #msg = "requesting flush of results for #{@pending_results[@flushed_through + 1..target_index].reject { |r| r.is_a?(SyncResult) }.size} queries"
+            #pipeline_trace('PIPE_FLUSH', @adapter, nil, nil, nil, msg)
             @raw_connection.send_flush_request
             @raw_connection.flush
             @flushed_through = @pending_results.length - 1
@@ -175,6 +225,13 @@ module ActiveRecord
             while n >= 0 && pending_result = @pending_results.first
               begin
                 raw_result = get_next_result
+                raise "Expected result, got nil" if raw_result.nil?
+                if (raw_result.result_status == PG::PGRES_PIPELINE_SYNC) != pending_result.is_a?(SyncResult)
+                  result_status_name = PG::Result.constants.grep(/^PGRES_/).find { |c| PG::Result.const_get(c) == raw_result.result_status }
+                  raise "Pipeline result mismatch: expected #{pending_result.class.name.gsub(/.*::/, "")}, got #{result_status_name}"
+                end
+
+                #$stderr.puts "get_next_result -> #{result_status_name}"
                 pending_result.set_result(raw_result)
               rescue => err
                 pending_result.set_error(err)

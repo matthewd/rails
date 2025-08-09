@@ -133,7 +133,7 @@ module ActiveRecord
           end
 
           def perform_query(raw_connection, sql, binds, type_casted_binds, prepare:, notification_payload:, batch: false)
-            pipeline_trace('BLOCKING_SEND', self, nil, sql, binds)
+            pipeline_trace('BLOCKING_QUERY', self, nil, sql, binds, :call_chain)
             update_typemap_for_default_timezone
             result = if prepare
               begin
@@ -203,7 +203,15 @@ module ActiveRecord
           end
 
           def execute_batch(statements, name = nil, **kwargs)
-            raw_execute(combine_multi_statements(statements), name, batch: true, **kwargs)
+            if pipeline_active?
+              statements.map do |statement|
+                raw_execute(statement, name, **kwargs, pipeline_result: true)
+              end.each do |result|
+                result.result
+              end
+            else
+              raw_execute(combine_multi_statements(statements), name, batch: true, **kwargs)
+            end
           end
 
           def build_truncate_statements(table_names)

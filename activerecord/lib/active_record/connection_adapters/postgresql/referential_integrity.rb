@@ -9,7 +9,7 @@ module ActiveRecord
 
           begin
             transaction(requires_new: true) do
-              execute(tables.collect { |name| "ALTER TABLE #{quote_table_name(name)} DISABLE TRIGGER ALL" }.join(";"))
+              execute_batch(tables.collect { |name| "ALTER TABLE #{quote_table_name(name)} DISABLE TRIGGER ALL" })
             end
           rescue ActiveRecord::ActiveRecordError => e
             original_exception = e
@@ -32,7 +32,7 @@ Rails needs superuser privileges to disable referential integrity.
 
           begin
             transaction(requires_new: true) do
-              execute(tables.collect { |name| "ALTER TABLE #{quote_table_name(name)} ENABLE TRIGGER ALL" }.join(";"))
+              execute_batch(tables.collect { |name| "ALTER TABLE #{quote_table_name(name)} ENABLE TRIGGER ALL" })
             end
           rescue ActiveRecord::ActiveRecordError
           end

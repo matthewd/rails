@@ -15,7 +15,8 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
     # Pipeline Operations (Blue family) - query sending/receiving
     'PIPE_SEND' => "\e[38;2;100;150;255m",     # Light Blue
     'PIPE_TXN' => "\e[38;2;80;120;255m",       # Medium Blue  
-    'BLOCKING_SEND' => "\e[38;2;120;180;255m", # Bright Light Blue
+    'BLOCKING_QUERY' => "\e[38;2;120;180;255m", # Bright Light Blue
+    'PIPE_QUERY' => "\e[38;2;120;100;255m", # Bright Light Blue
     'PIPE_SYNC' => "\e[38;2;60;100;255m",      # Deep Blue
     'PIPE_FLUSH' => "\e[38;2;140;160;255m",    # Periwinkle
     'PIPE_ENTER' => "\e[38;2;70;130;255m",     # Royal Blue
@@ -23,8 +24,9 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
     
     # Status/Results (Bright distinctive colors)
     'PIPE_WAIT' => "\e[38;2;255;255;100m",     # Bright Yellow
-    'PIPE_RESULT' => "\e[38;2;100;255;100m",   # Bright Green
+    'PIPE_RECV' => "\e[38;2;100;255;100m",   # Bright Green
     'PIPE_ERROR' => "\e[38;2;255;100;100m",    # Bright Red
+    'PIPE_ABORT' => "\e[38;2;255;80;130m",    # Bright Red-ish
     
     # Adapter Lifecycle (Cyan family) - connection management
     'ADAPTER_NEW' => "\e[38;2;100;255;255m",      # Bright Cyan
@@ -56,9 +58,26 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
   
   reset = "\e[0m"
   color = colors[keyword] || ""
-  adapter_hex = adapter_instance&.__id__&.to_s(16) || "nil"
   
-  output = "[#{adapter_hex}] #{color}#{keyword}#{reset}"
+  # Generate and cache a random color for the adapter instance
+  if adapter_instance
+    adapter_hex = adapter_instance.__id__.to_s(16)
+    unless adapter_instance.instance_variable_defined?(:@__trace_color)
+      # Generate a bright random color (avoid dark colors for terminal readability)
+      r = rand(128) + 127  # 127-255
+      g = rand(128) + 127  # 127-255  
+      b = rand(128) + 127  # 127-255
+      adapter_color = "\e[38;2;#{r};#{g};#{b}m"
+      adapter_instance.instance_variable_set(:@__trace_color, adapter_color)
+    else
+      adapter_color = adapter_instance.instance_variable_get(:@__trace_color)
+    end
+    adapter_display = "#{adapter_color}[#{adapter_hex}]#{reset}"
+  else
+    adapter_display = "[nil]"
+  end
+  
+  output = "#{adapter_display} #{color}#{keyword}#{reset}"
   if pipeline_result_obj
     class_name = pipeline_result_obj.class.name.split('::').last
     obj_hex = pipeline_result_obj.__id__.to_s(16)
@@ -78,7 +97,18 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
     output += "#{obj_color}[#{class_name} #{obj_hex}]#{reset}"
   end
   output += ": #{sql_snippet(sql)} (binds: #{binds&.length || 0})" if sql
-  output += " → #{extra}" if extra
+  if extra == :call_chain
+    chain = caller_locations
+    cut_points = %w(raw_execute with_raw_connection)
+    cut_index = (cut_points.map { |cut| chain.index { |loc| loc.base_label == cut && !loc.label.include?(" ") } }.compact.first || -1) + 1
+    chain_str = chain[cut_index, 5].map do |loc|
+      long = "#{loc.label} (#{loc.path}:#{loc.lineno})"
+      short = loc.base_label
+    end.join(" ← ")
+    output += " ← #{chain_str}"
+  elsif extra
+    output += " → #{extra}"
+  end
   
   $stderr.puts output
 end
@@ -1083,7 +1113,6 @@ module ActiveRecord
             # Handle pipeline mode transitions
             case pipeline_mode
             when true
-              # Framework code explicitly requesting pipeline mode
               self.materialize_transactions if materialize_transactions
               # Enter pipeline mode if supported and not already active
               if !pipeline_active?
@@ -1096,6 +1125,11 @@ module ActiveRecord
                 exit_persistent_pipeline_mode
               end
               self.materialize_transactions if materialize_transactions
+
+            when :ignore
+              self.materialize_transactions if materialize_transactions
+            else
+              raise ArgumentError, "pipeline_mode must be true, false, or :ignore"
             end
 
             retries_available = allow_retry ? connection_retries : 0
@@ -1241,7 +1275,7 @@ module ActiveRecord
             # `allow_retry: false`, to force verification: the block won't
             # raise, so a retry wouldn't help us get the valid connection we
             # need.
-            with_raw_connection(allow_retry: false, materialize_transactions: false) { |conn| conn }
+            with_raw_connection(allow_retry: false, materialize_transactions: false, pipeline_mode: :ignore) { |conn| conn }
         end
 
         def extended_type_map_key

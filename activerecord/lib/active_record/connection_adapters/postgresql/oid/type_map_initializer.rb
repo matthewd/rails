@@ -35,7 +35,7 @@ module ActiveRecord
 
           def query_conditions_for_known_type_names
             known_type_names = @store.keys.map { |n| "'#{n}'" }
-            <<~SQL % known_type_names.join(", ")
+            <<~SQL % known_type_names.join(", ") unless known_type_names.empty?
               WHERE
                 t.typname IN (%s)
             SQL
@@ -43,7 +43,7 @@ module ActiveRecord
 
           def query_conditions_for_known_type_types
             known_type_types = %w('r' 'e' 'd')
-            <<~SQL % known_type_types.join(", ")
+            <<~SQL % known_type_types.join(", ") unless known_type_types.empty?
               WHERE
                 t.typtype IN (%s)
             SQL
@@ -51,7 +51,7 @@ module ActiveRecord
 
           def query_conditions_for_array_types
             known_type_oids = @store.keys.reject { |k| k.is_a?(String) }
-            <<~SQL % [known_type_oids.join(", ")]
+            <<~SQL % [known_type_oids.join(", ")] unless known_type_oids.empty?
               WHERE
                 t.typelem IN (%s)
             SQL

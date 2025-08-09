@@ -66,7 +66,7 @@ module ActiveRecord
 
         # Returns true if schema exists.
         def schema_exists?(name)
-          query_value("SELECT COUNT(*) FROM pg_namespace WHERE nspname = #{quote(name)}", "SCHEMA").to_i > 0
+          query_value("SELECT COUNT(*) FROM pg_namespace WHERE nspname = #{quote(name)}", "SCHEMA", materialize_transactions: false).to_i > 0
         end
 
         # Verifies existence of an index with a given name.
@@ -74,7 +74,7 @@ module ActiveRecord
           table = quoted_scope(table_name)
           index = quoted_scope(index_name)
 
-          query_value(<<~SQL, "SCHEMA").to_i > 0
+          query_value(<<~SQL, "SCHEMA", materialize_transactions: false).to_i > 0
             SELECT COUNT(*)
             FROM pg_class t
             INNER JOIN pg_index d ON t.oid = d.indrelid
@@ -91,7 +91,7 @@ module ActiveRecord
         def indexes(table_name) # :nodoc:
           scope = quoted_scope(table_name)
 
-          result = query(<<~SQL, "SCHEMA")
+          result = query(<<~SQL, "SCHEMA", materialize_transactions: false)
             SELECT distinct i.relname, d.indisunique, d.indkey, pg_get_indexdef(d.indexrelid),
                             pg_catalog.obj_description(i.oid, 'pg_class') AS comment, d.indisvalid,
                             ARRAY(
@@ -184,7 +184,7 @@ module ActiveRecord
         def table_comment(table_name) # :nodoc:
           scope = quoted_scope(table_name, type: "BASE TABLE")
           if scope[:name]
-            query_value(<<~SQL, "SCHEMA")
+            query_value(<<~SQL, "SCHEMA", materialize_transactions: false)
               SELECT pg_catalog.obj_description(c.oid, 'pg_class')
               FROM pg_catalog.pg_class c
                 LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -199,7 +199,7 @@ module ActiveRecord
         def table_partition_definition(table_name) # :nodoc:
           scope = quoted_scope(table_name, type: "BASE TABLE")
 
-          query_value(<<~SQL, "SCHEMA")
+          query_value(<<~SQL, "SCHEMA", materialize_transactions: false)
             SELECT pg_catalog.pg_get_partkeydef(c.oid)
             FROM pg_catalog.pg_class c
               LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -213,7 +213,7 @@ module ActiveRecord
         def inherited_table_names(table_name) # :nodoc:
           scope = quoted_scope(table_name, type: "BASE TABLE")
 
-          query_values(<<~SQL, "SCHEMA")
+          query_values(<<~SQL, "SCHEMA", materialize_transactions: false)
             SELECT parent.relname
             FROM pg_catalog.pg_inherits i
               JOIN pg_catalog.pg_class child ON i.inhrelid = child.oid
@@ -227,40 +227,40 @@ module ActiveRecord
 
         # Returns the current database name.
         def current_database
-          query_value("SELECT current_database()", "SCHEMA")
+          query_value("SELECT current_database()", "SCHEMA", materialize_transactions: false)
         end
 
         # Returns the current schema name.
         def current_schema
-          query_value("SELECT current_schema", "SCHEMA")
+          query_value("SELECT current_schema", "SCHEMA", materialize_transactions: false)
         end
 
         # Returns an array of the names of all schemas presently in the effective search path,
         # in their priority order.
         def current_schemas # :nodoc:
-          schemas = query_value("SELECT current_schemas(false)", "SCHEMA")
+          schemas = query_value("SELECT current_schemas(false)", "SCHEMA", materialize_transactions: false)
           decoder = PG::TextDecoder::Array.new
           decoder.decode(schemas)
         end
 
         # Returns the current database encoding format.
         def encoding
-          query_value("SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()", "SCHEMA")
+          query_value("SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()", "SCHEMA", materialize_transactions: false)
         end
 
         # Returns the current database collation.
         def collation
-          query_value("SELECT datcollate FROM pg_database WHERE datname = current_database()", "SCHEMA")
+          query_value("SELECT datcollate FROM pg_database WHERE datname = current_database()", "SCHEMA", materialize_transactions: false)
         end
 
         # Returns the current database ctype.
         def ctype
-          query_value("SELECT datctype FROM pg_database WHERE datname = current_database()", "SCHEMA")
+          query_value("SELECT datctype FROM pg_database WHERE datname = current_database()", "SCHEMA", materialize_transactions: false)
         end
 
         # Returns an array of schema names.
         def schema_names
-          query_values(<<~SQL, "SCHEMA")
+          query_values(<<~SQL, "SCHEMA", materialize_transactions: false)
             SELECT nspname
               FROM pg_namespace
              WHERE nspname !~ '^pg_.*'
@@ -312,7 +312,7 @@ module ActiveRecord
 
         # Returns the current client message level.
         def client_min_messages
-          query_value("SHOW client_min_messages", "SCHEMA")
+          query_value("SHOW client_min_messages", "SCHEMA", materialize_transactions: false)
         end
 
         # Set the client message level.
@@ -332,7 +332,7 @@ module ActiveRecord
         end
 
         def serial_sequence(table, column)
-          query_value("SELECT pg_get_serial_sequence(#{quote(table)}, #{quote(column)})", "SCHEMA")
+          query_value("SELECT pg_get_serial_sequence(#{quote(table)}, #{quote(column)})", "SCHEMA", materialize_transactions: false)
         end
 
         # Sets the sequence of a table's primary key to the specified value.
@@ -382,7 +382,7 @@ module ActiveRecord
         def pk_and_sequence_for(table) # :nodoc:
           # First try looking for a sequence with a dependency on the
           # given table's primary key.
-          result = query(<<~SQL, "SCHEMA")[0]
+          result = query(<<~SQL, "SCHEMA", materialize_transactions: false)[0]
             SELECT attr.attname, nsp.nspname, seq.relname
             FROM pg_class      seq,
                  pg_attribute  attr,
@@ -402,7 +402,7 @@ module ActiveRecord
           SQL
 
           if result.nil? || result.empty?
-            result = query(<<~SQL, "SCHEMA")[0]
+            result = query(<<~SQL, "SCHEMA", materialize_transactions: false)[0]
               SELECT attr.attname, nsp.nspname,
                 CASE
                   WHEN pg_get_expr(def.adbin, def.adrelid) !~* 'nextval' THEN NULL
@@ -433,7 +433,7 @@ module ActiveRecord
         end
 
         def primary_keys(table_name) # :nodoc:
-          query_values(<<~SQL, "SCHEMA")
+          query_values(<<~SQL, "SCHEMA", materialize_transactions: false)
             SELECT a.attname
               FROM (
                      SELECT indrelid, indkey, generate_subscripts(indkey, 1) idx
@@ -659,11 +659,11 @@ module ActiveRecord
         end
 
         def foreign_tables
-          query_values(data_source_sql(type: "FOREIGN TABLE"), "SCHEMA")
+          query_values(data_source_sql(type: "FOREIGN TABLE"), "SCHEMA", materialize_transactions: false)
         end
 
         def foreign_table_exists?(table_name)
-          query_values(data_source_sql(table_name, type: "FOREIGN TABLE"), "SCHEMA").any? if table_name.present?
+          query_values(data_source_sql(table_name, type: "FOREIGN TABLE"), "SCHEMA", materialize_transactions: false).any? if table_name.present?
         end
 
         def check_constraints(table_name) # :nodoc:
@@ -695,7 +695,7 @@ module ActiveRecord
         def exclusion_constraints(table_name)
           scope = quoted_scope(table_name)
 
-          exclusion_info = internal_exec_query(<<-SQL, "SCHEMA")
+          exclusion_info = internal_exec_query(<<-SQL, "SCHEMA", materialize_transactions: false)
             SELECT conname, pg_get_constraintdef(c.oid) AS constraintdef, c.condeferrable, c.condeferred
             FROM pg_constraint c
             JOIN pg_class t ON c.conrelid = t.oid
