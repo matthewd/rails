@@ -30,7 +30,8 @@ module ActiveRecord
     end
 
     delegate :empty?, :to_a, :rows, :columns, :each, :first, :last, :size, :length, :count, to: :cast_result
-    attr_reader :sql, :quiet
+    attr_reader :sql, :ignored
+    attr_accessor :quiet
 
     def initialize(pipeline_context, sql: nil, name: nil, binds: nil, type_casted_binds: nil, adapter: nil, quiet: false)
       @pipeline_context = pipeline_context
@@ -68,7 +69,21 @@ module ActiveRecord
             @result.check
             # Store the raw result - let normal casting flow handle type conversion
             @final_result = @result
-            pipeline_trace(@quiet ? 'PIPE_QUERY' : 'PIPE_RECV', @adapter, self, @sql, nil, result_status_name || "OK")
+            keyword =
+              if @quiet == :silent
+                nil
+              elsif @ignored
+                'PIPE_ASSUMED'
+              elsif @quiet
+                'PIPE_QUERY'
+              else
+                'PIPE_RECV'
+              end
+
+            status_text = result_status_name || "OK"
+            status_text += " (#{@result.cmd_tuples} rows)" if @result.result_status == PG::PGRES_TUPLES_OK
+
+            pipeline_trace(keyword, @adapter, self, @sql, nil, status_text) if keyword
             #$stderr.puts @result.to_a.inspect
           end
         rescue => err
@@ -77,6 +92,13 @@ module ActiveRecord
           pipeline_trace('PIPE_ERROR', @adapter, self, @sql, nil, "#{result_status_name} → #{@error.message}")
         end
       end
+    end
+
+    def assume_success
+      @mutex.synchronize do
+        @ignored = true
+      end
+      self
     end
 
     def set_error(error)
@@ -89,6 +111,8 @@ module ActiveRecord
 
     def result
       @mutex.synchronize do
+        raise "Can't consume ignored result" if @ignored
+
         # Emit instrumentation if we have context and haven't emitted yet
         if @adapter && !@instrumentation_emitted
           @adapter.send(:log, @sql, @name, @binds, @type_casted_binds) do

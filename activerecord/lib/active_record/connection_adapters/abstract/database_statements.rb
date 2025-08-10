@@ -623,7 +623,7 @@ module ActiveRecord
           with_raw_connection(allow_retry: allow_retry, materialize_transactions: false, pipeline_mode: true) do |conn|
             # Materialize transactions if requested
             if materialize_transactions
-              transaction_manager.materialize_transactions(pipeline_result: true)
+              transaction_manager.materialize_transactions(pipeline_result: true).each(&:assume_success)
             end
 
             quiet = !@pipeline_context.pending? && !pipeline_result
@@ -639,7 +639,17 @@ module ActiveRecord
           end
         end
 
+        def gather_pipelined_results(results)
+          if results.count(&:pending?) == @pipeline_context.pending_result_count
+            @pipeline_context.silence_pending_results!
+          end
 
+          pipeline_trace('PIPE_GATHER', self, nil, nil, nil, results.size)
+
+          results.map do |result|
+            result.result
+          end
+        end
 
         def handle_warnings(raw_result, sql)
         end

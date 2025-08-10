@@ -1118,7 +1118,7 @@ module ActiveRecord
                 end
               end
             #end
-            results.each(&:check)
+            gather_pipelined_results(results)
           end
 
           add_pg_encoders

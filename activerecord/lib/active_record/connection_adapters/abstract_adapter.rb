@@ -98,7 +98,17 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
   end
   output += ": #{sql_snippet(sql)} (binds: #{binds&.length || 0})" if sql
   if extra == :call_chain
-    chain = caller_locations
+    chain = []
+    filtered_chain = caller_locations
+
+    until chain == filtered_chain
+      chain = filtered_chain
+      filtered_chain = [chain.first]
+      chain.each_cons(2) do |loc1, loc2|
+        filtered_chain << loc2 if loc1.base_label != loc2.base_label && loc2.base_label != "synchronize"
+      end
+    end
+
     cut_points = %w(raw_execute with_raw_connection)
     cut_index = (cut_points.map { |cut| chain.index { |loc| loc.base_label == cut && !loc.label.include?(" ") } }.compact.first || -1) + 1
     chain_str = chain[cut_index, 5].map do |loc|
@@ -784,7 +794,11 @@ module ActiveRecord
         deadline = retry_deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) + retry_deadline
 
         @lock.synchronize do
+          pipeline_trace('ADAPTER_RECONNECT', self)
           reconnect
+
+          @pipeline_context&.clear_pending_results
+          @pipeline_context = nil
 
           enable_lazy_transactions!
           @raw_connection_dirty = false
@@ -804,12 +818,15 @@ module ActiveRecord
 
             if retryable_connection_error?(translated_exception)
               backoff(connection_retries - retries_available)
+              pipeline_trace('ADAPTER_RECONNECT_RETRY', self)
               retry
             end
           end
 
           @last_activity = nil
           @verified = false
+
+          pipeline_trace('ADAPTER_RECONNECT_FAILED', self)
 
           raise translated_exception
         end
@@ -846,6 +863,7 @@ module ActiveRecord
       # still holding @lock).
       def reset!
         clear_cache!(new_connection: true)
+        pipeline_trace('ADAPTER_RESET', self)
         reset_transaction
         attempt_configure_connection
       end

@@ -29,8 +29,23 @@ module ActiveRecord
         end
 
         def pending?
+          pending_result_count > 0
+        end
+
+        def pending_result_count
           @mutex.synchronize do
-            @pending_results.any? { |result| !result.is_a?(SyncResult) }
+            @pending_results.count { |result| !result.is_a?(SyncResult) && !result.ignored }
+          end
+        end
+
+        def silence_pending_results!
+          @mutex.synchronize do
+            @pending_results.each do |result|
+              next if result.is_a?(SyncResult)
+
+              # Note that this also affects "ignored" pending results
+              result.quiet = :silent
+            end
           end
         end
 
@@ -175,6 +190,10 @@ module ActiveRecord
           @mutex.synchronize do
             @raw_connection.pipeline_sync
             @raw_connection.flush
+
+            # sync request also implies a server flush
+            @flushed_through = @pending_results.length - 1
+
             @pending_results << SyncResult.new
           end
         end

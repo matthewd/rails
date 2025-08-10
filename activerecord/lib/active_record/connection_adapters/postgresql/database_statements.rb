@@ -204,11 +204,9 @@ module ActiveRecord
 
           def execute_batch(statements, name = nil, **kwargs)
             if pipeline_active?
-              statements.map do |statement|
+              gather_pipelined_results(statements.map { |statement|
                 raw_execute(statement, name, **kwargs, pipeline_result: true)
-              end.each do |result|
-                result.result
-              end
+              })
             else
               raw_execute(combine_multi_statements(statements), name, batch: true, **kwargs)
             end
