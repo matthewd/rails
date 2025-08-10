@@ -24,7 +24,7 @@ module ActiveRecord
           @adapter = adapter
           @pending_results = []
           @flushed_through = -1
-          @mutex = Monitor.new
+          @mutex = adapter.instance_variable_get(:@lock)
           @pipeline_active = false
         end
 
@@ -166,8 +166,8 @@ module ActiveRecord
               adapter: adapter,
               quiet: quiet,
             )
-            
-            pipeline_trace('PIPE_SEND', @adapter, result, sql, binds, :call_chain) unless quiet
+
+            pipeline_trace('PIPE_SEND', @adapter, result, sql, binds) unless quiet
 
             @pending_results << result
 
@@ -215,7 +215,11 @@ module ActiveRecord
         private
           def get_next_result
             prev = nil
-            while curr = @raw_connection.get_result
+            while @raw_connection.block && (curr = @raw_connection.get_result)
+              next unless curr
+
+              prev&.clear
+
               #result_status_name = PG::Result.constants.grep(/^PGRES_/).find { |c| PG::Result.const_get(c) == curr.result_status }
               #$stderr.puts "get_result -> #{result_status_name}"
               # Certain result types are not followed by a nil, and so
@@ -244,10 +248,11 @@ module ActiveRecord
             while n >= 0 && pending_result = @pending_results.first
               begin
                 raw_result = get_next_result
-                raise "Expected result, got nil" if raw_result.nil?
+                raise "Expected result, got #{raw_result.inspect}" unless raw_result
+
                 if (raw_result.result_status == PG::PGRES_PIPELINE_SYNC) != pending_result.is_a?(SyncResult)
-                  result_status_name = PG::Result.constants.grep(/^PGRES_/).find { |c| PG::Result.const_get(c) == raw_result.result_status }
-                  raise "Pipeline result mismatch: expected #{pending_result.class.name.gsub(/.*::/, "")}, got #{result_status_name}"
+                  result_status_name = PG::Result.constants.grep(/^PGRES_/).select { |c| PG::Result.const_get(c) == raw_result.result_status && !c.to_s.start_with?("PGRES_POLLING_") }
+                  raise "Pipeline result mismatch: expected #{pending_result.class.name.gsub(/.*::/, "")}, got #{result_status_name.join("/")}"
                 end
 
                 #$stderr.puts "get_next_result -> #{result_status_name}"

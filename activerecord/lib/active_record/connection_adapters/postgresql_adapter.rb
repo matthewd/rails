@@ -375,6 +375,7 @@ module ActiveRecord
         @lock.synchronize do
           return connect! unless @raw_connection
 
+          exit_persistent_pipeline_mode
           unless @raw_connection.transaction_status == ::PG::PQTRANS_IDLE
             @raw_connection.query "ROLLBACK"
           end
@@ -957,14 +958,10 @@ module ActiveRecord
 
         def load_additional_types(oids = nil)
           initializer = OID::TypeMapInitializer.new(type_map)
-          #results = []
           load_types_queries(initializer, oids) do |query|
-            result = internal_execute(query, "SCHEMA", [], allow_retry: true, materialize_transactions: false, pipeline_result: true)
-            initializer.run(result.result)
+            records = internal_execute(query, "SCHEMA", [], allow_retry: true, materialize_transactions: false)
+            initializer.run(records)
           end
-          #results.each do |result|
-          #  initializer.run(result.result)
-          #end
         end
 
         def load_types_queries(initializer, oids)
@@ -973,16 +970,12 @@ module ActiveRecord
             FROM pg_type as t
             LEFT JOIN pg_range as r ON oid = rngtypid
           SQL
-          conditions = []
           if oids
-            conditions << "WHERE t.oid IN (%s)" % oids.join(", ") unless oids.empty?
+            yield query + "WHERE t.oid IN (%s)" % oids.join(", ")
           else
-            conditions << initializer.query_conditions_for_known_type_names
-            conditions << initializer.query_conditions_for_known_type_types
-            conditions << initializer.query_conditions_for_array_types
-          end
-          conditions.compact.each do |condition|
-            yield query + condition
+            yield query + initializer.query_conditions_for_known_type_names
+            yield query + initializer.query_conditions_for_known_type_types
+            yield query + initializer.query_conditions_for_array_types
           end
         end
 

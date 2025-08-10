@@ -11,6 +11,8 @@ require "arel/collectors/sql_string"
 
 # Pipeline debugging trace methods
 def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = nil, binds = nil, extra = nil)
+  return unless ENV["T"]
+
   colors = {
     # Pipeline Operations (Blue family) - query sending/receiving
     'PIPE_SEND' => "\e[38;2;100;150;255m",     # Light Blue
@@ -248,7 +250,7 @@ module ActiveRecord
         @raw_connection = nil
         @unconfigured_connection = nil
         
-        pipeline_trace('ADAPTER_NEW', self)
+        pipeline_trace('ADAPTER_NEW', self, nil, nil, nil, config_or_deprecated_connection.inspect)
 
         if config_or_deprecated_connection.is_a?(Hash)
           @config = config_or_deprecated_connection.symbolize_keys

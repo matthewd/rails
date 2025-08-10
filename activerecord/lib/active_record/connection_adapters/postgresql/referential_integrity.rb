@@ -7,9 +7,21 @@ module ActiveRecord
         def disable_referential_integrity # :nodoc:
           original_exception = nil
 
+          if replication_role = @raw_connection&.parameter_status("session_replication_role")
+            raise "replication role = '#{replication_role}'"
+          end
+
+          unless defined?(@session_replication_role)
+            @session_replication_role = select_value("SELECT setting FROM pg_settings WHERE name = 'session_replication_role'", "SCHEMA")
+          end
+
           begin
-            transaction(requires_new: true) do
-              execute_batch(tables.collect { |name| "ALTER TABLE #{quote_table_name(name)} DISABLE TRIGGER ALL" })
+            if @session_replication_role
+              execute("SET session_replication_role = 'replica'", "SCHEMA")
+            else
+              transaction(requires_new: true) do
+                execute_batch(tables.collect { |name| "ALTER TABLE #{quote_table_name(name)} DISABLE TRIGGER ALL" })
+              end
             end
           rescue ActiveRecord::ActiveRecordError => e
             original_exception = e
@@ -31,8 +43,12 @@ Rails needs superuser privileges to disable referential integrity.
           end
 
           begin
-            transaction(requires_new: true) do
-              execute_batch(tables.collect { |name| "ALTER TABLE #{quote_table_name(name)} ENABLE TRIGGER ALL" })
+            if @session_replication_role
+              execute("SET session_replication_role = #{quote(@session_replication_role)}", "SCHEMA")
+            else
+              transaction(requires_new: true) do
+                execute_batch(tables.collect { |name| "ALTER TABLE #{quote_table_name(name)} ENABLE TRIGGER ALL" })
+              end
             end
           rescue ActiveRecord::ActiveRecordError
           end

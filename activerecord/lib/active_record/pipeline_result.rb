@@ -52,11 +52,11 @@ module ActiveRecord
       Promise.new(self, block)
     end
 
-    def set_result(result)
+    def set_result(raw_result)
       @mutex.synchronize do
-        result_status_name = PG::Result.constants.grep(/^PGRES_/).find { |c| PG::Result.const_get(c) == result.result_status }&.to_s
+        result_status_name = PG::Result.constants.grep(/^PGRES_/).find { |c| PG::Result.const_get(c) == raw_result.result_status && !c.start_with?("PGRES_POLLING_") }&.to_s
 
-        @result = result
+        @result = raw_result
         @pending = false
 
         # Check for pipeline aborted status and validate result
@@ -67,6 +67,7 @@ module ActiveRecord
             pipeline_trace('PIPE_ABORT', @adapter, self, @sql, nil, result_status_name)
           else
             @result.check
+
             # Store the raw result - let normal casting flow handle type conversion
             @final_result = @result
             keyword =
