@@ -452,7 +452,11 @@ module ActiveRecord
             pipeline_trace('TXN_SAVEPOINT_ROLLBACK', connection, self, nil, nil, "savepoint: #{savepoint_name}")
             
             connection.rollback_to_savepoint(savepoint_name)
+          else
+            pipeline_trace('TXN_SAVEPOINT_ROLLBACK_NOOP', connection, self, nil, nil, "savepoint: #{savepoint_name} (mat=#{materialized?}, conn.active=#{connection.active?})")
           end
+        else
+          pipeline_trace('TXN_SAVEPOINT_ROLLBACK_INVALIDATED', connection, self, nil, nil, "savepoint: #{savepoint_name}")
         end
         @state.rollback!
         @instrumenter.finish(:rollback) if materialized?
@@ -464,6 +468,8 @@ module ActiveRecord
           pipeline_trace('TXN_SAVEPOINT_RELEASE', connection, self, nil, nil, "savepoint: #{savepoint_name}")
           
           connection.release_savepoint(savepoint_name)
+        else
+          pipeline_trace('TXN_SAVEPOINT_RELEASE_NOOP', connection, self, nil, nil, "savepoint: #{savepoint_name}")
         end
         @state.commit!
         @instrumenter.finish(:commit) if materialized?

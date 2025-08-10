@@ -180,10 +180,42 @@ module ActiveRecord
         end
 
         def add_transaction_command(sql, adapter: nil)
-          # Just use add_query with no binds for transaction commands
-          result = add_query(sql, [], [], prepare: false, name: "TRANSACTION", adapter: adapter)
-          pipeline_trace('PIPE_TXN', @adapter, result, sql)
-          result
+          add_query(sql, [], [], prepare: false, name: "TRANSACTION", adapter: adapter)
+        end
+
+        def expecting_result(name, msg = nil, quiet: false, ongoing_multi_query: false)
+          @mutex.synchronize do
+            raise "Pipeline not active" unless @pipeline_active
+
+            if @raw_connection.pipeline_status == PG::PQ_PIPELINE_OFF
+              pipeline_trace('PIPE_RESTORE', @adapter, nil, nil, nil, :call_chain)
+              @raw_connection.enter_pipeline_mode
+              @pipeline_active = true
+              clear_pending_results
+            end
+
+            yield
+
+            result = ActiveRecord::PipelineResult.new(
+              self,
+              sql: nil,
+              name: name,
+              binds: nil,
+              type_casted_binds: nil,
+              adapter: @adapter,
+              quiet: quiet,
+            )
+
+            pipeline_trace('PIPE_EXPECT', @adapter, result, nil, nil, msg) unless quiet
+
+            @pending_results << result
+
+            unless ongoing_multi_query
+              send_sync
+            end
+
+            result
+          end
         end
 
         def send_sync
@@ -194,7 +226,10 @@ module ActiveRecord
             # sync request also implies a server flush
             @flushed_through = @pending_results.length - 1
 
-            @pending_results << SyncResult.new
+            result = SyncResult.new
+            @pending_results << result
+
+            result
           end
         end
 

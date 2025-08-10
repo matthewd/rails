@@ -312,7 +312,19 @@ module ActiveRecord
             # don't need the complication of with_raw_connection because
             # a reconnect would invalidate the entire statement pool.)
             if conn = @connection.instance_variable_get(:@raw_connection)
-              conn.query "DEALLOCATE #{key}" if conn.status == PG::CONNECTION_OK
+              return unless conn.status == PG::CONNECTION_OK
+
+              if conn.respond_to?(:close_prepared)
+                if @connection.pipeline_active?
+                  @connection.pipeline_context.expecting_result do
+                    conn.send_close_prepared(key)
+                  end.check
+                else
+                  conn.close_prepared(key)
+                end
+              else
+                @connection.execute "DEALLOCATE #{key}"
+              end
             end
           rescue PG::Error
           end
@@ -351,7 +363,21 @@ module ActiveRecord
       def active?
         @lock.synchronize do
           return false unless @raw_connection
-          @raw_connection.query ";"
+
+          if @raw_connection.respond_to?(:pipeline_status)
+            case @raw_connection.pipeline_status
+            when ::PG::PQ_PIPELINE_ON
+              #@pipeline_context.add_query(";", quiet: :silent).check
+              @pipeline_context.sync_all_results
+            when ::PG::PQ_PIPELINE_OFF
+              @raw_connection.query ";"
+            when ::PG::PQ_PIPELINE_ABORTED
+              @pipeline_context.sync_all_results
+            end
+          else
+            @raw_connection.query ";"
+          end
+
           verified!
         end
         true
