@@ -19,6 +19,10 @@ module ActiveRecord
 
           def result
           end
+
+          def ignored
+            false
+          end
         end
 
         def initialize(adapter)
@@ -182,13 +186,12 @@ module ActiveRecord
               clear_pending_results
             end
 
-
-            # Send query to pipeline immediately
-            # In pipeline mode, we must use send_query_params, not send_query
+            stmt_key = nil
             if prepare
-              # For prepared statements, we'll need to handle this differently
-              # For now, fall back to send_query_params for pipeline mode
-              raw_connection.send_query_params(sql, type_casted_binds || [])
+              stmt_key = @adapter.send(:prepare_statement, sql, binds, raw_connection, pipeline_result: true)
+              log_kwargs[:extra] = { statement_name: stmt_key }
+
+              raw_connection.send_query_prepared(stmt_key, type_casted_binds || [])
             else
               # Always use send_query_params in pipeline mode, even for queries without binds
               raw_connection.send_query_params(sql, type_casted_binds || [])
@@ -205,7 +208,13 @@ module ActiveRecord
               log_kwargs: log_kwargs,
             )
 
-            pipeline_trace('PIPE_SEND', @adapter, result, sql, binds) unless quiet
+            unless quiet
+              if stmt_key
+                pipeline_trace('PIPE_EXECUTE', @adapter, result, sql, binds, stmt_key)
+              else
+                pipeline_trace('PIPE_SEND', @adapter, result, sql, binds)
+              end
+            end
 
             @pending_results << result
 
@@ -223,7 +232,7 @@ module ActiveRecord
           add_query(sql, [], [], prepare: false, name: "TRANSACTION", adapter: adapter)
         end
 
-        def expecting_result(name, msg = nil, quiet: false, ongoing_multi_query: false)
+        def expecting_result(name, msg = nil, trace_action: 'PIPE_EXPECT', sql: nil, binds: nil, quiet: false, ongoing_multi_query: false)
           synchronize do
             raise "Pipeline not active" unless @pipeline_active
 
@@ -246,7 +255,7 @@ module ActiveRecord
               quiet: quiet,
             )
 
-            pipeline_trace('PIPE_EXPECT', @adapter, result, nil, nil, msg) unless quiet
+            pipeline_trace(trace_action, @adapter, result, sql, binds, msg) unless quiet
 
             @pending_results << result
 
@@ -358,7 +367,7 @@ module ActiveRecord
             while pending_result = @pending_results.first
               collect_results_through(0)
 
-              pending_result.result
+              pending_result.result unless pending_result.ignored
             end
           end
       end

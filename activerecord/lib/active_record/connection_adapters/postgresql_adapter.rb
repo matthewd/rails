@@ -1043,18 +1043,25 @@ module ActiveRecord
 
         # Prepare the statement if it hasn't been prepared, return
         # the statement key.
-        def prepare_statement(sql, binds, conn)
+        def prepare_statement(sql, binds, conn, pipeline_result: false)
           sql_key = sql_key(sql)
           unless @statements.key? sql_key
             nextkey = @statements.next_key
-            begin
-              pipeline_trace('BLOCKING_PREPARE', self, nil, sql, binds, nextkey)
-              conn.prepare nextkey, sql
-            rescue => e
-              raise translate_exception_class(e, sql, binds)
+            if pipeline_result
+              @pipeline_context.expecting_result("PREPARE", nextkey, sql: sql, binds: binds, trace_action: "PIPE_PREPARE") {
+                conn.send_prepare nextkey, sql
+              }.assume_success
+            else
+              begin
+                pipeline_trace('BLOCKING_PREPARE', self, nil, sql, binds, nextkey)
+                conn.prepare nextkey, sql
+              rescue => e
+                raise translate_exception_class(e, sql, binds)
+              end
+              # Clear the queue
+              pipeline_trace('EAT_PREPARE_RESULT', self, nil, sql, binds, nextkey)
+              conn.get_last_result
             end
-            # Clear the queue
-            conn.get_last_result
             @statements[sql_key] = nextkey
           end
           @statements[sql_key]

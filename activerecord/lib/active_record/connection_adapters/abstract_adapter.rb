@@ -1405,7 +1405,7 @@ module ActiveRecord
           active_record_error
         end
 
-        def log(sql, name = "SQL", binds = [], type_casted_binds = [], async: false, allow_retry: false, &block) # :doc:
+        def log(sql, name = "SQL", binds = [], type_casted_binds = [], async: false, allow_retry: false, extra: nil, &block) # :doc:
           instrumenter.instrument(
             "sql.active_record",
             sql:               sql,
@@ -1418,6 +1418,7 @@ module ActiveRecord
             transaction:       current_transaction.user_transaction.presence,
             affected_rows:     0,
             row_count:         0,
+            **extra,
             &block
           )
         rescue ActiveRecord::StatementInvalid => ex

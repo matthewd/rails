@@ -613,8 +613,8 @@ module ActiveRecord
 
           return false unless sql && !sql.to_s.include?(";")
 
-          return false
-          #return true
+          #return false
+          return true
 
           # Use pipeline if we're already in an active pipeline OR we should start transaction pipelining
           pipeline_active? || (materialize_transactions && should_pipeline_transactions?) || pipeline_result_requested
