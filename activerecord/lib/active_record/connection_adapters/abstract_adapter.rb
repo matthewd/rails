@@ -35,6 +35,8 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
     'PIPE_RECV' => "\e[38;2;80;80;255m",           # Rich Blue - pipeline query result
     'PIPE_QUERY' => "\e[38;2;48;80;220m",          # Dark Blue-Purple - quiet query
     'BLOCKING_QUERY' => "\e[38;2;60;48;200m",      # Intense Dark Blue - blocking execution
+    'BLOCKING_PREPARE' => "\e[38;2;48;60;180m",    # Dark Blue - statement preparation
+    'BLOCKING_EXECUTE' => "\e[38;2;80;48;220m",    # Dark Purple-Blue - statement execution
     
     # Pipeline Flow Operations (Mid-Blue family) - core pipeline mechanics
     'PIPE_ENTER' => "\e[38;2;100;120;255m",        # Mid Royal Blue
@@ -45,17 +47,25 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
     'PIPE_RESTORE' => "\e[38;2;90;110;240m",       # Mid Medium Blue
     'PIPE_EXPECT' => "\e[38;2;130;120;230m",       # Mid Slate Blue
     'PIPE_GATHER' => "\e[38;2;100;80;250m",        # Mid Blue-Purple
+    'PIPE_SETTLE' => "\e[38;2;120;100;230m",       # Mid Blue-Purple - settling pipeline
     'PIPE_GONE' => "\e[38;2;150;140;200m",         # Mid Muted Blue
     'PIPE_EXITING' => "\e[38;2;110;130;240m",      # Mid Lighter Blue
     'PERSISTENT_PIPE_ENTER' => "\e[38;2;70;90;255m",    # Mid Intense Blue
     'PERSISTENT_PIPE_EXIT' => "\e[38;2;130;150;255m",   # Mid Bright Sky Blue  
     'DISCONNECT_PIPE_EXIT' => "\e[38;2;90;150;200m",    # Mid Blue-Cyan
+    'DISCONNECT_PIPE' => "\e[38;2;80;140;190m",         # Mid Muted Blue-Cyan - general disconnect
+    'PIPE_GET' => "\e[38;2;140;120;240m",              # Mid Purple-Blue - experimental get operation
     
     # Pipeline Status Operations (Distinctive bright colors)
     'PIPE_WAIT' => "\e[38;2;255;255;48m",          # Bright Yellow - waiting state
     'PIPE_ERROR' => "\e[38;2;255;48;48m",          # Bright Red - errors
     'PIPE_ABORT' => "\e[38;2;255;64;128m",         # Bright Red-Pink - aborts
     'PIPE_ASSUMED' => "\e[38;2;160;160;160m",      # Light Gray - ignored/assumed success
+    
+    # Adapter Status Checking (Bright Teal family) - connection health
+    'ACTIVE_CHECK' => "\e[38;2;48;200;200m",       # Bright Teal - active connection check
+    'ACTIVE_CHECK_OK' => "\e[38;2;80;255;200m",    # Bright Green-Teal - connection is active
+    'ACTIVE_CHECK_ERR' => "\e[38;2;255;120;120m",  # Bright Red-Pink - connection check failed
     
     # Adapter Lifecycle (Bright Cyan family) - connection management  
     'ADAPTER_NEW' => "\e[38;2;48;255;255m",        # Bright Pure Cyan
