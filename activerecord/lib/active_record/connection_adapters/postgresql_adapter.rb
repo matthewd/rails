@@ -946,6 +946,13 @@ module ActiveRecord
               else
                 ConnectionNotEstablished.new(exception, connection_pool: @pool)
               end
+            elsif exception.message.match?(/server closed the connection unexpectedly|terminating connection due to|connection to server was lost|idle-in-transaction timeout/i) && exception.message.end_with?("\n")
+              # Handle connection failures that come through PG::Error (e.g., from pipeline mode)
+              # These have the same characteristics as ConnectionBad with libpq messages:
+              # - Connection was terminated by the server
+              # - Message ends with newline (indicating libpq origin)
+              # - Could have occurred after query execution began
+              ConnectionFailed.new(exception, connection_pool: @pool)
             else
               super
             end
