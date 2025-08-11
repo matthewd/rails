@@ -966,7 +966,7 @@ module ActiveRecord
           when "PostgreSQL"
             # Connection was left in a bad state, need to reconnect to simulate fresh disconnect
             connection.verify! if connection.instance_variable_get(:@raw_connection).status == ::PG::CONNECTION_BAD
-            connection.instance_variable_get(:@raw_connection).exit_pipeline_mode
+            connection.exit_persistent_pipeline_mode
             unless connection.instance_variable_get(:@raw_connection).transaction_status == ::PG::PQTRANS_INTRANS
               connection.instance_variable_get(:@raw_connection).async_exec("begin")
             end

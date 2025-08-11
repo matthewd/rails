@@ -38,6 +38,9 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
     'BLOCKING_PREPARE' => "\e[38;2;48;60;180m",    # Dark Blue - statement preparation
     'BLOCKING_EXECUTE' => "\e[38;2;80;48;220m",    # Dark Purple-Blue - statement execution
     
+    # Statement Management (Dark Purple family) - prepared statement lifecycle
+    'PIPE_PREPARE' => "\e[38;2;120;48;180m",       # Dark Purple - pipeline statement preparation
+    
     # Pipeline Flow Operations (Mid-Blue family) - core pipeline mechanics
     'PIPE_ENTER' => "\e[38;2;100;120;255m",        # Mid Royal Blue
     'PIPE_EXIT' => "\e[38;2;120;140;255m",         # Mid Sky Blue  
@@ -46,6 +49,7 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
     'PIPE_CLEAR' => "\e[38;2;110;130;255m",        # Mid Bright Blue
     'PIPE_RESTORE' => "\e[38;2;90;110;240m",       # Mid Medium Blue
     'PIPE_EXPECT' => "\e[38;2;130;120;230m",       # Mid Slate Blue
+    'PIPE_EXECUTE' => "\e[38;2;110;100;240m",      # Mid Blue-Purple - pipeline execution
     'PIPE_GATHER' => "\e[38;2;100;80;250m",        # Mid Blue-Purple
     'PIPE_SETTLE' => "\e[38;2;120;100;230m",       # Mid Blue-Purple - settling pipeline
     'PIPE_GONE' => "\e[38;2;150;140;200m",         # Mid Muted Blue
@@ -168,7 +172,10 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
     
     output += "#{obj_color}[#{class_name} #{obj_hex}]#{reset}"
   end
-  output += ": #{sql_snippet(sql)} (binds: #{binds&.length || 0})" if sql
+  if sql
+    output += ": #{sql_snippet(sql)}"
+    output += " (binds: #{binds.length})" if binds && !binds.empty?
+  end
   if extra == :call_chain
     chain = []
     filtered_chain = caller_locations

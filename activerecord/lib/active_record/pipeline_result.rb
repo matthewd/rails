@@ -33,7 +33,7 @@ module ActiveRecord
     attr_reader :sql, :ignored
     attr_accessor :quiet
 
-    def initialize(pipeline_context, sql: nil, name: nil, binds: nil, type_casted_binds: nil, log_kwargs: nil, adapter: nil, quiet: false)
+    def initialize(pipeline_context, sql: nil, name: nil, binds: nil, type_casted_binds: nil, log_kwargs: nil, adapter: nil, quiet: false, stmt_key: nil)
       @pipeline_context = pipeline_context
       @mutex = Monitor.new
       @result = nil
@@ -47,6 +47,7 @@ module ActiveRecord
       @log_kwargs = log_kwargs
       @adapter = adapter
       @quiet = quiet
+      @stmt_key = stmt_key
     end
 
     def then(&block)
@@ -67,7 +68,7 @@ module ActiveRecord
             @error = ActiveRecord::StatementInvalid.new("Query was aborted due to an earlier error in the pipeline")
             pipeline_trace('PIPE_ABORT', @adapter, self, @sql, nil, result_status_name)
           else
-            if @ignored
+            if @ignored && @quiet != :no_log
               # No-one else to instrument it, so we'll do it here
               emit_instrumentation do
                 @result.check
@@ -83,6 +84,8 @@ module ActiveRecord
                 nil
               elsif @ignored
                 'PIPE_ASSUMED'
+              elsif @quiet && @stmt_key
+                'PIPE_EXECUTE'
               elsif @quiet
                 'PIPE_QUERY'
               else
@@ -92,13 +95,22 @@ module ActiveRecord
             status_text = result_status_name || "OK"
             status_text += " (#{@result.cmd_tuples} rows)" if @result.result_status == PG::PGRES_TUPLES_OK
 
-            pipeline_trace(keyword, @adapter, self, @sql, nil, status_text) if keyword
+            status_text = "#{@stmt_key} → #{status_text}" if @stmt_key
+
+            pipeline_trace(keyword, @adapter, self, @sql, @binds, status_text) if keyword
             #$stderr.puts @result.to_a.inspect
+
+            @adapter.send(:verified!)
           end
         rescue => err
           # Translate PG exceptions to ActiveRecord exceptions using the adapter's translation
-          @error = @pipeline_context.instance_variable_get(:@adapter).send(:translate_exception_class, err, nil, nil)
-          pipeline_trace('PIPE_ERROR', @adapter, self, @sql, nil, "#{result_status_name} → #{@error.message}")
+          translated_exception = @pipeline_context.instance_variable_get(:@adapter).send(:translate_exception_class, err, nil, nil)
+          begin
+            raise translated_exception
+          rescue => reraised_exception
+            @error = reraised_exception
+            pipeline_trace('PIPE_ERROR', @adapter, self, @sql, nil, "#{result_status_name} → #{@error.message}")
+          end
         end
       end
     end
@@ -121,9 +133,14 @@ module ActiveRecord
     # Emit instrumentation if we have context and haven't emitted yet
     def emit_instrumentation
       if @adapter && !@instrumentation_emitted
-        @adapter.send(:log, @sql, @name, @binds, @type_casted_binds, **@log_kwargs) do
+        @adapter.send(:log, @sql, @name, @binds, @type_casted_binds, **@log_kwargs) do |notification_payload|
           @instrumentation_emitted = true
           yield if block_given?
+
+          if @result
+            notification_payload[:affected_rows] = @result.cmd_tuples
+            notification_payload[:row_count] = @result.ntuples
+          end
         end
       else
         yield if block_given?

@@ -104,9 +104,16 @@ module ActiveRecord
           end
         end
 
-        def clear_pending_results
+        def clear_pending_results(error = nil)
           synchronize do
             return if @pending_results.empty?
+
+            error ||=
+              begin
+                raise ActiveRecord::StatementInvalid, "Connection was closed with pending pipeline results"
+              rescue => e
+                e
+              end
 
             results_to_clear = @pending_results.dup
 
@@ -118,7 +125,7 @@ module ActiveRecord
               if result.is_a?(SyncResult)
                 # no-op
               else
-                result.set_error(ActiveRecord::StatementInvalid.new("Pipeline was cleared before query could be retrieved"))
+                result.set_error(error)
               end
             end
           end
@@ -205,12 +212,13 @@ module ActiveRecord
               type_casted_binds: type_casted_binds,
               adapter: adapter,
               quiet: quiet,
+              stmt_key: stmt_key,
               log_kwargs: log_kwargs,
             )
 
             unless quiet
               if stmt_key
-                pipeline_trace('PIPE_EXECUTE', @adapter, result, sql, binds, stmt_key)
+                pipeline_trace('PIPE_SEND_EXECUTE', @adapter, result, sql, binds, stmt_key)
               else
                 pipeline_trace('PIPE_SEND', @adapter, result, sql, binds)
               end
@@ -247,9 +255,9 @@ module ActiveRecord
 
             result = ActiveRecord::PipelineResult.new(
               self,
-              sql: nil,
+              sql: sql,
               name: name,
-              binds: nil,
+              binds: binds,
               type_casted_binds: nil,
               adapter: @adapter,
               quiet: quiet,
@@ -305,11 +313,11 @@ module ActiveRecord
         end
 
         private
-          def get_next_result
+          def get_next_result(timeout = nil)
             return raw_connection.get_last_result unless TRACK_SYNCS
 
             prev = nil
-            while raw_connection.block && (curr = raw_connection.get_result)
+            while (timeout ? raw_connection.block(timeout) : raw_connection.block) && (curr = raw_connection.get_result)
               next unless curr
 
               prev&.clear
@@ -334,16 +342,20 @@ module ActiveRecord
             raw_connection.send_flush_request
             raw_connection.flush
             @flushed_through = @pending_results.length - 1
+          rescue => connection_error
+            translated_error = @adapter.send(:translate_exception_class, connection_error, nil, nil)
+            clear_pending_results(translated_error)
+            raise translated_error
           end
 
-          def collect_results_through(target_index)
+          def collect_results_through(target_index, timeout: nil)
             n = target_index
 
             while n >= 0 && pending_result = @pending_results.first
               begin
                 #pipeline_trace('PIPE_GET', @adapter, pending_result, (pending_result.sql if pending_result.respond_to?(:sql)))
 
-                raw_result = get_next_result
+                raw_result = get_next_result(timeout)
                 raise "Expected result, got #{raw_result.inspect}" unless raw_result
 
                 if (raw_result.result_status == PG::PGRES_PIPELINE_SYNC) != pending_result.is_a?(SyncResult)
@@ -363,11 +375,17 @@ module ActiveRecord
             end
           end
 
-          def collect_remaining_results
+          def collect_remaining_results(timeout = nil)
             while pending_result = @pending_results.first
-              collect_results_through(0)
+              collect_results_through(0, timeout: timeout)
 
               pending_result.result unless pending_result.ignored
+            end
+
+            raw_connection.consume_input
+
+            if raw_connection.is_busy
+              raise "still busy after collecting results?"
             end
           end
       end

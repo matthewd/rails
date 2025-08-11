@@ -931,7 +931,11 @@ module ActiveRecord
           when nil
             if exception.message.match?(/connection is closed/i) || exception.message.match?(/no connection to the server/i)
               ConnectionNotEstablished.new(exception, connection_pool: @pool)
-            elsif exception.is_a?(PG::ConnectionBad)
+            elsif exception.is_a?(PG::ConnectionBad) || 
+                  (exception.class == PG::Error && exception.connection&.status == PG::CONNECTION_BAD)
+              # Note: Some pg gem methods inconsistently throw PG::Error instead of 
+              # PG::ConnectionBad for connection failures, so we check both.
+
               # libpq message style always ends with a newline; the pg gem's internal
               # errors do not. We separate these cases because a pg-internal
               # ConnectionBad means it failed before it managed to send the query,
@@ -1048,7 +1052,7 @@ module ActiveRecord
           unless @statements.key? sql_key
             nextkey = @statements.next_key
             if pipeline_result
-              @pipeline_context.expecting_result("PREPARE", nextkey, sql: sql, binds: binds, trace_action: "PIPE_PREPARE") {
+              @pipeline_context.expecting_result("PREPARE", nextkey, sql: sql, binds: binds, trace_action: "PIPE_PREPARE", quiet: :no_log) {
                 conn.send_prepare nextkey, sql
               }.assume_success
             else
@@ -1059,7 +1063,6 @@ module ActiveRecord
                 raise translate_exception_class(e, sql, binds)
               end
               # Clear the queue
-              pipeline_trace('EAT_PREPARE_RESULT', self, nil, sql, binds, nextkey)
               conn.get_last_result
             end
             @statements[sql_key] = nextkey
