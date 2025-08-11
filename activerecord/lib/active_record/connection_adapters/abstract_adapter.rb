@@ -13,62 +13,122 @@ require "arel/collectors/sql_string"
 def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = nil, binds = nil, extra = nil)
   return unless ENV["T"]
 
+  # Color Selection System:
+  # 1. All RGB values use 48-255 range for dark terminal background legibility with enhanced contrast
+  # 2. Each keyword gets visually unique color while maintaining functional grouping
+  # 3. Saturation and brightness vary within families to ensure distinctiveness
+  #
+  # Chromatic Clustering by Functionality:
+  # - DARK BOLD BLUE FAMILY: Core query execution (PIPE_SEND/RECV, PIPE_QUERY, BLOCKING_QUERY)
+  # - MID-BLUE FAMILY: Pipeline flow operations (enter/exit/sync/flush/etc)  
+  # - BRIGHT CYAN FAMILY: Adapter lifecycle (connect/disconnect/reconnect/reset)
+  # - PURPLE FAMILY: High-level transaction management (begin/end/materialize)
+  # - BRIGHT GREEN FAMILY: Success operations (commit, successful releases)
+  # - BRIGHT RED/PINK FAMILY: Failure operations (rollback, errors, aborts)
+  # - BRIGHT ORANGE/AMBER FAMILY: Savepoint operations (nested transaction management)
+  # - BRIGHT YELLOW FAMILY: Waiting/pending states
+  # - BRIGHT YELLOW-GOLD FAMILY: Connection pool lifecycle operations
+
   colors = {
-    # Pipeline Operations (Blue family) - query sending/receiving
-    'PIPE_SEND' => "\e[38;2;100;150;255m",     # Light Blue
-    'PIPE_TXN' => "\e[38;2;80;120;255m",       # Medium Blue  
-    'BLOCKING_QUERY' => "\e[38;2;120;180;255m", # Bright Light Blue
-    'PIPE_QUERY' => "\e[38;2;120;100;255m", # Bright Light Blue
-    'PIPE_SYNC' => "\e[38;2;60;100;255m",      # Deep Blue
-    'PIPE_FLUSH' => "\e[38;2;140;160;255m",    # Periwinkle
-    'PIPE_ENTER' => "\e[38;2;70;130;255m",     # Royal Blue
-    'PIPE_EXIT' => "\e[38;2;90;140;255m",      # Sky Blue
+    # Core Query Execution (Dark Bold Blue family) - the main event!
+    'PIPE_SEND' => "\e[38;2;48;48;255m",           # Deep Bold Blue - pipeline query start
+    'PIPE_RECV' => "\e[38;2;80;80;255m",           # Rich Blue - pipeline query result
+    'PIPE_QUERY' => "\e[38;2;48;80;220m",          # Dark Blue-Purple - quiet query
+    'BLOCKING_QUERY' => "\e[38;2;60;48;200m",      # Intense Dark Blue - blocking execution
     
-    # Status/Results (Bright distinctive colors)
-    'PIPE_WAIT' => "\e[38;2;255;255;100m",     # Bright Yellow
-    'PIPE_RECV' => "\e[38;2;100;255;100m",   # Bright Green
-    'PIPE_ERROR' => "\e[38;2;255;100;100m",    # Bright Red
-    'PIPE_ABORT' => "\e[38;2;255;80;130m",    # Bright Red-ish
+    # Pipeline Flow Operations (Mid-Blue family) - core pipeline mechanics
+    'PIPE_ENTER' => "\e[38;2;100;120;255m",        # Mid Royal Blue
+    'PIPE_EXIT' => "\e[38;2;120;140;255m",         # Mid Sky Blue  
+    'PIPE_SYNC' => "\e[38;2;80;100;255m",          # Mid Deep Blue
+    'PIPE_FLUSH' => "\e[38;2;140;160;255m",        # Mid Periwinkle
+    'PIPE_CLEAR' => "\e[38;2;110;130;255m",        # Mid Bright Blue
+    'PIPE_RESTORE' => "\e[38;2;90;110;240m",       # Mid Medium Blue
+    'PIPE_EXPECT' => "\e[38;2;130;120;230m",       # Mid Slate Blue
+    'PIPE_GATHER' => "\e[38;2;100;80;250m",        # Mid Blue-Purple
+    'PIPE_GONE' => "\e[38;2;150;140;200m",         # Mid Muted Blue
+    'PIPE_EXITING' => "\e[38;2;110;130;240m",      # Mid Lighter Blue
+    'PERSISTENT_PIPE_ENTER' => "\e[38;2;70;90;255m",    # Mid Intense Blue
+    'PERSISTENT_PIPE_EXIT' => "\e[38;2;130;150;255m",   # Mid Bright Sky Blue  
+    'DISCONNECT_PIPE_EXIT' => "\e[38;2;90;150;200m",    # Mid Blue-Cyan
     
-    # Adapter Lifecycle (Cyan family) - connection management
-    'ADAPTER_NEW' => "\e[38;2;100;255;255m",      # Bright Cyan
-    'ADAPTER_CONNECT' => "\e[38;2;80;220;255m",   # Light Blue-Cyan
-    'ADAPTER_CONFIGURED' => "\e[38;2;120;200;255m", # Pale Blue-Cyan
-    'ADAPTER_DISCONNECT' => "\e[38;2;60;180;200m", # Muted Cyan
+    # Pipeline Status Operations (Distinctive bright colors)
+    'PIPE_WAIT' => "\e[38;2;255;255;48m",          # Bright Yellow - waiting state
+    'PIPE_ERROR' => "\e[38;2;255;48;48m",          # Bright Red - errors
+    'PIPE_ABORT' => "\e[38;2;255;64;128m",         # Bright Red-Pink - aborts
+    'PIPE_ASSUMED' => "\e[38;2;160;160;160m",      # Light Gray - ignored/assumed success
     
-    # Transaction Management (Purple family) - transaction lifecycle
-    'TXN_BEGIN' => "\e[38;2;200;100;255m",     # Bright Purple
-    'TXN_END' => "\e[38;2;180;80;240m",        # Medium Purple
-    'TXN_MATERIALIZE' => "\e[38;2;220;120;255m", # Light Purple
+    # Adapter Lifecycle (Bright Cyan family) - connection management  
+    'ADAPTER_NEW' => "\e[38;2;48;255;255m",        # Bright Pure Cyan
+    'ADAPTER_CONNECT' => "\e[38;2;80;255;255m",    # Bright Light Cyan
+    'ADAPTER_CONFIGURED' => "\e[38;2;120;255;255m", # Bright Pale Cyan
+    'ADAPTER_DISCONNECT' => "\e[38;2;48;200;220m", # Bright Muted Cyan
+    'ADAPTER_RECONNECT' => "\e[38;2;100;255;240m", # Bright Cyan-White  
+    'ADAPTER_RECONNECT_RETRY' => "\e[38;2;140;255;255m", # Bright Light Cyan
+    'ADAPTER_RECONNECT_FAILED' => "\e[38;2;160;220;240m", # Bright Muted Cyan
+    'ADAPTER_RESET' => "\e[38;2;80;240;255m",      # Bright Medium Cyan
     
-    # Transaction Operations - Success (Green family)
-    'TXN_COMMIT' => "\e[38;2;100;255;150m",    # Bright Green
-    'TXN_DB_COMMIT' => "\e[38;2;80;220;120m",  # Medium Green
+    # High-Level Transaction Management (Purple family) - transaction lifecycle
+    'TXN_BEGIN' => "\e[38;2;200;80;255m",          # Bright Purple
+    'TXN_END' => "\e[38;2;180;48;240m",            # Rich Purple  
+    'TXN_MATERIALIZE' => "\e[38;2;220;120;255m",   # Light Purple
     
-    # Transaction Operations - Failure (Red family)  
-    'TXN_ROLLBACK' => "\e[38;2;255;100;150m",  # Bright Red-Pink
-    'TXN_DB_ROLLBACK' => "\e[38;2;220;80;120m", # Medium Red
+    # Database Transaction Operations - Success (Bright Green family)
+    'TXN_COMMIT' => "\e[38;2;48;255;120m",         # Bright Green
+    'TXN_DB_COMMIT' => "\e[38;2;80;255;140m",      # Bright Light Green
     
-    # Transaction Operations - Begin (Purple-Blue family)
-    'TXN_DB_BEGIN' => "\e[38;2;150;100;255m",  # Purple-Blue
+    # Database Transaction Operations - Begin (Purple-Blue family) 
+    'TXN_DB_BEGIN' => "\e[38;2;140;80;255m",       # Purple-Blue
     
-    # Savepoint Operations (Orange/Yellow family) - nested transactions
-    'TXN_SAVEPOINT_CREATE' => "\e[38;2;255;180;100m",   # Golden Orange
-    'TXN_SAVEPOINT_RELEASE' => "\e[38;2;255;200;120m",  # Light Orange  
-    'TXN_SAVEPOINT_ROLLBACK' => "\e[38;2;255;150;80m"   # Deep Orange
+    # Database Transaction Operations - Failure (Bright Red/Pink family)
+    'TXN_ROLLBACK' => "\e[38;2;255;80;140m",       # Bright Red-Pink
+    'TXN_DB_ROLLBACK' => "\e[38;2;255;48;100m",    # Bright Deep Red
+    
+    # Savepoint Operations (Bright Orange/Amber family) - nested transaction management
+    'TXN_SAVEPOINT_CREATE' => "\e[38;2;255;180;48m",       # Bright Golden Orange
+    'TXN_SAVEPOINT_RELEASE' => "\e[38;2;255;200;80m",      # Bright Light Orange
+    'TXN_SAVEPOINT_ROLLBACK' => "\e[38;2;255;140;48m",     # Bright Deep Orange
+    'TXN_SAVEPOINT_RELEASE_NOOP' => "\e[38;2;255;220;120m",        # Bright Pale Orange
+    'TXN_SAVEPOINT_ROLLBACK_NOOP' => "\e[38;2;255;180;80m",        # Bright Muted Orange  
+    'TXN_SAVEPOINT_ROLLBACK_INVALIDATED' => "\e[38;2;255;120;48m", # Bright Intense Orange-Red
+    
+    # Connection Pool Operations (Bright Yellow-Gold family) - pool lifecycle management
+    'POOL_CREATE' => "\e[38;2;255;215;48m",        # Bright Gold - pool creation
+    'POOL_PIN' => "\e[38;2;255;255;80m",           # Bright Yellow - connection pinning
+    'POOL_UNPIN' => "\e[38;2;255;240;48m",         # Golden Yellow - connection unpinning
+    'POOL_CHECKOUT' => "\e[38;2;255;200;48m",      # Orange-Gold - connection checkout
+    'POOL_CHECKIN' => "\e[38;2;255;230;80m",       # Light Gold - connection checkin
+    'POOL_DISCONNECT' => "\e[38;2;220;180;48m",    # Darker Gold - pool disconnect
+    'POOL_REMOVE' => "\e[38;2;200;160;48m",        # Muted Gold - connection removal
+    'POOL_REAP' => "\e[38;2;240;200;48m",          # Medium Gold - reaping dead connections
+    'POOL_FLUSH' => "\e[38;2;255;190;48m"          # Bright Orange-Gold - flushing idle connections
   }
   
   reset = "\e[0m"
   color = colors[keyword] || ""
+  
+  # Generate and cache a random color for the current thread
+  current_thread = ActiveSupport::IsolatedExecutionState.context
+  thread_hex = current_thread.__id__.to_s(16)
+  unless current_thread.instance_variable_defined?(:@__trace_color)
+    # Generate a bright random color (avoid dark colors for terminal readability)
+    r = rand(208) + 48   # 48-255
+    g = rand(208) + 48   # 48-255  
+    b = rand(208) + 48   # 48-255
+    thread_color = "\e[38;2;#{r};#{g};#{b}m"
+    current_thread.instance_variable_set(:@__trace_color, thread_color)
+  else
+    thread_color = current_thread.instance_variable_get(:@__trace_color)
+  end
+  thread_display = "#{thread_color}[#{thread_hex}]#{reset}"
   
   # Generate and cache a random color for the adapter instance
   if adapter_instance
     adapter_hex = adapter_instance.__id__.to_s(16)
     unless adapter_instance.instance_variable_defined?(:@__trace_color)
       # Generate a bright random color (avoid dark colors for terminal readability)
-      r = rand(128) + 127  # 127-255
-      g = rand(128) + 127  # 127-255  
-      b = rand(128) + 127  # 127-255
+      r = rand(208) + 48   # 48-255
+      g = rand(208) + 48   # 48-255  
+      b = rand(208) + 48   # 48-255
       adapter_color = "\e[38;2;#{r};#{g};#{b}m"
       adapter_instance.instance_variable_set(:@__trace_color, adapter_color)
     else
@@ -79,7 +139,7 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
     adapter_display = "[nil]"
   end
   
-  output = "#{adapter_display} #{color}#{keyword}#{reset}"
+  output = "#{thread_display} #{adapter_display} #{color}#{keyword}#{reset}"
   if pipeline_result_obj
     class_name = pipeline_result_obj.class.name.split('::').last
     obj_hex = pipeline_result_obj.__id__.to_s(16)
@@ -87,9 +147,9 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
     # Generate and cache a random color for this object
     unless pipeline_result_obj.instance_variable_defined?(:@__trace_color)
       # Generate a bright random color (avoid dark colors for terminal readability)
-      r = rand(128) + 127  # 127-255
-      g = rand(128) + 127  # 127-255  
-      b = rand(128) + 127  # 127-255
+      r = rand(208) + 48   # 48-255
+      g = rand(208) + 48   # 48-255  
+      b = rand(208) + 48   # 48-255
       obj_color = "\e[38;2;#{r};#{g};#{b}m"
       pipeline_result_obj.instance_variable_set(:@__trace_color, obj_color)
     else
@@ -172,6 +232,7 @@ module ActiveRecord
         @pool = value
       end
 
+      set_callback :checkin, :before, :settle_pipeline
       set_callback :checkin, :after, :enable_lazy_transactions!
 
       def self.type_cast_config_to_integer(config)
@@ -788,6 +849,8 @@ module ActiveRecord
       def active?
       end
 
+      attr_reader :pipeline_context
+
       # Disconnects from the database if already connected, and establishes a new
       # connection with the database. Implementors should define private #reconnect
       # instead.
@@ -1133,18 +1196,18 @@ module ActiveRecord
             # Handle pipeline mode transitions
             case pipeline_mode
             when true
-              self.materialize_transactions if materialize_transactions
               # Enter pipeline mode if supported and not already active
               if !pipeline_active?
                 enter_persistent_pipeline_mode
               end
+              self.materialize_transactions if materialize_transactions
             when false
               # Default behavior: always exit pipeline mode (safe for user code)
               # Always fully exit pipeline mode
+              self.materialize_transactions if materialize_transactions
               if pipeline_active?
                 exit_persistent_pipeline_mode
               end
-              self.materialize_transactions if materialize_transactions
 
             when :ignore
               self.materialize_transactions if materialize_transactions
@@ -1249,6 +1312,12 @@ module ActiveRecord
 
         def has_pending_pipeline_results?
           false
+        end
+
+        def settle_pipeline
+          if pipeline_active?
+            @pipeline_context&.settle
+          end
         end
 
         def retryable_connection_error?(exception)

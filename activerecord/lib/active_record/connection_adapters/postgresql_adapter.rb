@@ -364,6 +364,8 @@ module ActiveRecord
         @lock.synchronize do
           return false unless @raw_connection
 
+          pipeline_trace('ACTIVE_CHECK', self)
+
           if @raw_connection.respond_to?(:pipeline_status)
             case @raw_connection.pipeline_status
             when ::PG::PQ_PIPELINE_ON
@@ -378,10 +380,13 @@ module ActiveRecord
             @raw_connection.query ";"
           end
 
+          pipeline_trace('ACTIVE_CHECK_OK', self)
+
           verified!
         end
         true
       rescue PG::Error
+        pipeline_trace('ACTIVE_CHECK_ERR', self)
         false
       end
 
@@ -460,7 +465,7 @@ module ActiveRecord
           return false if @raw_connection.nil?
 
           pipeline_trace('PERSISTENT_PIPE_ENTER', self)
-          @pipeline_context ||= PostgreSQL::PipelineContext.new(@raw_connection, self)
+          @pipeline_context ||= PostgreSQL::PipelineContext.new(self)
           @pipeline_context.enter_pipeline_mode
         end
         true
@@ -501,8 +506,11 @@ module ActiveRecord
         @lock.synchronize do
           # Clean up pipeline context before closing connection
           if @pipeline_context&.pipeline_active?
-            pipeline_trace('DISCONNECT_PIPE_EXIT', self)
-            @pipeline_context.exit_pipeline_mode
+            pipeline_trace('DISCONNECT_PIPE', self)
+            @pipeline_context.sync_all_results
+
+            # XXX: Should we do this, or just let it die?
+            @pipeline_context.exit_pipeline_mode rescue nil
           end
           super
           @pipeline_context = nil
@@ -1040,6 +1048,7 @@ module ActiveRecord
           unless @statements.key? sql_key
             nextkey = @statements.next_key
             begin
+              pipeline_trace('BLOCKING_PREPARE', self, nil, sql, binds, nextkey)
               conn.prepare nextkey, sql
             rescue => e
               raise translate_exception_class(e, sql, binds)

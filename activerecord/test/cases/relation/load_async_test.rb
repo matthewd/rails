@@ -122,12 +122,13 @@ module ActiveRecord
     def test_simple_query
       expected_records = Post.where(author_id: 1).to_a
 
-      status = {}
+      status = []
 
+      $stderr.puts "Running test_simple_query on thread #{Thread.current.object_id}"
       subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |event|
+        $stderr.puts "Notification for test_simple_query on thread #{Thread.current.object_id}"
         if event.payload[:name] == "Post Load"
-          status[:executed] = true
-          status[:async] = event.payload[:async]
+          status << { executed: true, async: event.payload[:async] }
         end
       end
 
@@ -135,7 +136,7 @@ module ActiveRecord
       wait_for_async_query
 
       assert_equal expected_records, deferred_posts.to_a
-      assert_equal Post.lease_connection.supports_concurrent_connections?, status[:async]
+      assert_equal [Post.lease_connection.supports_concurrent_connections?], status.pluck(:async)
     ensure
       ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
     end

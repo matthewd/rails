@@ -611,9 +611,10 @@ module ActiveRecord
 
           return false if @raw_connection_dirty
 
-          return false if sql.include?(";")
+          return false unless sql && !sql.to_s.include?(";")
 
-          return true
+          return false
+          #return true
 
           # Use pipeline if we're already in an active pipeline OR we should start transaction pipelining
           pipeline_active? || (materialize_transactions && should_pipeline_transactions?) || pipeline_result_requested
@@ -635,12 +636,13 @@ module ActiveRecord
               name: name,
               adapter: self,
               quiet: quiet,
+              log_kwargs: { async: async }
             )
           end
         end
 
         def gather_pipelined_results(results)
-          if results.count(&:pending?) == @pipeline_context.pending_result_count
+          if results.count(&:pending?) == @pipeline_context&.pending_result_count
             @pipeline_context.silence_pending_results!
           end
 

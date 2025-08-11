@@ -278,6 +278,8 @@ module ActiveRecord
 
         @reaper = Reaper.new(self, db_config.reaping_frequency)
         @reaper.run
+        
+        pipeline_trace('POOL_CREATE', nil, nil, nil, nil, "pool=#{object_id} size=#{@size} role=#{@role} shard=#{@shard}")
       end
 
       def inspect # :nodoc:
@@ -340,11 +342,14 @@ module ActiveRecord
         @pinned_connection.lock_thread = ActiveSupport::IsolatedExecutionState.context if lock_thread
         @pinned_connection.verify! # eagerly validate the connection
         @pinned_connection.begin_transaction joinable: false, _lazy: false
+        
+        pipeline_trace('POOL_PIN', @pinned_connection)
       end
 
       def unpin_connection! # :nodoc:
         raise "There isn't a pinned connection #{object_id}" unless @pinned_connection
 
+        pipeline_trace('POOL_UNPIN', @pinned_connection)
         clean = true
         @pinned_connection.lock.synchronize do
           @pinned_connections_depth -= 1
@@ -473,6 +478,7 @@ module ActiveRecord
       #   connections in the pool within a timeout interval (default duration is
       #   <tt>spec.db_config.checkout_timeout * 2</tt> seconds).
       def disconnect(raise_on_acquisition_timeout = true)
+        pipeline_trace('POOL_DISCONNECT', nil)
         with_exclusively_acquired_all_connections(raise_on_acquisition_timeout) do
           synchronize do
             @connections.each do |conn|
@@ -568,7 +574,11 @@ module ActiveRecord
       # Raises:
       # - ActiveRecord::ConnectionTimeoutError no connection can be obtained from the pool.
       def checkout(checkout_timeout = @checkout_timeout)
-        return checkout_and_verify(acquire_connection(checkout_timeout)) unless @pinned_connection
+        unless @pinned_connection
+          conn = checkout_and_verify(acquire_connection(checkout_timeout))
+          pipeline_trace('POOL_CHECKOUT', conn, nil, nil, nil, "#{conn.pipeline_context&.pipeline_state || 'no pipeline context'}")
+          return conn
+        end
 
         @pinned_connection.lock.synchronize do
           synchronize do
@@ -582,9 +592,12 @@ module ActiveRecord
                 @connections << @pinned_connection
               end
 
+              pipeline_trace('POOL_CHECKOUT', @pinned_connection, nil, nil, nil, "(PINNED) #{@pinned_connection.pipeline_context&.pipeline_state || 'no pipeline context'}")
               @pinned_connection
             else
-              checkout_and_verify(acquire_connection(checkout_timeout))
+              conn = checkout_and_verify(acquire_connection(checkout_timeout))
+              pipeline_trace('POOL_CHECKOUT', conn, nil, nil, nil, "#{conn.pipeline_context&.pipeline_state || 'no pipeline context'}")
+              conn
             end
           end
         end
@@ -598,6 +611,7 @@ module ActiveRecord
       def checkin(conn)
         return if @pinned_connection.equal?(conn)
 
+        pipeline_trace('POOL_CHECKIN', conn)
         conn.lock.synchronize do
           synchronize do
             connection_lease.clear(conn)
@@ -614,6 +628,7 @@ module ActiveRecord
       # Remove a connection from the connection pool. The connection will
       # remain open and active but will no longer be managed by this pool.
       def remove(conn)
+        pipeline_trace('POOL_REMOVE', conn)
         needs_new_connection = false
 
         synchronize do
@@ -646,6 +661,7 @@ module ActiveRecord
       # a programmer forgets to checkin a connection at the end of a thread
       # or a thread dies unexpectedly.
       def reap
+        pipeline_trace('POOL_REAP', nil)
         stale_connections = synchronize do
           return if self.discarded?
           @connections.select do |conn|
@@ -670,6 +686,8 @@ module ActiveRecord
       # checked in less than +minimum_idle+ seconds ago, are unaffected.
       def flush(minimum_idle = @idle_timeout)
         return if minimum_idle.nil?
+        
+        pipeline_trace('POOL_FLUSH', nil)
 
         idle_connections = synchronize do
           return if self.discarded?

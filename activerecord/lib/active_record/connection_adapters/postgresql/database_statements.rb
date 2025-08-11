@@ -125,20 +125,22 @@ module ActiveRecord
           private_constant :IDLE_TRANSACTION_STATUSES
 
           def cancel_any_running_query
-            return if @raw_connection.nil? || IDLE_TRANSACTION_STATUSES.include?(@raw_connection.transaction_status)
+            @lock.synchronize do
+              return if @raw_connection.nil? || IDLE_TRANSACTION_STATUSES.include?(@raw_connection.transaction_status)
 
-            @raw_connection.cancel
-            @raw_connection.block
+              @raw_connection.cancel
+              @raw_connection.block
+            end
           rescue PG::Error
           end
 
           def perform_query(raw_connection, sql, binds, type_casted_binds, prepare:, notification_payload:, batch: false)
-            pipeline_trace('BLOCKING_QUERY', self, nil, sql, binds, :call_chain)
             update_typemap_for_default_timezone
             result = if prepare
               begin
                 stmt_key = prepare_statement(sql, binds, raw_connection)
                 notification_payload[:statement_name] = stmt_key
+                pipeline_trace('BLOCKING_EXECUTE', self, nil, sql, binds, stmt_key)
                 raw_connection.exec_prepared(stmt_key, type_casted_binds)
               rescue PG::FeatureNotSupported => error
                 if is_cached_plan_failure?(error)
@@ -158,8 +160,10 @@ module ActiveRecord
                 raise
               end
             elsif binds.nil? || binds.empty?
+              pipeline_trace('BLOCKING_QUERY', self, nil, sql, binds, :call_chain)
               raw_connection.async_exec(sql)
             else
+              pipeline_trace('BLOCKING_QUERY', self, nil, sql, binds, :call_chain)
               raw_connection.exec_params(sql, type_casted_binds)
             end
 
