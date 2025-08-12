@@ -36,6 +36,7 @@ module ActiveRecord
     def initialize(pipeline_context, sql: nil, name: nil, binds: nil, type_casted_binds: nil, log_kwargs: nil, adapter: nil, quiet: false, stmt_key: nil, trace_action: nil)
       @pipeline_context = pipeline_context
       @mutex = Monitor.new
+      @condition = @mutex.new_cond
       @result = nil
       @pending = true
       @error = nil
@@ -61,6 +62,7 @@ module ActiveRecord
 
         @result = raw_result
         @pending = false
+        @condition.signal
 
         # Check for pipeline aborted status and validate result
         begin
@@ -71,6 +73,8 @@ module ActiveRecord
           else
             if @ignored && @quiet != :no_log
               # No-one else to instrument it, so we'll do it here
+              # FIXME: See note at the other callsite: we shouldn't be
+              # holding the mutex while emitting
               emit_instrumentation do
                 @result.check
               end
@@ -129,6 +133,7 @@ module ActiveRecord
       @mutex.synchronize do
         @error = error
         @pending = false
+        @condition.signal
         pipeline_trace('PIPE_ERROR', @adapter, self, @sql, nil, error.message)
       end
     end
@@ -154,10 +159,14 @@ module ActiveRecord
       @mutex.synchronize do
         raise "Can't consume ignored result" if @ignored
 
+        # FIXME: We shouldn't be holding the mutex while emitting
+        # instrumentation, as that involves (user-defined) callbacks,
+        # which could do wild cross-thread stuff... and we're fully
+        # blocking the head-end of our connection
         emit_instrumentation do
           if @pending
             pipeline_trace('PIPE_WAITFOR', @adapter, self, @sql, @binds)
-            @pipeline_context.wait_for(self)
+            @pipeline_context.wait_for(self, @condition)
           end
         end
 

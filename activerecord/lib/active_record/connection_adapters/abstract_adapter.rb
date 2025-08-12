@@ -1,5 +1,16 @@
 # frozen_string_literal: true
 
+# Temporary debug handler for Ctrl-T (SIGINFO on macOS)
+Signal.trap("INFO") do
+  puts "\n=== Thread dump (#{Time.now}) ==="
+  Thread.list.each do |thread|
+    puts "Thread #{thread.object_id.to_s(16)}: #{thread.status}"
+    puts thread.backtrace.map { |line| "  #{line}" }.join("\n")
+    puts
+  end
+  puts "=== End thread dump ===\n"
+end
+
 require "active_record/connection_adapters/sql_type_metadata"
 require "active_record/connection_adapters/abstract/schema_dumper"
 require "active_record/connection_adapters/abstract/schema_creation"

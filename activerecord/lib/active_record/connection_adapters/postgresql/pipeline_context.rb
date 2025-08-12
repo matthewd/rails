@@ -135,7 +135,7 @@ module ActiveRecord
           @pipeline_active
         end
 
-        def wait_for(result)
+        def wait_for(result, condition = nil)
           synchronize do
             if index = @pending_results.index(result)
               if index >= @flushed_through
@@ -144,7 +144,7 @@ module ActiveRecord
               else
                 pipeline_trace('PIPE_WAIT', @adapter, result, result.sql) unless result.quiet
               end
-              collect_results_through index
+              collect_results_through(index, condition: condition)
             else
               raise "Unknown result"
             end
@@ -314,12 +314,20 @@ module ActiveRecord
         end
 
         private
-          def get_next_result(timeout = nil)
+          def get_next_result(timeout = nil, condition: nil)
             return raw_connection.get_last_result unless TRACK_SYNCS
 
             prev = nil
-            while (timeout ? raw_connection.block(timeout) : raw_connection.block) && (curr = raw_connection.get_result)
-              next unless curr
+            while true
+              if condition
+                condition.wait_until { raw_connection.block }
+              elsif timeout
+                break unless raw_connection.block(timeout)
+              else
+                break unless raw_connection.block
+              end
+              
+              break unless (curr = raw_connection.get_result)
 
               prev&.clear
 
@@ -349,14 +357,14 @@ module ActiveRecord
             raise translated_error
           end
 
-          def collect_results_through(target_index, timeout: nil)
+          def collect_results_through(target_index, timeout: nil, condition: nil)
             n = target_index
 
             while n >= 0 && pending_result = @pending_results.first
               begin
                 #pipeline_trace('PIPE_GET', @adapter, pending_result, (pending_result.sql if pending_result.respond_to?(:sql)))
 
-                raw_result = get_next_result(timeout)
+                raw_result = get_next_result(timeout, condition: condition)
                 raise "Expected result, got #{raw_result.inspect}" unless raw_result
 
                 if (raw_result.result_status == PG::PGRES_PIPELINE_SYNC) != pending_result.is_a?(SyncResult)
