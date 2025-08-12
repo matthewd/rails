@@ -669,16 +669,11 @@ module ActiveRecord
 
       test "querying a 'clean' recently-used but now-failed connection skips verification" do
         remote_disconnect @connection
-        $stderr.puts "AFTER_REMOTE_DISCONNECT: connection_status=#{@connection.instance_variable_get(:@raw_connection).status}"
 
         @connection.clean! # this simulates a fresh checkout from the pool
-        $stderr.puts "AFTER_CLEAN: connection_status=#{@connection.instance_variable_get(:@raw_connection).status}"
 
         # Clean did not verify / fix the connection
-        $stderr.puts "BEFORE_ACTIVE_CHECK: connection_status=#{@connection.instance_variable_get(:@raw_connection).status}"
-        active_result = @connection.active?
-        $stderr.puts "AFTER_ACTIVE_CHECK: connection_status=#{@connection.instance_variable_get(:@raw_connection).status}, active?=#{active_result}"
-        assert_not active_result
+        assert_not_predicate @connection, :active?
 
         # Because the query cannot be retried, and we (mistakenly) believe the
         # connection is still good, the query will fail. This is what we want,
@@ -944,7 +939,17 @@ module ActiveRecord
         def raw_transaction_open?(connection)
           case connection.adapter_name
           when "PostgreSQL"
-            connection.instance_variable_get(:@raw_connection).transaction_status == ::PG::PQTRANS_INTRANS
+            raw_connection = connection.instance_variable_get(:@raw_connection)
+
+            case raw_connection.transaction_status
+            when ::PG::PQTRANS_INTRANS
+              true
+            when ::PG::PQTRANS_ACTIVE
+              raw_connection.pipeline_status != ::PG::PQ_PIPELINE_ON ||
+                connection.select_value("SELECT pg_catalog.txid_current()") == connection.select_value("SELECT pg_catalog.txid_current()")
+            else
+              false
+            end
           when "Mysql2", "Trilogy"
             begin
               connection.instance_variable_get(:@raw_connection).query("SAVEPOINT transaction_test")
@@ -976,7 +981,7 @@ module ActiveRecord
             raw_conn = connection.instance_variable_get(:@raw_connection)
 
             if raw_conn.pipeline_status == ::PG::PQ_PIPELINE_ON
-              unless raw_conn.transaction_status == ::PG::PQTRANS_INTRANS
+              unless raw_conn.transaction_status == ::PG::PQTRANS_ACTIVE
                 raw_conn.send_query_params("begin", [])
                 raw_conn.pipeline_sync
                 raw_conn.get_last_result.check

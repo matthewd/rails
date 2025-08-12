@@ -65,13 +65,6 @@ module ActiveRecord
           synchronize do
             return if @pipeline_active
             pipeline_trace('PIPE_ENTER', @adapter, nil, nil, nil, :call_chain)
-            status = raw_connection.status
-            is_busy = raw_connection.is_busy
-            transaction_status = raw_connection.transaction_status
-            $stderr.puts "ENTER_PIPELINE_MODE: connection_status=#{status}, is_busy=#{is_busy}, transaction_status=#{transaction_status}" if status != 0 || is_busy || transaction_status != 0
-            if status == PG::CONNECTION_BAD
-              raise "DEBUG: Connection already bad before enter_pipeline_mode! status=#{status}, transaction_status=#{transaction_status}"
-            end
             raw_connection.enter_pipeline_mode
             @pipeline_active = true
           end
@@ -268,9 +261,10 @@ module ActiveRecord
               type_casted_binds: nil,
               adapter: @adapter,
               quiet: quiet,
+              trace_action: trace_action,
             )
 
-            pipeline_trace(trace_action, @adapter, result, sql, binds, msg) unless quiet
+            #pipeline_trace(trace_action, @adapter, result, sql, binds, msg) unless quiet
 
             @pending_results << result
 
@@ -304,22 +298,13 @@ module ActiveRecord
         end
 
         def sync_all_results
-          $stderr.puts "sync_all_results: enter"
           synchronize do
-            $stderr.puts "sync_all_results: synchronize"
             pipeline_trace('PIPE_SYNC', @adapter)
-            $stderr.puts "sync_all_results: send_sync"
             send_sync
 
             # Collect all results including the sync result
-            $stderr.puts "sync_all_results: collect_remaining_results"
             collect_remaining_results
-            $stderr.puts "sync_all_results: done"
           end
-        rescue => ex
-          $stderr.puts "sync_all_results: error"
-          $stderr.puts "sync_all_results: error: #{ex.inspect}"
-          raise
         end
 
         def has_pending_results?

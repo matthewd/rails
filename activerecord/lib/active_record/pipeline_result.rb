@@ -33,7 +33,7 @@ module ActiveRecord
     attr_reader :sql, :ignored
     attr_accessor :quiet
 
-    def initialize(pipeline_context, sql: nil, name: nil, binds: nil, type_casted_binds: nil, log_kwargs: nil, adapter: nil, quiet: false, stmt_key: nil)
+    def initialize(pipeline_context, sql: nil, name: nil, binds: nil, type_casted_binds: nil, log_kwargs: nil, adapter: nil, quiet: false, stmt_key: nil, trace_action: nil)
       @pipeline_context = pipeline_context
       @mutex = Monitor.new
       @result = nil
@@ -48,6 +48,7 @@ module ActiveRecord
       @adapter = adapter
       @quiet = quiet
       @stmt_key = stmt_key
+      @trace_action = trace_action
     end
 
     def then(&block)
@@ -82,6 +83,8 @@ module ActiveRecord
             keyword =
               if @quiet == :silent
                 nil
+              elsif @trace_action
+                @trace_action
               elsif @ignored
                 'PIPE_ASSUMED'
               elsif @quiet && @stmt_key
@@ -152,7 +155,10 @@ module ActiveRecord
         raise "Can't consume ignored result" if @ignored
 
         emit_instrumentation do
-          @pipeline_context.wait_for(self) if @pending
+          if @pending
+            pipeline_trace('PIPE_WAITFOR', @adapter, self, @sql, @binds)
+            @pipeline_context.wait_for(self)
+          end
         end
 
         raise @error if @error

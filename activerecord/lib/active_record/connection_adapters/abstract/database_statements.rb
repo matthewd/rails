@@ -636,7 +636,7 @@ module ActiveRecord
               name: name,
               adapter: self,
               quiet: quiet,
-              log_kwargs: { async: async }
+              log_kwargs: { async: async, allow_retry: allow_retry }
             )
           end
         end
