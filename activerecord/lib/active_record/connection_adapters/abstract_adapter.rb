@@ -17,11 +17,23 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
   # 1. All RGB values use 48-255 range for dark terminal background legibility with enhanced contrast
   # 2. Each keyword gets visually unique color while maintaining functional grouping
   # 3. Saturation and brightness vary within families to ensure distinctiveness
+  # 4. Core query operations (PIPE_SEND/RECV/QUERY/BLOCKING_QUERY) use dark bold colors for prominence
+  #    since "what queries are being run" is the most common visual scan pattern
+  #
+  # Adding New Keywords - Process:
+  # 1. Search codebase for all pipeline_trace() calls using: grep -r "pipeline_trace(" activerecord/lib/
+  # 2. Look for both literal strings and dynamic variables (like 'keyword' parameters)
+  # 3. Check PipelineResult#set_result for conditional keyword generation patterns
+  # 4. Add missing keywords to appropriate family below, maintaining visual hierarchy
+  # 5. Test colors against dark terminal backgrounds - avoid RGB values < 48
   #
   # Chromatic Clustering by Functionality:
   # - DARK BOLD BLUE FAMILY: Core query execution (PIPE_SEND/RECV, PIPE_QUERY, BLOCKING_QUERY)
-  # - MID-BLUE FAMILY: Pipeline flow operations (enter/exit/sync/flush/etc)  
+  #   * Most visually prominent family - these are the "main events" developers scan for
+  # - DARK PURPLE FAMILY: Statement management (PIPE_PREPARE, prepared statement lifecycle)  
+  # - MID-BLUE FAMILY: Pipeline flow operations (enter/exit/sync/flush/settle/etc)  
   # - BRIGHT CYAN FAMILY: Adapter lifecycle (connect/disconnect/reconnect/reset)
+  # - BRIGHT TEAL FAMILY: Adapter status checking (active connection health checks)
   # - PURPLE FAMILY: High-level transaction management (begin/end/materialize)
   # - BRIGHT GREEN FAMILY: Success operations (commit, successful releases)
   # - BRIGHT RED/PINK FAMILY: Failure operations (rollback, errors, aborts)
