@@ -369,8 +369,8 @@ module ActiveRecord
           if @raw_connection.respond_to?(:pipeline_status)
             case @raw_connection.pipeline_status
             when ::PG::PQ_PIPELINE_ON
-              #@pipeline_context.add_query(";", quiet: :silent).check
-              @pipeline_context.sync_all_results
+              @pipeline_context.add_query(";", nil, nil, prepare: false, name: "ACTIVE", adapter: self, quiet: :silent).check
+              #@pipeline_context.sync_all_results
             when ::PG::PQ_PIPELINE_OFF
               @raw_connection.query ";"
             when ::PG::PQ_PIPELINE_ABORTED
@@ -385,7 +385,7 @@ module ActiveRecord
           verified!
         end
         true
-      rescue PG::Error
+      rescue PG::Error, ActiveRecord::StatementInvalid
         pipeline_trace('ACTIVE_CHECK_ERR', self)
         false
       end
@@ -455,6 +455,8 @@ module ActiveRecord
 
       # Persistent pipeline mode APIs
       def enter_persistent_pipeline_mode
+        $stderr.puts "ENTER_PERSISTENT_PIPELINE_MODE: connection_status=#{@raw_connection&.status}, is_busy=#{@raw_connection&.is_busy}"
+
         return false unless pipeline_supported?
         return true if pipeline_active? # Already in pipeline mode
 
@@ -466,6 +468,8 @@ module ActiveRecord
 
           pipeline_trace('PERSISTENT_PIPE_ENTER', self)
           @pipeline_context ||= PostgreSQL::PipelineContext.new(self)
+          status = @raw_connection&.status
+          $stderr.puts "BEFORE_PIPELINE_CONTEXT_ENTER: connection_status=#{status}, is_busy=#{@raw_connection&.is_busy}"
           @pipeline_context.enter_pipeline_mode
         end
         true
@@ -925,6 +929,7 @@ module ActiveRecord
         QUERY_CANCELED        = "57014"
 
         def translate_exception(exception, message:, sql:, binds:)
+          $stderr.puts "TRANSLATE_EXCEPTION: #{exception.class}: #{exception.message.inspect}"
           return exception unless exception.respond_to?(:result)
 
           case exception.result.try(:error_field, PG::PG_DIAG_SQLSTATE)

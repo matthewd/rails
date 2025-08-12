@@ -669,11 +669,16 @@ module ActiveRecord
 
       test "querying a 'clean' recently-used but now-failed connection skips verification" do
         remote_disconnect @connection
+        $stderr.puts "AFTER_REMOTE_DISCONNECT: connection_status=#{@connection.instance_variable_get(:@raw_connection).status}"
 
         @connection.clean! # this simulates a fresh checkout from the pool
+        $stderr.puts "AFTER_CLEAN: connection_status=#{@connection.instance_variable_get(:@raw_connection).status}"
 
         # Clean did not verify / fix the connection
-        assert_not_predicate @connection, :active?
+        $stderr.puts "BEFORE_ACTIVE_CHECK: connection_status=#{@connection.instance_variable_get(:@raw_connection).status}"
+        active_result = @connection.active?
+        $stderr.puts "AFTER_ACTIVE_CHECK: connection_status=#{@connection.instance_variable_get(:@raw_connection).status}, active?=#{active_result}"
+        assert_not active_result
 
         # Because the query cannot be retried, and we (mistakenly) believe the
         # connection is still good, the query will fail. This is what we want,
@@ -966,11 +971,26 @@ module ActiveRecord
           when "PostgreSQL"
             # Connection was left in a bad state, need to reconnect to simulate fresh disconnect
             connection.verify! if connection.instance_variable_get(:@raw_connection).status == ::PG::CONNECTION_BAD
-            connection.exit_persistent_pipeline_mode
-            unless connection.instance_variable_get(:@raw_connection).transaction_status == ::PG::PQTRANS_INTRANS
-              connection.instance_variable_get(:@raw_connection).async_exec("begin")
+
+            # (note verify! may have replaced the raw connection above)
+            raw_conn = connection.instance_variable_get(:@raw_connection)
+
+            if raw_conn.pipeline_status == ::PG::PQ_PIPELINE_ON
+              unless raw_conn.transaction_status == ::PG::PQTRANS_INTRANS
+                raw_conn.send_query_params("begin", [])
+                raw_conn.pipeline_sync
+                raw_conn.get_last_result.check
+              end
+              raw_conn.send_query_params("set idle_in_transaction_session_timeout = '10ms'", [])
+              raw_conn.pipeline_sync
+              raw_conn.get_last_result.check
+            else
+              unless raw_conn.transaction_status == ::PG::PQTRANS_INTRANS
+                raw_conn.exec_query("begin")
+              end
+              raw_conn.exec_query("set idle_in_transaction_session_timeout = '10ms'")
             end
-            connection.instance_variable_get(:@raw_connection).async_exec("set idle_in_transaction_session_timeout = '10ms'")
+
             sleep 0.05
           when "Mysql2", "Trilogy"
             connection.send(:internal_execute, "set @@wait_timeout=1", materialize_transactions: false)
