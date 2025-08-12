@@ -150,78 +150,29 @@ module ActiveRecord
 
         def wait_for(target_result, condition = nil)
           loop do
-            # Try to dequeue and process one result
-            result, raw_data = nil, nil
-            
-            synchronize do
+            result, raw_data = synchronize do
               if @pending_results.include?(target_result)
-                # Target is still pending - flush if needed, then dequeue first result
-                target_index = @pending_results.index(target_result)
-                if target_index >= @flushed_through
-                  pipeline_trace('PIPE_FLUSH', @adapter, target_result, target_result.sql) unless target_result.quiet
-                  flush_queries_through target_index
-                else
-                  pipeline_trace('PIPE_WAIT', @adapter, target_result, target_result.sql) unless target_result.quiet
-                end
-                
-                result, raw_data = read_and_dequeue_next_result(condition: condition)
-                
+                prepare_to_wait_for(target_result)
+                read_and_dequeue_next_result(condition: condition)
               elsif @in_flight_results.key?(target_result)
-                # Target is being processed by another thread - wait for it
-                pipeline_trace('PIPE_WAIT_INFLIGHT', @adapter, target_result, target_result.sql) unless target_result.quiet
-                
-                target_result.instance_variable_get(:@mutex).synchronize do
-                  while target_result.pending?
-                    target_result.instance_variable_get(:@condition).wait
-                  end
-                end
+                wait_for_in_flight_result(target_result)
                 return
-                
               else
                 raise "Unknown result"
               end
             end
 
-            # Process the result we dequeued (outside connection lock)
             if result && raw_data
               process_result(result, raw_data)
               return if result == target_result
             else
-              # No more results available
-              break
+              break # No more results available
             end
           end
         end
 
         def settle
-          # Try sync_all_results first (may handle everything)
-          early_result = synchronize do
-            pipeline_trace('PIPE_SETTLE', @adapter)
-            sync_all_results
-          end
-          return early_result if early_result
-
-          # Process remaining results one at a time
-          loop do
-            result, raw_data = nil, nil
-            
-            synchronize do
-              # Check if there are any readable results left
-              return unless @pending_results.any? { |r| !r.is_a?(SyncResult) && !r.ignored }
-
-              pipeline_trace('PIPE_SETTLE', @adapter, nil, nil, nil, "sync=#{@needs_sync} pending=#{@pending_results.length}")
-              send_sync if @needs_sync
-
-              result, raw_data = read_and_dequeue_next_result
-            end
-
-            # Process the result (outside connection lock)
-            if result && raw_data
-              process_result(result, raw_data)
-            else
-              break
-            end
-          end
+          return sync_all_results_if_possible || process_remaining_results
         end
 
         def pipeline_state
@@ -437,6 +388,55 @@ module ActiveRecord
             raise translated_error
           end
 
+          def prepare_to_wait_for(target_result)
+            target_index = @pending_results.index(target_result)
+            if target_index >= @flushed_through
+              pipeline_trace('PIPE_FLUSH', @adapter, target_result, target_result.sql) unless target_result.quiet
+              flush_queries_through target_index
+            else
+              pipeline_trace('PIPE_WAIT', @adapter, target_result, target_result.sql) unless target_result.quiet
+            end
+          end
+          
+          def wait_for_in_flight_result(target_result)
+            pipeline_trace('PIPE_WAIT_INFLIGHT', @adapter, target_result, target_result.sql) unless target_result.quiet
+            
+            target_result.instance_variable_get(:@mutex).synchronize do
+              while target_result.pending?
+                target_result.instance_variable_get(:@condition).wait
+              end
+            end
+          end
+          
+          def sync_all_results_if_possible
+            synchronize do
+              pipeline_trace('PIPE_SETTLE', @adapter)
+              sync_all_results
+            end
+          end
+          
+          def process_remaining_results
+            loop do
+              result, raw_data = synchronize do
+                return unless has_readable_results?
+                
+                pipeline_trace('PIPE_SETTLE', @adapter, nil, nil, nil, "sync=#{@needs_sync} pending=#{@pending_results.length}")
+                send_sync if @needs_sync
+                read_and_dequeue_next_result
+              end
+
+              if result && raw_data
+                process_result(result, raw_data)
+              else
+                break
+              end
+            end
+          end
+          
+          def has_readable_results?
+            @pending_results.any? { |r| !r.is_a?(SyncResult) && !r.ignored }
+          end
+
           def process_result(result, raw_data)
             # Process result outside any locks (may trigger user callbacks)
             begin
@@ -450,16 +450,16 @@ module ActiveRecord
           end
 
           def collect_remaining_results(timeout = nil)
+            process_all_results(timeout: timeout)
+            finalize_connection_state
+          end
+          
+          def process_all_results(timeout: nil)
             loop do
-              # Check if there's still work to do
               break unless synchronize { @pending_results.any? }
               
-              # Dequeue one result
-              result, raw_data = synchronize do
-                read_and_dequeue_next_result(timeout: timeout)
-              end
-
-              # Process the result (outside connection lock)
+              result, raw_data = synchronize { read_and_dequeue_next_result(timeout: timeout) }
+              
               if result && raw_data
                 process_result(result, raw_data)
                 result.result unless result.ignored
@@ -467,7 +467,9 @@ module ActiveRecord
                 break
               end
             end
-
+          end
+          
+          def finalize_connection_state
             raw_connection.consume_input
 
             if raw_connection.is_busy
