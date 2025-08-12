@@ -150,6 +150,7 @@ module ActiveRecord
 
         def wait_for(result, condition = nil)
           is_in_flight = false
+          results_to_process = []
           
           synchronize do
             if index = @pending_results.index(result)
@@ -160,7 +161,7 @@ module ActiveRecord
               else
                 pipeline_trace('PIPE_WAIT', @adapter, result, result.sql) unless result.quiet
               end
-              collect_results_through(index, condition: condition)
+              results_to_process = collect_results_through(index, condition: condition)
             elsif @in_flight_results.key?(result)
               # Race condition case: result is being processed by another thread
               # We need to wait for that thread to complete processing
@@ -181,8 +182,18 @@ module ActiveRecord
               end
             end
           else
-            # Process any in-flight results that were created during collect_results_through
-            process_in_flight_results
+            # Process the results this thread is responsible for
+            results_to_process.each do |pending_result, raw_result|
+              # Process result outside any locks (may trigger user callbacks)
+              begin
+                pending_result.set_result(raw_result)
+              rescue => err
+                pending_result.set_error(err)
+              ensure
+                # Remove from in-flight tracking
+                synchronize { @in_flight_results.delete(pending_result) }
+              end
+            end
           end
 
           nil
@@ -196,7 +207,7 @@ module ActiveRecord
           
           return result if result
 
-          synchronize do
+          results_to_process = synchronize do
             last_readable_result = @pending_results.rindex { |r| !r.is_a?(SyncResult) && !r.ignored }
 
             pipeline_trace('PIPE_SETTLE', @adapter, nil, nil, nil, "sync=#{@needs_sync} readable=#{last_readable_result&.+(1)} pending=#{@pending_results.length}")
@@ -205,11 +216,23 @@ module ActiveRecord
 
             if last_readable_result
               collect_results_through(last_readable_result)
+            else
+              []
             end
           end
           
-          # Process any in-flight results that were created during collect_results_through
-          process_in_flight_results
+          # Process the results this thread is responsible for
+          results_to_process.each do |pending_result, raw_result|
+            # Process result outside any locks (may trigger user callbacks)
+            begin
+              pending_result.set_result(raw_result)
+            rescue => err
+              pending_result.set_error(err)
+            ensure
+              # Remove from in-flight tracking
+              synchronize { @in_flight_results.delete(pending_result) }
+            end
+          end
         end
 
         def pipeline_state
@@ -424,10 +447,10 @@ module ActiveRecord
 
           def collect_results_through(target_index, timeout: nil, condition: nil)
             n = target_index
+            results_to_process = []
 
+            # Phase 1: Read and dequeue all needed results while holding connection lock
             while n >= 0
-              # Read and dequeue the next result while holding connection lock
-              # (We're already inside a synchronize block from the caller)
               pending_result, raw_result = read_and_dequeue_next_result(timeout: timeout, condition: condition)
               break unless pending_result && raw_result
 
@@ -436,36 +459,12 @@ module ActiveRecord
               # Update bookkeeping while still holding lock
               @flushed_through -= 1 if @flushed_through > -1
               
+              results_to_process << [pending_result, raw_result]
               n -= 1
             end
-          end
-          
-          def process_in_flight_results
-            # This method is called outside any synchronize blocks
-            # Process each in-flight result without holding connection lock
             
-            while true
-              # Get the next in-flight result to process
-              result_pair = synchronize do
-                @in_flight_results.first
-              end
-              
-              break unless result_pair
-              
-              pending_result, raw_result = result_pair
-              
-              # Process result outside any locks (may trigger user callbacks)
-              begin
-                pending_result.set_result(raw_result)
-              rescue => err
-                pending_result.set_error(err)
-              end
-              
-              # Remove from in-flight tracking
-              synchronize do
-                @in_flight_results.delete(pending_result)
-              end
-            end
+            # Return the results that this thread will be responsible for processing
+            results_to_process
           end
 
           def collect_remaining_results(timeout = nil)
@@ -473,12 +472,22 @@ module ActiveRecord
               pending_result = synchronize { @pending_results.first }
               break unless pending_result
               
-              synchronize do
+              results_to_process = synchronize do
                 collect_results_through(0, timeout: timeout)
               end
               
-              # Process any in-flight results outside the connection lock
-              process_in_flight_results
+              # Process the results this thread is responsible for
+              results_to_process.each do |pending_result, raw_result|
+                # Process result outside any locks (may trigger user callbacks)
+                begin
+                  pending_result.set_result(raw_result)
+                rescue => err
+                  pending_result.set_error(err)
+                ensure
+                  # Remove from in-flight tracking
+                  synchronize { @in_flight_results.delete(pending_result) }
+                end
+              end
 
               pending_result.result unless pending_result.ignored
             end
