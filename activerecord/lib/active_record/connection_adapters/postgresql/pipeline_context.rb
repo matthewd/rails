@@ -148,109 +148,77 @@ module ActiveRecord
           @pipeline_active
         end
 
-        def wait_for(result, condition = nil)
+        def wait_for(target_result, condition = nil)
           loop do
-            # Check if we need to do any work, and if so, grab exactly one result to process
-            pending_result_to_process = nil
-            raw_result_to_process = nil
+            # Try to dequeue and process one result
+            result, raw_data = nil, nil
             
             synchronize do
-              if index = @pending_results.index(result)
-                # Our target result is still pending - process the first result in queue
-                if index >= @flushed_through
-                  pipeline_trace('PIPE_FLUSH', @adapter, result, result.sql) unless result.quiet
-                  flush_queries_through index
+              if @pending_results.include?(target_result)
+                # Target is still pending - flush if needed, then dequeue first result
+                target_index = @pending_results.index(target_result)
+                if target_index >= @flushed_through
+                  pipeline_trace('PIPE_FLUSH', @adapter, target_result, target_result.sql) unless target_result.quiet
+                  flush_queries_through target_index
                 else
-                  pipeline_trace('PIPE_WAIT', @adapter, result, result.sql) unless result.quiet
+                  pipeline_trace('PIPE_WAIT', @adapter, target_result, target_result.sql) unless target_result.quiet
                 end
                 
-                # Dequeue exactly one result (the first one)
-                pending_result_to_process, raw_result_to_process = read_and_dequeue_next_result(condition: condition)
-                if pending_result_to_process && raw_result_to_process
-                  @flushed_through -= 1 if @flushed_through > -1
-                end
-              elsif @in_flight_results.key?(result)
-                # Race condition case: result is being processed by another thread
-                # We need to wait for that thread to complete processing
-                pipeline_trace('PIPE_WAIT_INFLIGHT', @adapter, result, result.sql) unless result.quiet
+                result, raw_data = read_and_dequeue_next_result(condition: condition)
                 
-                # Wait on the result's own condition variable without holding connection lock
-                result.instance_variable_get(:@mutex).synchronize do
-                  while result.pending?
-                    result.instance_variable_get(:@condition).wait
+              elsif @in_flight_results.key?(target_result)
+                # Target is being processed by another thread - wait for it
+                pipeline_trace('PIPE_WAIT_INFLIGHT', @adapter, target_result, target_result.sql) unless target_result.quiet
+                
+                target_result.instance_variable_get(:@mutex).synchronize do
+                  while target_result.pending?
+                    target_result.instance_variable_get(:@condition).wait
                   end
                 end
                 return
+                
               else
                 raise "Unknown result"
               end
             end
 
-            # If we got a result to process, handle it outside the connection lock
-            if pending_result_to_process && raw_result_to_process
-              # Process result outside any locks (may trigger user callbacks)
-              begin
-                pending_result_to_process.set_result(raw_result_to_process)
-              rescue => err
-                pending_result_to_process.set_error(err)
-              ensure
-                # Remove from in-flight tracking
-                synchronize { @in_flight_results.delete(pending_result_to_process) }
-              end
-              
-              # If this was our target result, we're done
-              return if pending_result_to_process == result
-              
-              # Otherwise, continue the loop to process more results
+            # Process the result we dequeued (outside connection lock)
+            if result && raw_data
+              process_result(result, raw_data)
+              return if result == target_result
             else
-              # No more results available, but our target wasn't found - this shouldn't happen
+              # No more results available
               break
             end
           end
-
-          nil
         end
 
         def settle
-          result = synchronize do
+          # Try sync_all_results first (may handle everything)
+          early_result = synchronize do
             pipeline_trace('PIPE_SETTLE', @adapter)
             sync_all_results
           end
-          
-          return result if result
+          return early_result if early_result
 
-          # Process all remaining results one at a time
+          # Process remaining results one at a time
           loop do
-            pending_result_to_process = nil
-            raw_result_to_process = nil
+            result, raw_data = nil, nil
             
             synchronize do
+              # Check if there are any readable results left
               return unless @pending_results.any? { |r| !r.is_a?(SyncResult) && !r.ignored }
 
               pipeline_trace('PIPE_SETTLE', @adapter, nil, nil, nil, "sync=#{@needs_sync} pending=#{@pending_results.length}")
-
               send_sync if @needs_sync
 
-              # Dequeue exactly one result (the first one)
-              pending_result_to_process, raw_result_to_process = read_and_dequeue_next_result
-              if pending_result_to_process && raw_result_to_process
-                @flushed_through -= 1 if @flushed_through > -1
-              end
+              result, raw_data = read_and_dequeue_next_result
             end
 
-            # If we got a result to process, handle it outside the connection lock
-            if pending_result_to_process && raw_result_to_process
-              # Process result outside any locks (may trigger user callbacks)
-              begin
-                pending_result_to_process.set_result(raw_result_to_process)
-              rescue => err
-                pending_result_to_process.set_error(err)
-              ensure
-                # Remove from in-flight tracking
-                synchronize { @in_flight_results.delete(pending_result_to_process) }
-              end
+            # Process the result (outside connection lock)
+            if result && raw_data
+              process_result(result, raw_data)
             else
-              # No more results available
               break
             end
           end
@@ -431,27 +399,30 @@ module ActiveRecord
           end
 
           def read_and_dequeue_next_result(timeout: nil, condition: nil)
-            # This method must be called while holding the connection lock
-            # It dequeues the next pending result and reads its data from the connection
-            # Returns [pending_result, raw_result] or [nil, nil] if no more results
+            # Must be called while holding connection lock
+            # Returns [result, raw_data] or [nil, nil] if no more results
             
-            pending_result = @pending_results.first
-            return [nil, nil] unless pending_result
+            result = @pending_results.first
+            return [nil, nil] unless result
             
-            raw_result = get_next_result(timeout, condition: condition)
-            return [nil, nil] unless raw_result
+            raw_data = get_next_result(timeout, condition: condition)
+            return [nil, nil] unless raw_data
             
-            # Validate that the result type matches what we expected
-            if (raw_result.result_status == PG::PGRES_PIPELINE_SYNC) != pending_result.is_a?(SyncResult)
-              result_status_name = PG::Result.constants.grep(/^PGRES_/).select { |c| PG::Result.const_get(c) == raw_result.result_status && !c.to_s.start_with?("PGRES_POLLING_") }
-              raise "Pipeline result mismatch: expected #{pending_result.class.name.gsub(/.*::/, "")}, got #{result_status_name.join("/")}"
+            # Validate result type matches expectation
+            sync_result = (raw_data.result_status == PG::PGRES_PIPELINE_SYNC)
+            if sync_result != result.is_a?(SyncResult)
+              status_names = PG::Result.constants.grep(/^PGRES_/).select do |c|
+                PG::Result.const_get(c) == raw_data.result_status && !c.to_s.start_with?("PGRES_POLLING_")
+              end
+              raise "Pipeline result mismatch: expected #{result.class.name.gsub(/.*::/, "")}, got #{status_names.join("/")}"
             end
             
-            # Move from pending to in-flight
+            # Move from pending to in-flight and update bookkeeping
             @pending_results.shift
-            @in_flight_results[pending_result] = raw_result
+            @in_flight_results[result] = raw_data
+            @flushed_through -= 1 if @flushed_through > -1
             
-            [pending_result, raw_result]
+            [result, raw_data]
           end
 
           def flush_queries_through(target_index)
@@ -466,37 +437,33 @@ module ActiveRecord
             raise translated_error
           end
 
+          def process_result(result, raw_data)
+            # Process result outside any locks (may trigger user callbacks)
+            begin
+              result.set_result(raw_data)
+            rescue => err
+              result.set_error(err)
+            ensure
+              # Remove from in-flight tracking
+              synchronize { @in_flight_results.delete(result) }
+            end
+          end
+
           def collect_remaining_results(timeout = nil)
-            while true
+            loop do
               # Check if there's still work to do
-              has_pending = synchronize { @pending_results.any? }
-              break unless has_pending
+              break unless synchronize { @pending_results.any? }
               
-              # Dequeue and process exactly one result
-              pending_result_to_process = nil
-              raw_result_to_process = nil
-              
-              synchronize do
-                pending_result_to_process, raw_result_to_process = read_and_dequeue_next_result(timeout: timeout)
-                if pending_result_to_process && raw_result_to_process
-                  @flushed_through -= 1 if @flushed_through > -1
-                end
+              # Dequeue one result
+              result, raw_data = synchronize do
+                read_and_dequeue_next_result(timeout: timeout)
               end
 
-              if pending_result_to_process && raw_result_to_process
-                # Process result outside any locks (may trigger user callbacks)
-                begin
-                  pending_result_to_process.set_result(raw_result_to_process)
-                rescue => err
-                  pending_result_to_process.set_error(err)
-                ensure
-                  # Remove from in-flight tracking
-                  synchronize { @in_flight_results.delete(pending_result_to_process) }
-                end
-
-                pending_result_to_process.result unless pending_result_to_process.ignored
+              # Process the result (outside connection lock)
+              if result && raw_data
+                process_result(result, raw_data)
+                result.result unless result.ignored
               else
-                # No more results available
                 break
               end
             end
