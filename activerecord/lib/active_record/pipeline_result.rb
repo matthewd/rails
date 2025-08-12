@@ -73,8 +73,9 @@ module ActiveRecord
           else
             if @ignored && @quiet != :no_log
               # No-one else to instrument it, so we'll do it here
-              # FIXME: See note at the other callsite: we shouldn't be
-              # holding the mutex while emitting
+              # FIXME: I've fixed the other callsite... is it still bad
+              # for us to emit instrumentation while holding the mutex
+              # here?
               emit_instrumentation do
                 @result.check
               end
@@ -140,14 +141,24 @@ module ActiveRecord
 
     # Emit instrumentation if we have context and haven't emitted yet
     def emit_instrumentation
-      if @adapter && !@instrumentation_emitted
-        @adapter.send(:log, @sql, @name, @binds, @type_casted_binds, **@log_kwargs) do |notification_payload|
+      should_emit = false
+
+      if !@instrumentation_emitted
+        @mutex.synchronize do
+          should_emit = @adapter && !@instrumentation_emitted
           @instrumentation_emitted = true
+        end
+      end
+
+      if should_emit
+        @adapter.send(:log, @sql, @name, @binds, @type_casted_binds, **@log_kwargs) do |notification_payload|
           yield if block_given?
 
-          if @result
-            notification_payload[:affected_rows] = @result.cmd_tuples
-            notification_payload[:row_count] = @result.ntuples
+          @mutex.synchronize do
+            if @result
+              notification_payload[:affected_rows] = @result.cmd_tuples
+              notification_payload[:row_count] = @result.ntuples
+            end
           end
         end
       else
@@ -156,23 +167,25 @@ module ActiveRecord
     end
 
     def result
-      @mutex.synchronize do
-        raise "Can't consume ignored result" if @ignored
+      raise "Can't consume ignored result" if @ignored
 
-        # FIXME: We shouldn't be holding the mutex while emitting
-        # instrumentation, as that involves (user-defined) callbacks,
-        # which could do wild cross-thread stuff... and we're fully
-        # blocking the head-end of our connection
-        emit_instrumentation do
+      emit_instrumentation do
+        should_wait = false
+
+        @mutex.synchronize do
           if @pending
             pipeline_trace('PIPE_WAITFOR', @adapter, self, @sql, @binds)
-            @pipeline_context.wait_for(self, @condition)
+            should_wait = true
           end
         end
 
-        raise @error if @error
-        @final_result  # Return raw PG::Result for compatibility
+        if should_wait
+          @pipeline_context.wait_for(self)
+        end
       end
+
+      raise @error if @error
+      @final_result  # Return raw PG::Result for compatibility
     end
 
     def cast_result

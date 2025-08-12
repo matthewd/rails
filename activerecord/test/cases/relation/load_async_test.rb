@@ -124,9 +124,7 @@ module ActiveRecord
 
       status = []
 
-      $stderr.puts "Running test_simple_query on thread #{Thread.current.object_id}"
       subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |event|
-        $stderr.puts "Notification for test_simple_query on thread #{Thread.current.object_id}"
         if event.payload[:name] == "Post Load"
           status << { executed: true, async: event.payload[:async] }
         end
@@ -163,7 +161,6 @@ module ActiveRecord
       skip unless ActiveRecord::Base.connection.async_enabled?
 
       begin
-        $stderr.puts "T 000 #{Thread.current.object_id.to_s(16)}"
         latch1 = Concurrent::CountDownLatch.new
         latch2 = Concurrent::CountDownLatch.new
 
@@ -171,46 +168,29 @@ module ActiveRecord
         ActiveRecord::Base.connection.singleton_class.undef_method(:log)
 
         ActiveRecord::Base.connection.singleton_class.define_method(:log) do |*args, **kwargs, &block|
-          $stderr.puts "L 001 #{Thread.current.object_id.to_s(16)}"
           unless kwargs[:async]
-            $stderr.puts "L 002"
             return old_log.call(*args, **kwargs, &block)
           end
-          $stderr.puts "L 003"
 
           latch1.count_down
-          $stderr.puts "L 004"
           latch2.wait
-          $stderr.puts "L 005"
           v = old_log.call(*args, **kwargs, &block)
-          $stderr.puts "L 006"
           v
         end
 
-        $stderr.puts "T 001"
         Post.async_count
-        $stderr.puts "T 002"
         latch1.wait
-        $stderr.puts "T 003"
 
         notification_called = false
-        $stderr.puts "T 004"
         ActiveSupport::Notifications.subscribed(->(*) { notification_called = true }, "sql.active_record") do
-        $stderr.puts "T 005"
           Post.count
-        $stderr.puts "T 006"
         end
-        $stderr.puts "T 007"
 
         assert(notification_called)
-        $stderr.puts "T 008"
       ensure
-        $stderr.puts "T 009"
         latch2.count_down
-        $stderr.puts "T 010"
         ActiveRecord::Base.connection.singleton_class.undef_method(:log)
         ActiveRecord::Base.connection.singleton_class.define_method(:log, old_log)
-        $stderr.puts "T 011"
       end
     end
 
