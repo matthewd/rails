@@ -629,14 +629,24 @@ module ActiveRecord
             begin
               @materializing_transactions = true
 
+              use_pipeline = @connection.pipeline_active? || pipeline_result
+
               results = []
               @stack.each do |transaction|
                 unless transaction.materialized?
                   # Trace transaction materialization
                   pipeline_trace('TXN_MATERIALIZE', @connection, transaction, nil, nil, "depth: #{@stack.index(transaction) + 1}")
                   
-                  result = transaction.materialize!(pipeline_result: pipeline_result)
-                  results << result if pipeline_result
+                  if use_pipeline
+                    result = transaction.materialize!(pipeline_result: true)
+                    if pipeline_result
+                      results << result
+                    else
+                      result.assume_success
+                    end
+                  else
+                    transaction.materialize!
+                  end
                 end
               end
 

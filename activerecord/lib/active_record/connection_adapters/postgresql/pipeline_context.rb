@@ -170,7 +170,6 @@ module ActiveRecord
               process_result(result, raw_data)
               return if result == target_result
             else
-              pipeline_trace('PIPE_NO_MORE_RESULTS', @adapter, target_result, target_result.sql)
               break # No more results available
             end
           end
@@ -328,12 +327,9 @@ module ActiveRecord
 
             prev = nil
             while true
-              # These are potentially blocking operations
               if timeout
-                pipeline_trace('PIPE_BLOCK_TIMEOUT', @adapter, nil, nil, nil, "timeout=#{timeout}")
                 break unless raw_connection.block(timeout)
               else
-                pipeline_trace('PIPE_BLOCK', @adapter)
                 break unless raw_connection.block
               end
               
@@ -346,7 +342,6 @@ module ActiveRecord
               # Certain result types are not followed by a nil, and so
               # must be returned immediately
               if curr.result_status == PG::PGRES_PIPELINE_SYNC # TODO: .. or COPY-related stuff
-                pipeline_trace('PIPE_SYNC_RESULT', @adapter)
                 return curr
               end
 
@@ -363,8 +358,6 @@ module ActiveRecord
             result = @pending_results.first
             return [nil, nil] unless result
             
-            pipeline_trace('PIPE_GET', @adapter, result, (result.sql if result.respond_to?(:sql)))
-            
             raw_data = get_next_result(timeout)
             return [nil, nil] unless raw_data
             
@@ -374,7 +367,6 @@ module ActiveRecord
               status_names = PG::Result.constants.grep(/^PGRES_/).select do |c|
                 PG::Result.const_get(c) == raw_data.result_status && !c.to_s.start_with?("PGRES_POLLING_")
               end
-              pipeline_trace('PIPE_MISMATCH', @adapter, result, (result.sql if result.respond_to?(:sql)), nil, "expected #{result.class.name.gsub(/.*::/, "")}, got #{status_names.join("/")}")
               raise "Pipeline result mismatch: expected #{result.class.name.gsub(/.*::/, "")}, got #{status_names.join("/")}"
             end
             
@@ -382,8 +374,6 @@ module ActiveRecord
             @pending_results.shift
             @in_flight_results[result] = raw_data
             @flushed_through -= 1 if @flushed_through > -1
-            
-            pipeline_trace('PIPE_DEQUEUED', @adapter, result, (result.sql if result.respond_to?(:sql)))
             
             [result, raw_data]
           end
@@ -415,12 +405,9 @@ module ActiveRecord
             
             target_result.instance_variable_get(:@mutex).synchronize do
               while target_result.pending?
-                pipeline_trace('PIPE_CONDITION_WAIT', @adapter, target_result, target_result.sql)
                 target_result.instance_variable_get(:@condition).wait
               end
             end
-            
-            pipeline_trace('PIPE_WAIT_COMPLETE', @adapter, target_result, target_result.sql)
           end
           
           def sync_all_results_if_possible
@@ -454,18 +441,13 @@ module ActiveRecord
 
           def process_result(result, raw_data)
             # Process result outside any locks (may trigger user callbacks)
-            pipeline_trace('PIPE_PROCESS_START', @adapter, result, (result.sql if result.respond_to?(:sql)))
-            
             begin
               result.set_result(raw_data)
-              pipeline_trace('PIPE_PROCESS_SUCCESS', @adapter, result, (result.sql if result.respond_to?(:sql)))
             rescue => err
-              pipeline_trace('PIPE_PROCESS_ERROR', @adapter, result, (result.sql if result.respond_to?(:sql)), nil, err.message)
               result.set_error(err)
             ensure
               # Remove from in-flight tracking
               synchronize { @in_flight_results.delete(result) }
-              pipeline_trace('PIPE_PROCESS_COMPLETE', @adapter, result, (result.sql if result.respond_to?(:sql)))
             end
           end
 
@@ -490,15 +472,11 @@ module ActiveRecord
           end
           
           def finalize_connection_state
-            pipeline_trace('PIPE_FINALIZE', @adapter)
             raw_connection.consume_input
 
             if raw_connection.is_busy
-              pipeline_trace('PIPE_STILL_BUSY', @adapter, nil, nil, nil, "connection still busy after collecting results")
               raise "still busy after collecting results?"
             end
-            
-            pipeline_trace('PIPE_FINALIZED', @adapter)
           end
       end
     end

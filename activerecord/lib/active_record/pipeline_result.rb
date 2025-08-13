@@ -174,7 +174,6 @@ module ActiveRecord
 
         @mutex.synchronize do
           if @pending
-            pipeline_trace('PIPE_WAITFOR', @adapter, self, @sql, @binds)
             should_wait = true
           end
         end

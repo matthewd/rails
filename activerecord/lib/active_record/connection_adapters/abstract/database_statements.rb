@@ -565,7 +565,19 @@ module ActiveRecord
 
           # Check if this query should be pipelined before entering log block
           if should_pipeline_this_query?(sql, materialize_transactions, batch, pipeline_result)
-            pipeline_result_value = execute_pipelined_query(sql, name, binds, type_casted_binds, prepare: prepare, async: async, allow_retry: allow_retry, batch: batch, materialize_transactions: materialize_transactions, pipeline_result: pipeline_result)
+            pipeline_result_value = with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions, pipeline_mode: true) do |conn|
+              quiet = !@pipeline_context.pending? && !pipeline_result
+
+              # Add the user query to pipeline
+              @pipeline_context.add_query(
+                sql, binds, type_casted_binds,
+                prepare: prepare,
+                name: name,
+                adapter: self,
+                quiet: quiet,
+                log_kwargs: { async: async, allow_retry: allow_retry }
+              )
+            end
 
             # If the caller isn't expecting a pipeline result, we'll
             # need to resolve it
@@ -618,27 +630,6 @@ module ActiveRecord
 
           # Use pipeline if we're already in an active pipeline OR we should start transaction pipelining
           pipeline_active? || (materialize_transactions && should_pipeline_transactions?) || pipeline_result_requested
-        end
-
-        def execute_pipelined_query(sql, name, binds, type_casted_binds, prepare: false, async: false, allow_retry: false, batch: false, materialize_transactions: true, pipeline_result: false)
-          with_raw_connection(allow_retry: allow_retry, materialize_transactions: false, pipeline_mode: true) do |conn|
-            # Materialize transactions if requested
-            if materialize_transactions
-              transaction_manager.materialize_transactions(pipeline_result: true).each(&:assume_success)
-            end
-
-            quiet = !@pipeline_context.pending? && !pipeline_result
-
-            # Add the user query to pipeline
-            @pipeline_context.add_query(
-              sql, binds, type_casted_binds,
-              prepare: prepare,
-              name: name,
-              adapter: self,
-              quiet: quiet,
-              log_kwargs: { async: async, allow_retry: allow_retry }
-            )
-          end
         end
 
         def gather_pipelined_results(results)
