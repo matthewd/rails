@@ -250,11 +250,11 @@ module ActiveRecord
         @materialized
       end
 
-      def restore!
+      def restore!(pipeline_result: false)
         if materialized?
           incomplete!
           @materialized = false
-          materialize!
+          materialize!(pipeline_result: pipeline_result)
         end
       end
 
@@ -395,9 +395,9 @@ module ActiveRecord
 
       delegate :materialize!, :materialized?, :restart, :isolation, to: :@parent
 
-      def rollback
+      def rollback(pipeline_result: false)
         @state.rollback!
-        @parent.restart
+        @parent.restart(pipeline_result: pipeline_result)
       end
 
       def commit
@@ -436,22 +436,24 @@ module ActiveRecord
         result
       end
 
-      def restart
+      def restart(pipeline_result: false)
         return unless materialized?
 
         @instrumenter.finish(:restart)
         @instrumenter.start
 
-        connection.rollback_to_savepoint(savepoint_name)
+        connection.rollback_to_savepoint(savepoint_name, pipeline_result: pipeline_result)
       end
 
-      def rollback
+      def rollback(pipeline_result: false)
+        result = nil
+
         unless @state.invalidated?
           if materialized? && connection.active?
             # Trace savepoint rollback
             pipeline_trace('TXN_SAVEPOINT_ROLLBACK', connection, self, nil, nil, "savepoint: #{savepoint_name}")
             
-            connection.rollback_to_savepoint(savepoint_name)
+            result = connection.rollback_to_savepoint(savepoint_name, pipeline_result: pipeline_result)
           else
             pipeline_trace('TXN_SAVEPOINT_ROLLBACK_NOOP', connection, self, nil, nil, "savepoint: #{savepoint_name} (mat=#{materialized?}, conn.active=#{connection.active?})")
           end
@@ -460,6 +462,8 @@ module ActiveRecord
         end
         @state.rollback!
         @instrumenter.finish(:rollback) if materialized?
+
+        result
       end
 
       def commit
@@ -498,30 +502,38 @@ module ActiveRecord
         result
       end
 
-      def restart
+      def restart(pipeline_result: false)
         return unless materialized?
 
         @instrumenter.finish(:restart)
 
         if connection.supports_restart_db_transaction?
           @instrumenter.start
-          connection.restart_db_transaction
+          connection.restart_db_transaction(pipeline_result: pipeline_result)
         else
-          connection.rollback_db_transaction
-          materialize!
+          if pipeline_result
+            connection.rollback_db_transaction(pipeline_result: pipeline_result)&.assume_success
+          else
+            connection.rollback_db_transaction
+          end
+          materialize!(pipeline_result: pipeline_result)
         end
       end
 
-      def rollback
+      def rollback(pipeline_result: false)
+        result = nil
+
         if materialized?
           # Trace transaction DB rollback
           pipeline_trace('TXN_DB_ROLLBACK', connection, self, nil, nil, "real transaction")
           
-          connection.rollback_db_transaction
+          result = connection.rollback_db_transaction(pipeline_result: pipeline_result)
           connection.reset_isolation_level if isolation_level
         end
         @state.full_rollback!
         @instrumenter.finish(:rollback) if materialized?
+
+        result
       end
 
       def commit
@@ -609,12 +621,10 @@ module ActiveRecord
         current_transaction.dirty!
       end
 
-      def restore_transactions
+      def restore_transactions(pipeline_result: false)
         return false unless restorable?
 
-        @stack.each(&:restore!)
-
-        true
+        @stack.map { |t| t.restore!(pipeline_result: pipeline_result) }
       end
 
       def restorable?
@@ -629,7 +639,7 @@ module ActiveRecord
             begin
               @materializing_transactions = true
 
-              use_pipeline = @connection.pipeline_active? || pipeline_result
+              use_pipeline = @connection.send(:pipeline_active?) || pipeline_result
 
               results = []
               @stack.each do |transaction|
@@ -638,11 +648,12 @@ module ActiveRecord
                   pipeline_trace('TXN_MATERIALIZE', @connection, transaction, nil, nil, "depth: #{@stack.index(transaction) + 1}")
                   
                   if use_pipeline
-                    result = transaction.materialize!(pipeline_result: true)
-                    if pipeline_result
-                      results << result
-                    else
-                      result.assume_success
+                    if result = transaction.materialize!(pipeline_result: true)
+                      if pipeline_result
+                        results << result
+                      else
+                        result.assume_success
+                      end
                     end
                   else
                     transaction.materialize!
@@ -692,7 +703,11 @@ module ActiveRecord
           pipeline_trace('TXN_ROLLBACK', @connection, transaction, nil, nil, "depth: #{@stack.size}")
           
           begin
-            transaction.rollback
+            if @connection.send(:pipeline_active?)
+              transaction.rollback(pipeline_result: true)&.assume_success
+            else
+              transaction.rollback
+            end
           ensure
             @stack.pop if @stack.last == transaction
           end

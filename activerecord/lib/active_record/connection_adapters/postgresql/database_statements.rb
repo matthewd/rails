@@ -70,19 +70,19 @@ module ActiveRecord
         end
 
         # Commits a transaction.
-        def commit_db_transaction # :nodoc:
-          internal_execute("COMMIT", "TRANSACTION", allow_retry: false, materialize_transactions: true)
+        def commit_db_transaction(pipeline_result: false) # :nodoc:
+          internal_execute("COMMIT", "TRANSACTION", allow_retry: false, materialize_transactions: true, pipeline_result: pipeline_result)
         end
 
         # Aborts a transaction.
-        def exec_rollback_db_transaction # :nodoc:
+        def exec_rollback_db_transaction(pipeline_result: false) # :nodoc:
           cancel_any_running_query
-          internal_execute("ROLLBACK", "TRANSACTION", allow_retry: false, materialize_transactions: true)
+          internal_execute("ROLLBACK", "TRANSACTION", allow_retry: false, materialize_transactions: true, pipeline_result: pipeline_result)
         end
 
-        def exec_restart_db_transaction # :nodoc:
+        def exec_restart_db_transaction(pipeline_result: false) # :nodoc:
           cancel_any_running_query
-          internal_execute("ROLLBACK AND CHAIN", "TRANSACTION", allow_retry: false, materialize_transactions: true)
+          internal_execute("ROLLBACK AND CHAIN", "TRANSACTION", allow_retry: false, materialize_transactions: true, pipeline_result: pipeline_result)
         end
 
         # From https://www.postgresql.org/docs/current/functions-datetime.html#FUNCTIONS-DATETIME-CURRENT

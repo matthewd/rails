@@ -450,22 +450,22 @@ module ActiveRecord
 
       # Rolls back the transaction (and turns on auto-committing). Must be
       # done if the transaction block raises an exception or returns false.
-      def rollback_db_transaction
-        exec_rollback_db_transaction
+      def rollback_db_transaction(pipeline_result: false)
+        exec_rollback_db_transaction(pipeline_result: pipeline_result)
       rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed
         # Connection's gone; that counts as a rollback
       end
 
-      def exec_rollback_db_transaction() end # :nodoc:
+      def exec_rollback_db_transaction(pipeline_result: false) end # :nodoc:
 
-      def restart_db_transaction
-        exec_restart_db_transaction
+      def restart_db_transaction(pipeline_result: false)
+        exec_restart_db_transaction(pipeline_result: pipeline_result)
       end
 
-      def exec_restart_db_transaction() end # :nodoc:
+      def exec_restart_db_transaction(pipeline_result: false) end # :nodoc:
 
-      def rollback_to_savepoint(name = nil)
-        exec_rollback_to_savepoint(name)
+      def rollback_to_savepoint(name = nil, pipeline_result: false)
+        exec_rollback_to_savepoint(name, pipeline_result: pipeline_result)
       end
 
       def default_sequence_name(table, column)
