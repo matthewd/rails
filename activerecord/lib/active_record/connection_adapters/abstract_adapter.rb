@@ -20,6 +20,27 @@ require "arel/collectors/bind"
 require "arel/collectors/composite"
 require "arel/collectors/sql_string"
 
+def colorize_object(obj)
+  if obj.instance_variable_defined?(:@__trace_color)
+    obj.instance_variable_get(:@__trace_color)
+  elsif obj.frozen?
+    # If the object is frozen, we can't modify it to store a color.
+    # It's as cold as ice, so that's how we color it, with a icy
+    # super-bright grey-blue.
+    "\e[38;2;200;200;255m"  # Bright icy blue
+  else
+    while true
+      # Generate a bright random color (avoid dark colors for terminal readability)
+      r = rand(256)
+      g = rand(256)
+      b = rand(256)
+      break if (r + g) > 160 || (g + b) > 160 || (b + r) > 160
+    end
+    color = "\e[38;2;#{r};#{g};#{b}m"
+    obj.instance_variable_set(:@__trace_color, color)
+  end
+end
+
 # Pipeline debugging trace methods
 def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = nil, binds = nil, extra = nil)
   return unless ENV["T"]
@@ -146,31 +167,13 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
   # Generate and cache a random color for the current thread
   current_thread = ActiveSupport::IsolatedExecutionState.context
   thread_hex = current_thread.__id__.to_s(16)
-  unless current_thread.instance_variable_defined?(:@__trace_color)
-    # Generate a bright random color (avoid dark colors for terminal readability)
-    r = rand(208) + 48   # 48-255
-    g = rand(208) + 48   # 48-255  
-    b = rand(208) + 48   # 48-255
-    thread_color = "\e[38;2;#{r};#{g};#{b}m"
-    current_thread.instance_variable_set(:@__trace_color, thread_color)
-  else
-    thread_color = current_thread.instance_variable_get(:@__trace_color)
-  end
+  thread_color = colorize_object(current_thread)
   thread_display = "#{thread_color}[#{thread_hex}]#{reset}"
   
   # Generate and cache a random color for the adapter instance
   if adapter_instance
     adapter_hex = adapter_instance.__id__.to_s(16)
-    unless adapter_instance.instance_variable_defined?(:@__trace_color)
-      # Generate a bright random color (avoid dark colors for terminal readability)
-      r = rand(208) + 48   # 48-255
-      g = rand(208) + 48   # 48-255  
-      b = rand(208) + 48   # 48-255
-      adapter_color = "\e[38;2;#{r};#{g};#{b}m"
-      adapter_instance.instance_variable_set(:@__trace_color, adapter_color)
-    else
-      adapter_color = adapter_instance.instance_variable_get(:@__trace_color)
-    end
+    adapter_color = colorize_object(adapter_instance)
     adapter_display = "#{adapter_color}[#{adapter_hex}]#{reset}"
   else
     adapter_display = "[nil]"
@@ -182,16 +185,7 @@ def pipeline_trace(keyword, adapter_instance, pipeline_result_obj = nil, sql = n
     obj_hex = pipeline_result_obj.__id__.to_s(16)
     
     # Generate and cache a random color for this object
-    unless pipeline_result_obj.instance_variable_defined?(:@__trace_color)
-      # Generate a bright random color (avoid dark colors for terminal readability)
-      r = rand(208) + 48   # 48-255
-      g = rand(208) + 48   # 48-255  
-      b = rand(208) + 48   # 48-255
-      obj_color = "\e[38;2;#{r};#{g};#{b}m"
-      pipeline_result_obj.instance_variable_set(:@__trace_color, obj_color)
-    else
-      obj_color = pipeline_result_obj.instance_variable_get(:@__trace_color)
-    end
+    obj_color = colorize_object(pipeline_result_obj)
     
     output += "#{obj_color}[#{class_name} #{obj_hex}]#{reset}"
   end
