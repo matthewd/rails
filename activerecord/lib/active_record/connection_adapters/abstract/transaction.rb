@@ -683,6 +683,7 @@ module ActiveRecord
             transaction.before_commit_records
           ensure
             @stack.pop
+            @has_unmaterialized_transactions &&= !@stack.all?(&:materialized?)
           end
 
           dirty_current_transaction if transaction.dirty?
@@ -710,6 +711,7 @@ module ActiveRecord
             end
           ensure
             @stack.pop if @stack.last == transaction
+            @has_unmaterialized_transactions &&= !@stack.all?(&:materialized?)
           end
           transaction.rollback_records
           
