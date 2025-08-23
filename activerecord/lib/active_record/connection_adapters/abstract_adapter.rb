@@ -1227,27 +1227,11 @@ module ActiveRecord
           @lock.synchronize do
             connect! if @raw_connection.nil? && reconnect_can_restore_state?
 
-            # Handle pipeline mode transitions
-            case pipeline_mode
-            when true
-              # Enter pipeline mode if supported and not already active
-              if !pipeline_active?
-                enter_persistent_pipeline_mode
-              end
-              self.materialize_transactions if materialize_transactions
-            when false
-              # Default behavior: always exit pipeline mode (safe for user code)
-              # Always fully exit pipeline mode
-              self.materialize_transactions if materialize_transactions
-              if pipeline_active?
-                exit_persistent_pipeline_mode
-              end
+            # Do this eagerly so we can use pipelining for materialization
+            # (the real/final pipeline switch happens immediately before the yield)
+            enter_persistent_pipeline_mode if pipeline_mode == true
 
-            when :ignore
-              self.materialize_transactions if materialize_transactions
-            else
-              raise ArgumentError, "pipeline_mode must be true, false, or :ignore"
-            end
+            self.materialize_transactions if materialize_transactions
 
             retries_available = allow_retry ? connection_retries : 0
             deadline = retry_deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) + retry_deadline
@@ -1275,6 +1259,10 @@ module ActiveRecord
             end
 
             begin
+              # Note that (after a reconnect/retry) this might be a mode-change even for
+              # +true+, which we've theoretically already handled above.
+              set_persistent_pipeline_mode(pipeline_mode)
+
               yield @raw_connection
             rescue => original_exception
               translated_exception = translate_exception_class(original_exception, nil, nil)
@@ -1334,6 +1322,18 @@ module ActiveRecord
 
         def exit_persistent_pipeline_mode
           false
+        end
+
+        def set_persistent_pipeline_mode(mode)
+          case mode
+          when true
+            enter_persistent_pipeline_mode
+          when false
+            exit_persistent_pipeline_mode
+          when :ignore
+          else
+            raise ArgumentError, "unexpected pipeline mode: #{mode.inspect}"
+          end
         end
 
         def sync_pipeline_results
