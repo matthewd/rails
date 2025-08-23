@@ -33,12 +33,12 @@ module ActiveRecord
           internal_begin_transaction(:immediate, nil, pipeline_result: pipeline_result)
         end
 
-        def commit_db_transaction # :nodoc:
-          internal_execute("COMMIT TRANSACTION", "TRANSACTION", allow_retry: true, materialize_transactions: false)
+        def commit_db_transaction(pipeline_result: false) # :nodoc:
+          internal_execute("COMMIT TRANSACTION", "TRANSACTION", allow_retry: true, materialize_transactions: false, pipeline_result: pipeline_result)
         end
 
-        def exec_rollback_db_transaction # :nodoc:
-          internal_execute("ROLLBACK TRANSACTION", "TRANSACTION", allow_retry: true, materialize_transactions: false)
+        def exec_rollback_db_transaction(pipeline_result: false) # :nodoc:
+          internal_execute("ROLLBACK TRANSACTION", "TRANSACTION", allow_retry: true, materialize_transactions: false, pipeline_result: pipeline_result)
         end
 
         # https://stackoverflow.com/questions/17574784

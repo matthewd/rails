@@ -945,8 +945,15 @@ module ActiveRecord
             when ::PG::PQTRANS_INTRANS
               true
             when ::PG::PQTRANS_ACTIVE
-              raw_connection.pipeline_status != ::PG::PQ_PIPELINE_ON ||
-                connection.select_value("SELECT pg_catalog.txid_current()") == connection.select_value("SELECT pg_catalog.txid_current()")
+              return true if raw_connection.pipeline_status != ::PG::PQ_PIPELINE_ON
+
+              # In pipeline mode, PQTRANS_ACTIVE is always true, so we need to
+              # look harder: if we're in a transaction, it will have a stable
+              # txid; if not, each query will run in a new transaction and
+              # return a different txid.
+              2.times.map {
+                connection.query_value("SELECT pg_catalog.txid_current()", materialize_transactions: false)
+              }.inject(:==)
             else
               false
             end
@@ -981,11 +988,10 @@ module ActiveRecord
             raw_conn = connection.instance_variable_get(:@raw_connection)
 
             if raw_conn.pipeline_status == ::PG::PQ_PIPELINE_ON
-              unless raw_conn.transaction_status == ::PG::PQTRANS_ACTIVE
-                raw_conn.send_query_params("begin", [])
-                raw_conn.pipeline_sync
-                raw_conn.get_last_result.check
-              end
+              raw_conn.send_query_params("set idle_session_timeout = '10ms'", [])
+              raw_conn.pipeline_sync
+              raw_conn.get_last_result.check
+
               raw_conn.send_query_params("set idle_in_transaction_session_timeout = '10ms'", [])
               raw_conn.pipeline_sync
               raw_conn.get_last_result.check
@@ -1017,6 +1023,8 @@ module ActiveRecord
         end
 
         def kill_connection_from_server(connection_id)
+          @connection.exit_persistent_pipeline_mode
+
           conn = @connection.pool.checkout
           case conn.adapter_name
           when "Mysql2", "Trilogy"

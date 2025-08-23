@@ -136,8 +136,8 @@ module ActiveRecord
       # Note: depending on your database connector, the result returned by this
       # method may be manually memory managed. Consider using #exec_query
       # wrapper instead.
-      def execute(sql, name = nil, allow_retry: false)
-        internal_execute(sql, name, allow_retry: allow_retry)
+      def execute(sql, name = nil, allow_retry: false, pipeline_result: false)
+        internal_execute(sql, name, allow_retry: allow_retry, pipeline_result: pipeline_result)
       end
 
       # Executes +sql+ statement in the context of this connection using
