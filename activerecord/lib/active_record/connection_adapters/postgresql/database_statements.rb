@@ -135,17 +135,25 @@ module ActiveRecord
             if !(PG.library_version >= 18_00_00 && Gem::Version.new(PG::VERSION) < Gem::Version.new("1.6.0"))
               @raw_connection.cancel
             end
-            @raw_connection.block
+
+            if @client_query_timeout
+              @raw_connection.block(@client_query_timeout)
+            else
+              @raw_connection.block
+            end
           rescue PG::Error
           end
 
           def perform_query(raw_connection, sql, binds, type_casted_binds, prepare:, notification_payload:, batch: false)
             update_typemap_for_default_timezone
-            result = if prepare
+
+            raw_connection.discard_results
+
+            if prepare
               begin
                 stmt_key = prepare_statement(sql, binds, raw_connection)
                 notification_payload[:statement_name] = stmt_key
-                raw_connection.exec_prepared(stmt_key, type_casted_binds)
+                raw_connection.send_query_prepared(stmt_key, type_casted_binds)
               rescue PG::FeatureNotSupported => error
                 if is_cached_plan_failure?(error)
                   # Nothing we can do if we are in a transaction because all commands
@@ -164,10 +172,24 @@ module ActiveRecord
                 raise
               end
             elsif binds.nil? || binds.empty?
-              raw_connection.async_exec(sql)
+              raw_connection.send_query(sql)
             else
-              raw_connection.exec_params(sql, type_casted_binds)
+              raw_connection.send_query_params(sql, type_casted_binds)
             end
+
+            if @client_query_timeout
+              unless raw_connection.block(@client_query_timeout)
+                raw_connection.cancel
+                unless raw_connection.block(@client_cancel_grace_period || 0.1)
+                  disconnect!
+                  raise ClientQueryTimeout.new("Query timed out", connection_pool: @pool) # XXX pool?
+                end
+              end
+            else
+              raw_connection.block
+            end
+
+            result = raw_connection.get_last_result
 
             verified!
 
