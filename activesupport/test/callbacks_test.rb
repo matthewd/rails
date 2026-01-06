@@ -1284,4 +1284,134 @@ module CallbacksTest
       assert_equal ["after_save_2", "after_save_1"], klass.history
     end
   end
+
+  class AfterCallbacksAbortableRecord
+    include ActiveSupport::Callbacks
+
+    define_callbacks :save, after_callbacks_abortable: true
+
+    attr_reader :history, :halted_callbacks
+
+    def initialize
+      @history = []
+      @halted_callbacks = []
+    end
+
+    def save
+      run_callbacks :save do
+        @history << :save
+      end
+    end
+
+    private
+      def halted_callback_hook(filter, name)
+        @halted_callbacks << [filter, name]
+      end
+  end
+
+  class AfterAbortableCallbacksTest < ActiveSupport::TestCase
+    def test_after_callback_can_abort
+      klass = Class.new(AfterCallbacksAbortableRecord) do
+        set_callback :save, :after, -> { throw :abort }
+      end
+
+      record = klass.new
+      result = record.save
+
+      assert_equal [:save], record.history, "Save block should execute"
+      assert_equal false, result, "Callbacks should return false when halted"
+      assert_equal 1, record.halted_callbacks.size, "Halted callback hook should be called"
+    end
+
+    def test_after_callback_abort_stops_later_callbacks
+      klass = Class.new(AfterCallbacksAbortableRecord) do
+        set_callback :save, :after, -> { |rec| rec.history << :first_after }
+        set_callback :save, :after, -> { throw :abort }
+        set_callback :save, :after, -> { |rec| rec.history << :last_after }
+      end
+
+      record = klass.new
+      result = record.save
+
+      assert_equal [:save, :first_after], record.history, "Only callbacks before abort should execute"
+      assert_equal false, result
+    end
+
+    def test_after_callback_abort_with_method_name
+      klass = Class.new(AfterCallbacksAbortableRecord) do
+        set_callback :save, :after, :abort_callback
+
+        def abort_callback
+          history << :abort_callback
+          throw :abort
+        end
+      end
+
+      record = klass.new
+      result = record.save
+
+      assert_equal [:save, :abort_callback], record.history
+      assert_equal false, result
+      assert_equal 1, record.halted_callbacks.size
+      assert_equal :abort_callback, record.halted_callbacks.first.first
+    end
+
+    def test_after_callback_without_abort_continues
+      klass = Class.new(AfterCallbacksAbortableRecord) do
+        set_callback :save, :after, -> { |rec| rec.history << :first_after }
+        set_callback :save, :after, -> { |rec| rec.history << :second_after }
+      end
+
+      record = klass.new
+      result = record.save
+
+      assert_equal [:save, :first_after, :second_after], record.history
+      assert_not_equal false, result, "Should not return false when not halted"
+    end
+  end
+
+  class NonAbortableAfterCallbacksRecord
+    include ActiveSupport::Callbacks
+
+    define_callbacks :save # without after_callbacks_abortable
+
+    attr_reader :history
+
+    def initialize
+      @history = []
+    end
+
+    def save
+      run_callbacks :save do
+        @history << :save
+      end
+    end
+  end
+
+  class NonAbortableAfterCallbacksTest < ActiveSupport::TestCase
+    def test_after_callback_throw_abort_does_not_halt_by_default
+      klass = Class.new(NonAbortableAfterCallbacksRecord) do
+        set_callback :save, :after, -> { throw :abort }
+      end
+
+      record = klass.new
+      # This should raise an UncaughtThrowError since abort is not caught
+      assert_raises(UncaughtThrowError) do
+        record.save
+      end
+    end
+
+    def test_after_callback_continue_execution_by_default
+      klass = Class.new(NonAbortableAfterCallbacksRecord) do
+        set_callback :save, :after, -> { |rec| rec.history << :first_after }
+        set_callback :save, :after, -> { |rec| rec.history << :second_after }
+      end
+
+      record = klass.new
+      result = record.save
+
+      assert_equal [:save, :first_after, :second_after], record.history
+      assert_not_equal false, result
+    end
+  end
 end
