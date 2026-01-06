@@ -192,10 +192,13 @@ module ActiveSupport
         end
 
         class After
-          attr_reader :user_callback, :user_conditions, :halting
-          def initialize(user_callback, user_conditions, chain_config)
+          attr_reader :user_callback, :user_conditions, :halting, :abortable
+          def initialize(user_callback, user_conditions, chain_config, filter = nil, name = nil)
             halting = chain_config[:skip_after_callbacks_if_terminated]
-            @user_callback, @user_conditions, @halting = user_callback, user_conditions, halting
+            abortable = chain_config[:after_callbacks_abortable]
+            halted_lambda = chain_config[:terminator] if abortable
+            @user_callback, @user_conditions, @halting, @abortable = user_callback, user_conditions, halting, abortable
+            @halted_lambda, @filter, @name = halted_lambda, filter, name if abortable
             freeze
           end
 
@@ -205,7 +208,15 @@ module ActiveSupport
             halted = env.halted
 
             if (!halted || !@halting) && user_conditions.all? { |c| c.call(target, value) }
-              user_callback.call target, value
+              if @abortable
+                result_lambda = -> { user_callback.call target, value }
+                env.halted = @halted_lambda.call(target, result_lambda)
+                if env.halted
+                  target.send :halted_callback_hook, @filter, @name
+                end
+              else
+                user_callback.call target, value
+              end
             end
 
             env
@@ -289,7 +300,7 @@ module ActiveSupport
               when :before
                 Filters::Before.new(user_callback.make_lambda, user_conditions, chain_config, @filter, name)
               when :after
-                Filters::After.new(user_callback.make_lambda, user_conditions, chain_config)
+                Filters::After.new(user_callback.make_lambda, user_conditions, chain_config, @filter, name)
               when :around
                 Filters::Around.new(user_callback, user_conditions)
               end
@@ -848,6 +859,14 @@ module ActiveSupport
         #   default after callbacks are executed no matter if callback chain was
         #   terminated or not. This option has no effect if <tt>:terminator</tt>
         #   option is set to +nil+.
+        #
+        # * <tt>:after_callbacks_abortable</tt> - Determines if after callbacks
+        #   can be halted by the <tt>:terminator</tt>. When enabled, after callbacks
+        #   can halt the chain in the same way before callbacks do, and the
+        #   +halted_callback_hook+ will be called. This is useful for scenarios
+        #   where you want after callbacks to be able to abort operations (e.g.,
+        #   triggering a transaction rollback in Active Record). By default this
+        #   is +false+.
         #
         # * <tt>:scope</tt> - Indicates which methods should be executed when an
         #   object is used as a callback.

@@ -110,6 +110,7 @@ module ActiveModel
       options = callbacks.extract_options!
       options = {
         skip_after_callbacks_if_terminated: true,
+        after_callbacks_abortable: true,
         scope: [:kind, :name],
         only: [:before, :around, :after]
       }.merge!(options)
