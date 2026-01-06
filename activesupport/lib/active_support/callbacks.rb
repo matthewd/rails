@@ -196,9 +196,10 @@ module ActiveSupport
           def initialize(user_callback, user_conditions, chain_config, filter = nil, name = nil)
             halting = chain_config[:skip_after_callbacks_if_terminated]
             abortable = chain_config[:after_callbacks_abortable]
-            halted_lambda = chain_config[:terminator] if abortable
             @user_callback, @user_conditions, @halting, @abortable = user_callback, user_conditions, halting, abortable
-            @halted_lambda, @filter, @name = halted_lambda, filter, name if abortable
+            @halted_lambda = abortable ? chain_config[:terminator] : nil
+            @filter = filter
+            @name = name
             freeze
           end
 
