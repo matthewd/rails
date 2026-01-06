@@ -503,23 +503,22 @@ class CallbacksTest < ActiveRecord::TestCase
   def test_after_save_callback_can_abort
     klass = Class.new(ActiveRecord::Base) do
       self.table_name = "developers"
-      
       attr_accessor :history
-      
+
       after_save do
         self.history ||= []
         self.history << :after_save
         throw :abort
       end
-      
+
       after_save do
         self.history << :should_not_run
       end
     end
-    
+
     developer = klass.new(name: "Test", salary: 100000)
     result = developer.save
-    
+
     assert_equal false, result, "save should return false when after callback aborts"
     assert_equal [:after_save], developer.history, "only callbacks before abort should run"
     assert developer.persisted?, "record should still be persisted despite after callback abort"
@@ -528,23 +527,22 @@ class CallbacksTest < ActiveRecord::TestCase
   def test_after_create_callback_can_abort
     klass = Class.new(ActiveRecord::Base) do
       self.table_name = "developers"
-      
       attr_accessor :history
-      
+
       after_create do
         self.history ||= []
         self.history << :after_create
         throw :abort
       end
-      
+
       after_create do
         self.history << :should_not_run
       end
     end
-    
+
     developer = klass.new(name: "Test", salary: 100000)
     result = developer.save
-    
+
     assert_equal false, result
     assert_equal [:after_create], developer.history
   end
@@ -552,24 +550,23 @@ class CallbacksTest < ActiveRecord::TestCase
   def test_after_update_callback_can_abort
     klass = Class.new(ActiveRecord::Base) do
       self.table_name = "developers"
-      
       attr_accessor :history
-      
+
       after_update do
         self.history ||= []
         self.history << :after_update
         throw :abort
       end
-      
+
       after_update do
         self.history << :should_not_run
       end
     end
-    
+
     developer = klass.create!(name: "Test", salary: 100000)
     developer.salary = 110000
     result = developer.save
-    
+
     assert_equal false, result
     assert_equal [:after_update], developer.history
   end
@@ -577,23 +574,22 @@ class CallbacksTest < ActiveRecord::TestCase
   def test_after_destroy_callback_can_abort
     klass = Class.new(ActiveRecord::Base) do
       self.table_name = "developers"
-      
       attr_accessor :history
-      
+
       after_destroy do
         self.history ||= []
         self.history << :after_destroy
         throw :abort
       end
-      
+
       after_destroy do
         self.history << :should_not_run
       end
     end
-    
+
     developer = klass.create!(name: "Test", salary: 100000)
     result = developer.destroy
-    
+
     assert_equal false, result
     assert_equal [:after_destroy], developer.history
     assert developer.destroyed?, "record should still be destroyed despite after callback abort"

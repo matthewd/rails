@@ -200,6 +200,11 @@ module ActiveSupport
             @halted_lambda = abortable ? chain_config[:terminator] : nil
             @filter = filter
             @name = name
+            
+            if @abortable && (@filter.nil? || @name.nil?)
+              raise ArgumentError, "filter and name are required when after_callbacks_abortable is enabled"
+            end
+            
             freeze
           end
 
