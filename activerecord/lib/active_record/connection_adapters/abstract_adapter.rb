@@ -1158,6 +1158,7 @@ module ActiveRecord
 
               if attempt_retry(translated_exception, budget)
                 if retryable_connection_error?(translated_exception)
+                  abandon_pipelined_intents(translated_exception)
                   ensure_connection_ready(allow_retry:, materialize_transactions: false)
                 end
                 retry
@@ -1262,6 +1263,10 @@ module ActiveRecord
 
         def reconnect
           raise NotImplementedError.new("#{self.class} should define `reconnect` to implement adapter-specific logic for reconnecting to the database")
+        end
+
+        def abandon_pipelined_intents(connection_error = nil, allow_recovery: false)
+          # Override in adapters that support pipelining
         end
 
         # Returns a raw connection for internal use with methods that are known
