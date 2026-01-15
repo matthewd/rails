@@ -868,7 +868,11 @@ module ActiveRecord
           when nil
             if exception.message.match?(/connection is closed/i) || exception.message.match?(/no connection to the server/i)
               ConnectionNotEstablished.new(exception, connection_pool: @pool)
-            elsif exception.is_a?(PG::ConnectionBad)
+            elsif exception.is_a?(PG::ConnectionBad) ||
+                  (exception.is_a?(PG::Error) && exception.connection&.status == PG::CONNECTION_BAD)
+              # Note: Some pg gem methods inconsistently throw PG::Error instead of
+              # PG::ConnectionBad for connection failures, so we check both.
+
               # libpq message style always ends with a newline; the pg gem's internal
               # errors do not. We separate these cases because a pg-internal
               # ConnectionBad means it failed before it managed to send the query,
@@ -879,6 +883,13 @@ module ActiveRecord
               else
                 ConnectionNotEstablished.new(exception, connection_pool: @pool)
               end
+            elsif exception.message.match?(/server closed the connection unexpectedly|terminating connection due to|connection to server was lost|idle-in-transaction timeout/i) && exception.message.end_with?("\n")
+              # Handle connection failures that come through PG::Error (e.g., from pipeline mode)
+              # These have the same characteristics as ConnectionBad with libpq messages:
+              # - Connection was terminated by the server
+              # - Message ends with newline (indicating libpq origin)
+              # - Could have occurred after query execution began
+              ConnectionFailed.new(exception, connection_pool: @pool)
             else
               super
             end
@@ -907,7 +918,13 @@ module ActiveRecord
           when QUERY_CANCELED
             QueryCanceled.new(message, sql: sql, binds: binds, connection_pool: @pool)
           else
-            super
+            # Check for connection-killing errors that have a SQLSTATE
+            # (like idle-in-transaction timeout with specific error code)
+            if exception.message.match?(/server closed the connection unexpectedly|terminating connection due to|connection to server was lost|idle-in-transaction timeout/i) && exception.message.end_with?("\n")
+              ConnectionFailed.new(exception, connection_pool: @pool)
+            else
+              super
+            end
           end
         end
 
