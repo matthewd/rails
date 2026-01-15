@@ -1,12 +1,9 @@
 # frozen_string_literal: true
 
 require "cases/helper"
-require "models/book"
 
 module ActiveRecord
   class StatementInvalidTest < ActiveRecord::TestCase
-    fixtures :books
-
     def setup
       super
       @connection = ActiveRecord::Base.connection_pool.send(:new_connection)
@@ -29,36 +26,42 @@ module ActiveRecord
     end
 
     test "message contains no sql" do
-      sql = Book.where(author_id: 96, cover: "hard").to_sql
-      connection = @connection
-      intent = ActiveRecord::ConnectionAdapters::QueryIntent.new(adapter: connection, processed_sql: sql, name: Book.name)
+      sql = "SELECT * FROM nonexistent_table_for_statement_invalid_test"
+      translate_exception_class = @connection.method(:translate_exception_class)
+      wrapper_invoked = false
+      mock_database_error = ->(_error, *args, **kwargs) do
+        wrapper_invoked = true
+        translate_exception_class.call(MockDatabaseError.new, *args, **kwargs)
+      end
+
       error = assert_raises(ActiveRecord::StatementInvalid) do
-        with_failing_query(connection) do
-          intent.execute!
-          intent.cast_result
+        @connection.stub(:translate_exception_class, mock_database_error) do
+          @connection.select_all(sql)
         end
       end
-      assert_not error.message.include?("SELECT")
+
+      assert wrapper_invoked, "expected the database error wrapper to be invoked"
+      assert_not_includes error.message, "SELECT"
+    end
+
+    test "statement is set on select" do
+      sql = "SELECT * FROM nonexistent_table_for_statement_invalid_test"
+      error = assert_raises(ActiveRecord::StatementInvalid) do
+        @connection.select_all(sql)
+      end
+
+      assert_equal sql, error.sql
     end
 
     test "statement and binds are set on select" do
-      sql = Book.where(author_id: 96, cover: "hard").to_sql
+      sql = "SELECT * FROM nonexistent_table_for_statement_invalid_test"
       binds = [123, 456]
-      connection = @connection
-      intent = ActiveRecord::ConnectionAdapters::QueryIntent.new(adapter: connection, processed_sql: sql, name: Book.name, binds: binds)
       error = assert_raises(ActiveRecord::StatementInvalid) do
-        with_failing_query(connection) do
-          intent.execute!
-          intent.cast_result
-        end
+        @connection.select_all(sql, "SQL", binds)
       end
-      assert_equal error.sql, sql
-      assert_equal error.binds, binds
-    end
 
-    private
-      def with_failing_query(connection, &block)
-        connection.stub(:perform_query, ->(*) { raise MockDatabaseError }, &block)
-      end
+      assert_equal sql, error.sql
+      assert_equal binds, error.binds
+    end
   end
 end
