@@ -10,12 +10,13 @@ module ActiveRecord
       # results, then collecting all results together. This reduces latency
       # for sequences of queries that don't depend on each other's results.
       module PipelineContext # :nodoc:
-        # When true, track PGRES_PIPELINE_SYNC markers explicitly in @pending_intents.
+        # When true, consume PGRES_PIPELINE_SYNC results explicitly.
         # When false, skip them during result collection (using get_result loop).
         # True is needed for concurrent result collection; false is simpler for now.
+        # SyncIntent markers are always recorded to track sync boundaries.
         TRACK_SYNCS = false
 
-        # Placeholder for sync markers when TRACK_SYNCS is true
+        # Marker for sync points in the pipeline.
         class SyncIntent # :nodoc:
           attr_accessor :raw_result
 
@@ -50,11 +51,8 @@ module ActiveRecord
           @lock.synchronize do
             return unless pipeline_active?
 
-            if TRACK_SYNCS
-              # Track the sync request so result consumption can account for the sync marker
-              @pending_intents ||= []
-              @pending_intents << SyncIntent.new
-            end
+            @pending_intents ||= []
+            @pending_intents << SyncIntent.new
 
             @raw_connection.pipeline_sync
           end
@@ -125,6 +123,11 @@ module ActiveRecord
             return if @pending_intents.empty?
 
             while intent = @pending_intents.first
+              if intent.is_a?(SyncIntent) && !TRACK_SYNCS
+                @pending_intents.shift
+                next
+              end
+
               raw_result = consume_next_pipeline_result
               @pending_intents.shift
 
@@ -178,6 +181,7 @@ module ActiveRecord
 
             error = ActiveRecord::ConnectionFailed.new("Connection lost during pipeline execution")
             intents.each do |intent|
+              next if intent.is_a?(SyncIntent)
               next if intent.raw_result_available?
               intent.deliver_failure(error)
             end
