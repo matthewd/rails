@@ -63,7 +63,7 @@ module ActiveRecord
 
       attr_reader :arel, :name, :prepare, :allow_retry, :allow_async,
                   :materialize_transactions, :batch, :pool, :session, :lock_wait,
-                  :event_buffer, :error, :finalized
+                  :event_buffer, :error, :not_run_reason, :finalized
       alias_method :finalized?, :finalized
       attr_writer :raw_sql, :session
       attr_accessor :adapter, :binds, :ran_async, :notification_payload, :log_handle,
@@ -95,6 +95,8 @@ module ActiveRecord
         @warnings_handled = false
         @warning_error = nil
         @executed = false
+        @not_run_reason = nil
+        @not_run_resettable = false
         @write_query = nil
 
         # Deferred execution state
@@ -263,6 +265,15 @@ module ActiveRecord
         end
       end
 
+      def deliver_not_run(reason:, resettable: true, warnings: nil)
+        raise FinalizedError, "delivering not_run to a finalized intent" if @finalized
+
+        @not_run_reason = reason
+        @not_run_resettable = resettable
+        @warnings = warnings
+        @raw_result_available = true
+      end
+
       def retriable?
         allow_retry && @retry_budget&.available?
       end
@@ -302,6 +313,20 @@ module ActiveRecord
           end
 
           @event_buffer&.flush
+
+          if @not_run_reason
+            if @not_run_resettable
+              reset_for_rerun
+              adapter.execute_intent(self)
+              next
+            else
+              error = ActiveRecord::QueryNotRun.new("Query was not run due to pipeline failure (#{@not_run_reason})")
+              handle_warnings(query_completed: false)
+              finish_log(exception: error)
+              @event_buffer&.flush
+              raise error
+            end
+          end
 
           if @error && retriable? && adapter.attempt_retry(@error, @retry_budget)
             reset_for_retry
@@ -368,6 +393,21 @@ module ActiveRecord
       end
 
       private
+        def reset_for_rerun
+          raise FinalizedError, "resetting a finalized intent for rerun" if @finalized
+
+          @raw_result = nil
+          @raw_result_available = false
+          @warnings = nil
+          @warnings_handled = false
+          @warning_error = nil
+          @error = nil
+          @not_run_reason = nil
+          @not_run_resettable = false
+          remove_instance_variable(:@cast_result) if defined?(@cast_result)
+          remove_instance_variable(:@affected_rows) if defined?(@affected_rows)
+        end
+
         def mark_transaction_dirty
           adapter.send(:dirty_current_transaction) if @materialize_transactions
         end
