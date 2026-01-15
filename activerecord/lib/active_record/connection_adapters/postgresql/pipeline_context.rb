@@ -10,6 +10,20 @@ module ActiveRecord
       # results, then collecting all results together. This reduces latency
       # for sequences of queries that don't depend on each other's results.
       module PipelineContext # :nodoc:
+        # When true, track PGRES_PIPELINE_SYNC markers explicitly in @pending_intents.
+        # When false, skip them during result collection (using get_result loop).
+        # True is needed for concurrent result collection; false is simpler for now.
+        TRACK_SYNCS = false
+
+        # Placeholder for sync markers when TRACK_SYNCS is true
+        class SyncIntent # :nodoc:
+          attr_accessor :raw_result
+
+          def raw_result_available?
+            !@raw_result.nil?
+          end
+        end
+
         def pipeline_active?
           @lock.synchronize do
             @raw_connection && @raw_connection.pipeline_status != PG::PQ_PIPELINE_OFF
@@ -29,6 +43,20 @@ module ActiveRecord
             raise "Cannot enter pipeline mode: pipelining is locked" if @pipelining_locked
 
             @raw_connection.enter_pipeline_mode
+          end
+        end
+
+        def pipeline_sync
+          @lock.synchronize do
+            return unless pipeline_active?
+
+            if TRACK_SYNCS
+              # Track the sync request so result consumption can account for the sync marker
+              @pending_intents ||= []
+              @pending_intents << SyncIntent.new
+            end
+
+            @raw_connection.pipeline_sync
           end
         end
 
@@ -80,32 +108,49 @@ module ActiveRecord
         def flush_pipeline
           @lock.synchronize do
             return unless pipeline_active?
+            return unless pipeline_pending?
+
+            pipeline_sync
+            consume_pipeline
+          end
+        end
+
+        def consume_pipeline
+          @lock.synchronize do
             @pending_intents ||= []
             return if @pending_intents.empty?
 
-            @raw_connection.pipeline_sync
+            while intent = @pending_intents.first
+              raw_result = consume_next_pipeline_result
+              @pending_intents.shift
 
-            while intent = @pending_intents.shift
-              intent.raw_result = consume_next_pipeline_result
+              # Assign the result (even if it contains an error). The intent will
+              # raise the error when the result is accessed (via cast_result, etc.)
+              intent.raw_result = raw_result
             end
           end
         end
 
         private
           def consume_next_pipeline_result
-            result = nil
+            raw_result = nil
 
             while true
-              r = @raw_connection.get_result
-              break unless r
+              result = @raw_connection.get_result
+              break unless result
 
-              # Skip PGRES_PIPELINE_SYNC markers
-              next if r.result_status == PG::PGRES_PIPELINE_SYNC
+              status = result.result_status
 
-              result = r
+              if status == PG::PGRES_PIPELINE_SYNC
+                break if TRACK_SYNCS
+                next
+              end
+
+              # Retain the most recent non-sync result; libpq will return one entry per statement.
+              raw_result = result
             end
 
-            result
+            raw_result
           end
       end
     end
