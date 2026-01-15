@@ -63,7 +63,7 @@ module ActiveRecord
 
       attr_reader :arel, :name, :prepare, :allow_retry, :allow_async,
                   :materialize_transactions, :batch, :pool, :session, :lock_wait,
-                  :event_buffer, :error, :finalized
+                  :event_buffer, :error, :not_run_reason, :finalized
       alias_method :finalized?, :finalized
       attr_writer :raw_sql, :session
       attr_accessor :adapter, :binds, :ran_async, :notification_payload, :log_handle,
@@ -95,6 +95,8 @@ module ActiveRecord
         @outcome_handled = false
         @warning_error = nil
         @executed = false
+        @not_run_reason = nil
+        @not_run_resettable = false
         @write_query = nil
 
         # Deferred execution state
@@ -270,6 +272,15 @@ module ActiveRecord
         end
       end
 
+      def deliver_not_run(reason:, resettable: true, warnings: nil)
+        raise FinalizedError, "delivering not_run to a finalized intent" if @finalized
+
+        @not_run_reason = reason
+        @not_run_resettable = resettable
+        @warnings = warnings
+        @raw_result_available = true
+      end
+
       def reset_for_retry
         raise FinalizedError, "resetting a finalized intent" if @finalized
 
@@ -308,6 +319,27 @@ module ActiveRecord
         loop do
           flush_pipelined_result(adapter) unless @raw_result_available
           @event_buffer&.flush
+
+          if @not_run_reason
+            if @not_run_resettable
+              reset_for_rerun
+              run_query!
+              next
+            else
+              error = ActiveRecord::QueryNotRun.new("Query was not run due to pipeline failure (#{@not_run_reason})")
+              begin
+                adapter.handle_warnings(self, @warnings)
+              rescue
+                # The query did not run, so warning handling must not mask that.
+              end
+              finish_log(exception: error)
+              @error = error
+              @outcome_handled = true
+              @event_buffer&.flush
+              raise error
+            end
+          end
+
           pump_retries
           break if @raw_result_available
         end
@@ -404,6 +436,21 @@ module ActiveRecord
             mark_transaction_dirty
             @raw_result_available = true
           end
+        end
+
+        def reset_for_rerun
+          raise FinalizedError, "resetting a finalized intent for rerun" if @finalized
+
+          @raw_result = nil
+          @raw_result_available = false
+          @warnings = nil
+          @outcome_handled = false
+          @warning_error = nil
+          @error = nil
+          @not_run_reason = nil
+          @not_run_resettable = false
+          remove_instance_variable(:@cast_result) if defined?(@cast_result)
+          remove_instance_variable(:@affected_rows) if defined?(@affected_rows)
         end
 
         def mark_transaction_dirty
