@@ -294,6 +294,13 @@ module ActiveRecord
         adapter.finish_intent_log(self, exception: exception) if should_finish_log
       end
 
+      # Mark this intent as aborted (never executed).
+      # Called when a query was skipped due to an earlier pipeline failure.
+      def deliver_aborted
+        @aborted = true
+        @raw_result_available = true
+      end
+
       # Initialize retry tracking state from adapter configuration.
       # Called when beginning execution attempts.
       def initialize_retry_state(retries:, deadline:, reconnectable:)
@@ -354,6 +361,10 @@ module ActiveRecord
         end
 
         @event_buffer&.flush
+
+        if @aborted
+          raise ActiveRecord::QueryNotRun.new("Query was not run due to pipeline failure")
+        end
 
         # Raise any error captured during deferred execution
         raise @error if @error

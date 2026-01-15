@@ -131,6 +131,11 @@ module ActiveRecord
               raw_result = consume_next_pipeline_result
               @pending_intents.shift
 
+              if raw_result&.result_status == PG::PGRES_PIPELINE_ABORTED
+                intent.deliver_aborted
+                next
+              end
+
               # Check if the result contains an error
               begin
                 raw_result&.check

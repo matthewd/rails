@@ -181,9 +181,9 @@ module ActiveRecord
         intent2.cast_result
       end
 
-      # Third query should have pipeline aborted result
+      # Third query was aborted (never ran)
       assert intent3.raw_result_available?
-      assert_raises(ActiveRecord::StatementInvalid) do
+      assert_raises(ActiveRecord::QueryNotRun) do
         intent3.cast_result
       end
 
@@ -772,8 +772,8 @@ module ActiveRecord
           intent1.cast_result
         end
 
-        # Second query also fails due to pipeline abort
-        assert_raises(ActiveRecord::StatementInvalid) do
+        # Second query was aborted (never ran)
+        assert_raises(ActiveRecord::QueryNotRun) do
           intent2.cast_result
         end
       ensure
