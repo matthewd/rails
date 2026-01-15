@@ -389,15 +389,9 @@ module ActiveRecord
 
       private
         def flush_pipelined_result(connection)
-          connection.send(:log, self) do |notification_payload|
-            @notification_payload = notification_payload
-            connection.flush_pipeline
-
-            if @raw_result
-              notification_payload[:affected_rows] = @raw_result.cmd_tuples
-              notification_payload[:row_count] = @raw_result.ntuples
-            end
-          end
+          # Just flush the pipeline - logging is handled by start/finish_intent_log
+          # via deliver_result called from consume_pipeline
+          connection.flush_pipeline
         end
 
         def async_schedule!(session)

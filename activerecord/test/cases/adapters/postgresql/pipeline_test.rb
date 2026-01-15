@@ -87,6 +87,26 @@ module ActiveRecord
       @connection.instance_variable_set(:@mapped_default_timezone, original_mapped)
     end
 
+    def test_notification_exceptions_propagate_from_pipeline
+      # Exceptions raised by notification subscribers should propagate directly,
+      # not be caught and re-wrapped by pipeline error handling.
+      original_error = StandardError.new("Subscriber error")
+      subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") { raise original_error }
+
+      @connection.enter_pipeline_mode
+
+      intent = @connection.send(:internal_build_intent, "SELECT 1", "TEST")
+      intent.execute!
+
+      actual_error = assert_raises(StandardError) do
+        intent.cast_result
+      end
+      assert_equal original_error, actual_error
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+      @connection.exit_pipeline_mode if @connection.pipeline_active?
+    end
+
     def test_auto_flush_on_result_access
       @connection.enter_pipeline_mode
 
