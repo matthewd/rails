@@ -171,8 +171,15 @@ module ActiveRecord
           end
 
           def abandon_pipelined_intents
-            while intent = @pending_intents&.shift
-              # XXX: Should store an error in the intent to indicate it was abandoned
+            intents = @pending_intents
+            @pending_intents = []
+
+            return unless intents&.any?
+
+            error = ActiveRecord::ConnectionFailed.new("Connection lost during pipeline execution")
+            intents.each do |intent|
+              next if intent.raw_result_available?
+              intent.deliver_failure(error)
             end
           end
       end

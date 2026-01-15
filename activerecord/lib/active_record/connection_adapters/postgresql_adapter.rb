@@ -1080,6 +1080,8 @@ module ActiveRecord
         end
 
         def reconnect
+          abandon_pipelined_intents
+
           begin
             @raw_connection&.reset
           rescue PG::ConnectionBad
