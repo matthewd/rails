@@ -177,6 +177,16 @@ module ActiveRecord
             # Note: must check after has_binds?/processed_sql to ensure compile_arel! has run
             return false if intent.prepare
 
+            # Don't pipeline multi-statement SQL without binds
+            # send_query_params uses prepared statements which don't support multiple commands
+            # With binds, it's safe because the query likely doesn't have semicolons
+            if !intent.has_binds? && intent.processed_sql.include?(";")
+              return false
+            end
+
+            # If pipelining is locked, maintain current state (don't change mode)
+            return pipeline_active? if @pipelining_locked
+
             # Pipeline if already active (add to existing batch)
             return true if pipeline_active?
 
@@ -201,6 +211,13 @@ module ActiveRecord
           end
 
           def perform_query(raw_connection, intent)
+            # Sanity check: we should never call perform_query while in pipeline mode
+            # If this happens, it's a bug - either should_pipeline? returned false incorrectly,
+            # or we failed to exit pipeline mode before attempting regular execution
+            if pipeline_active?
+              raise "BUG: perform_query called while in pipeline mode (sql: #{intent.processed_sql.inspect})"
+            end
+
             result = if intent.prepare
               begin
                 stmt_key = prepare_statement(intent.processed_sql, intent.binds, raw_connection)
