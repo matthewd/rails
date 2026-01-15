@@ -297,8 +297,13 @@ module ActiveRecord
           execute_or_wait
         end
 
-        @event_buffer&.flush
-        pump_retries
+        loop do
+          adapter.flush_pipeline unless @raw_result_available
+          @event_buffer&.flush
+          pump_retries
+          break if @raw_result_available
+        end
+
         @event_buffer&.flush
 
         if @error
@@ -312,6 +317,24 @@ module ActiveRecord
           @outcome_handled = true
           @event_buffer&.flush
           raise @error
+        end
+
+        if !@session && @raw_result.respond_to?(:check)
+          begin
+            @raw_result.check
+          rescue => error
+            translated = adapter.send(:translate_exception_class, error, processed_sql, binds)
+            begin
+              adapter.handle_warnings(self, @warnings)
+            rescue
+              # The query failed, so warning handling must not mask it.
+            end
+            finish_log(exception: translated)
+            @error = translated
+            @outcome_handled = true
+            @event_buffer&.flush
+            raise translated
+          end
         end
 
         begin
