@@ -149,7 +149,8 @@ module ActiveRecord
           raw_sql: "SELECT 1",
           name: "SQL",
           allow_retry: allow_retry,
-          materialize_transactions: materialize_transactions
+          materialize_transactions: materialize_transactions,
+          batch: true
         )
       end
   end
