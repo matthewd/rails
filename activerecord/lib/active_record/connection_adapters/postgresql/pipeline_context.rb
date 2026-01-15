@@ -178,18 +178,30 @@ module ActiveRecord
             raw_result
           end
 
-          def abandon_pipelined_intents
+          def abandon_pipelined_intents(connection_error = nil)
             intents = @pending_intents
             @pending_intents = []
 
             return unless intents&.any?
 
-            error = ActiveRecord::ConnectionFailed.new("Connection lost during pipeline execution")
+            # Partition intents by sync state: intents before a SyncIntent
+            # were synced (fate unknown), intents after the last SyncIntent
+            # were never synced (safe to retry).
+            synced = []
+            unsynced = []
+
             intents.each do |intent|
-              next if intent.is_a?(SyncIntent)
-              next if intent.raw_result_available?
-              intent.deliver_failure(error)
+              if intent.is_a?(SyncIntent)
+                synced.concat(unsynced)
+                unsynced = []
+              else
+                unsynced << intent
+              end
             end
+
+            error = connection_error || ActiveRecord::ConnectionFailed.new("Connection lost during pipeline execution")
+            synced.each { |intent| intent.deliver_failure(error) }
+            unsynced.each { |intent| intent.deliver_aborted }
           end
       end
     end

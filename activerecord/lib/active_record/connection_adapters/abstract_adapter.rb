@@ -1116,6 +1116,7 @@ module ActiveRecord
                   retry
                 when :retry_after_reconnect
                   retries_available -= 1
+                  abandon_pipelined_intents(translated_exception)
                   reconnect!(restore_transactions: true)
                   # Only allowed to reconnect once, because reconnect! has its own retry loop
                   reconnectable = false
@@ -1223,6 +1224,10 @@ module ActiveRecord
 
         def reconnect
           raise NotImplementedError.new("#{self.class} should define `reconnect` to implement adapter-specific logic for reconnecting to the database")
+        end
+
+        def abandon_pipelined_intents(connection_error = nil)
+          # Override in adapters that support pipelining
         end
 
         # Returns a raw connection for internal use with methods that are known

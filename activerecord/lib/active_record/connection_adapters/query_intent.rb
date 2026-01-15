@@ -273,6 +273,7 @@ module ActiveRecord
               when :retry_query
                 adapter.send(:backoff, adapter.send(:connection_retries) - @retries_remaining)
               when :retry_after_reconnect
+                adapter.send(:abandon_pipelined_intents, exception)
                 adapter.reconnect!(restore_transactions: true)
                 @reconnectable = false
               end

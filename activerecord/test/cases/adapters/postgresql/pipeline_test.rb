@@ -781,6 +781,42 @@ module ActiveRecord
         test_pool.disconnect! rescue nil
       end
     end
+
+    def test_abandon_distinguishes_synced_vs_unsynced_intents
+      # Test the sync-aware partitioning logic in abandon_pipelined_intents.
+      # Intents before a SyncIntent were synced (fate unknown), intents after
+      # the last SyncIntent were never synced (safe to retry).
+
+      # Simple stub that records which delivery method was called
+      stub_intent = Class.new do
+        attr_reader :delivered_failure, :delivered_aborted
+
+        def deliver_failure(error)
+          @delivered_failure = error
+        end
+
+        def deliver_aborted
+          @delivered_aborted = true
+        end
+      end
+
+      synced_intent = stub_intent.new
+      unsynced_intent = stub_intent.new
+      sync_marker = ActiveRecord::ConnectionAdapters::PostgreSQL::PipelineContext::SyncIntent.new
+
+      # Simulate: [synced_intent, SyncIntent, unsynced_intent]
+      # synced_intent is before the sync, unsynced_intent is after
+      @connection.instance_variable_set(:@pending_intents, [synced_intent, sync_marker, unsynced_intent])
+
+      @connection.send(:abandon_pipelined_intents)
+
+      # Synced intent receives ConnectionFailed (fate unknown)
+      assert_kind_of ActiveRecord::ConnectionFailed, synced_intent.delivered_failure
+      assert_nil synced_intent.delivered_aborted
+
+      assert_nil unsynced_intent.delivered_failure
+      assert_equal true, unsynced_intent.delivered_aborted
+    end
   end
 
   class PostgresqlPipelineBatchSemanticsTest < ActiveRecord::PostgreSQLTestCase
