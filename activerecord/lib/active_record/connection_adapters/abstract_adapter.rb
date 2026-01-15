@@ -1056,7 +1056,7 @@ module ActiveRecord
         #
         def with_raw_connection(allow_retry: false, materialize_transactions: true)
           @lock.synchronize do
-            connect! if @raw_connection.nil? && reconnect_can_restore_state?
+            connect! if !connected? && reconnect_can_restore_state?
 
             self.materialize_transactions if materialize_transactions
 
@@ -1064,7 +1064,7 @@ module ActiveRecord
             deadline = retry_deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) + retry_deadline
             reconnectable = reconnect_can_restore_state?
 
-            if @verified
+            if @verified && connected?
               # Cool, we're confident the connection's ready to use. (Note this might have
               # become true during the above #materialize_transactions.)
             elsif (last_activity = seconds_since_last_activity) && last_activity < verify_timeout

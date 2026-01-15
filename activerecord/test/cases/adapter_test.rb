@@ -709,8 +709,13 @@ module ActiveRecord
         # Because the query cannot be retried, and we (mistakenly) believe the
         # connection is still good, the query will fail. This is what we want,
         # because the alternative would be excessive reverification.
-        assert_raises(ActiveRecord::AdapterError) do
-          Post.delete_all
+        #
+        # Stub connected? to simulate the "connection is gone but we haven't
+        # noticed yet" state that can occur in production.
+        @connection.stub(:connected?, true) do
+          assert_raises(ActiveRecord::AdapterError) do
+            Post.delete_all
+          end
         end
       end
 
