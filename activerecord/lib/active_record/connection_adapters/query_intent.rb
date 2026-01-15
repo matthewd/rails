@@ -294,6 +294,10 @@ module ActiveRecord
         end
 
         loop do
+          unless @raw_result_available
+            adapter.flush_pipeline
+          end
+
           @event_buffer&.flush
 
           if @error && retriable? && adapter.attempt_retry(@error, @retry_budget)
@@ -313,6 +317,16 @@ module ActiveRecord
           raise @error
         end
 
+        if !@session && @raw_result.respond_to?(:check)
+          begin
+            @raw_result.check
+          rescue => error
+            handle_warnings(query_completed: false)
+            @event_buffer&.flush
+            raise adapter.send(:translate_exception_class, error, processed_sql, binds)
+          end
+        end
+
         begin
           handle_warnings(query_completed: true)
         rescue => warning_error
@@ -320,6 +334,7 @@ module ActiveRecord
           @event_buffer&.flush
           raise
         end
+
 
         @event_buffer&.flush
       end

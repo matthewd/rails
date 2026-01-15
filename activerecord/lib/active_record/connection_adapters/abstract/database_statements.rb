@@ -647,6 +647,7 @@ module ActiveRecord
         collecting_warnings = false
 
         begin
+          exit_pipeline_mode if pipeline_active?
           result = perform_query(@raw_connection, intent)
           collecting_warnings = true
           warnings = collect_warnings(result)
