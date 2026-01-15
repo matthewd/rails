@@ -68,6 +68,8 @@ module ActiveRecord
             begin
               flush_pipeline if connected?
             ensure
+              abandon_pipelined_intents
+
               begin
                 @raw_connection.discard_results if connected?
               rescue PG::Error
@@ -77,6 +79,8 @@ module ActiveRecord
 
             if connected?
               @raw_connection.exit_pipeline_mode
+            else
+              @raw_connection&.check_socket
             end
           end
         end
@@ -151,6 +155,12 @@ module ActiveRecord
             end
 
             raw_result
+          end
+
+          def abandon_pipelined_intents
+            while intent = @pending_intents&.shift
+              # XXX: Should store an error in the intent to indicate it was abandoned
+            end
           end
       end
     end
