@@ -153,6 +153,9 @@ module ActiveRecord
                 @adapter = connection
                 @ran_async = true
                 run_query!
+
+                # If pipelined, flush with instrumentation before releasing connection
+                flush_pipelined_result(connection) unless @raw_result_available
               end
             rescue => error
               @error = error
@@ -295,7 +298,7 @@ module ActiveRecord
 
         loop do
           unless @raw_result_available
-            adapter.flush_pipeline
+            flush_pipelined_result(adapter)
           end
 
           @event_buffer&.flush
@@ -342,17 +345,19 @@ module ActiveRecord
       def cast_result
         raise "Cannot call cast_result before query has executed" unless @executed
         raise "Cannot call cast_result after affected_rows has been called" if defined?(@affected_rows)
+        return @cast_result if defined?(@cast_result)
 
         ensure_result
-        @cast_result ||= adapter.send(:cast_result, @raw_result)
+        @cast_result = adapter.send(:cast_result, @raw_result)
       end
 
       def affected_rows
         raise "Cannot call affected_rows before query has executed" unless @executed
         raise "Cannot call affected_rows after cast_result has been called" if defined?(@cast_result)
+        return @affected_rows if defined?(@affected_rows)
 
         ensure_result
-        @affected_rows ||= adapter.send(:affected_rows, @raw_result)
+        @affected_rows = adapter.send(:affected_rows, @raw_result)
       end
 
       def finish_log(exception: nil) # :nodoc:
@@ -383,6 +388,11 @@ module ActiveRecord
             raise
           end
         end
+
+        def flush_pipelined_result(connection)
+          connection.flush_pipeline
+        end
+
 
         def async_schedule!(session)
           if adapter.current_transaction.joinable?
@@ -453,6 +463,9 @@ module ActiveRecord
                 @adapter = connection
                 @ran_async = false  # Foreground fallback, not actually async
                 run_query!
+
+                # If pipelined, flush with instrumentation before releasing connection
+                flush_pipelined_result(connection) unless @raw_result_available
               end
             else
               # Result was computed by background thread while we waited for mutex
