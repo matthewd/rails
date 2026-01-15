@@ -604,6 +604,7 @@ module ActiveRecord
       end
 
       def test_translate_no_connection_exception_to_not_established
+        raw_connection = @connection.raw_connection
         pid = @connection.execute("SELECT pg_backend_pid()").to_a[0]["pg_backend_pid"]
         @connection.pool.checkout.execute("SELECT pg_terminate_backend(#{pid})")
         # If you run `@connection.execute` after the backend process has been terminated,
@@ -613,7 +614,7 @@ module ActiveRecord
         # The `send_query` changes the internal `PG::Connection#status` to `CONNECTION_BAD`,
         # so any subsequent queries will get the "no connection to the server" error.
         # https://github.com/postgres/postgres/blob/REL_17_0/src/interfaces/libpq/fe-exec.c#L1686-L1691
-        @connection.instance_variable_get(:@raw_connection).send_query("SELECT 1")
+        raw_connection.send_query("SELECT 1")
 
         assert_raise ActiveRecord::ConnectionNotEstablished do
           @connection.execute("SELECT 1")
