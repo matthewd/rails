@@ -3,6 +3,7 @@
 require "cases/helper"
 require "support/ddl_helper"
 require "support/connection_helper"
+require "models/account"
 
 require "active_support/core_ext/object/with"
 require "active_support/error_reporter/test_helper"
@@ -1008,6 +1009,22 @@ module ActiveRecord
         def connection_without_insert_returning
           db_config = ActiveRecord::Base.configurations.configs_for(env_name: "arunit", name: "primary")
           ActiveRecord::ConnectionAdapters::PostgreSQLAdapter.new(db_config.configuration_hash.merge(insert_returning: false))
+        end
+
+        def test_exec_insert_uses_schema_cache_for_primary_key_with_sequence
+          skip if @connection.use_insert_returning?
+
+          # Prime the schema cache with the primary key for accounts table
+          @connection.schema_cache.primary_keys("accounts")
+
+          # After priming the cache, _exec_insert should not make additional queries
+          # when determining the primary key for sequence lookup
+          assert_no_queries(include_schema: true) do
+            intent = @connection.build_insert_sql(
+              ActiveRecord::InsertAll.new(Account, [{ firm_id: 42, credit_limit: 5000 }], on_duplicate: :skip)
+            )
+            @connection.send(:_exec_insert, intent, nil, nil)
+          end
         end
     end
   end
