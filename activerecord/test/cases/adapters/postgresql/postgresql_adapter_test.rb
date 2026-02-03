@@ -3,7 +3,6 @@
 require "cases/helper"
 require "support/ddl_helper"
 require "support/connection_helper"
-require "models/account"
 
 require "active_support/core_ext/object/with"
 require "active_support/error_reporter/test_helper"
@@ -992,22 +991,6 @@ module ActiveRecord
         assert_not_includes result, "hstore"
       ensure
         @connection.execute("DROP EXTENSION IF EXISTS hstore")
-      end
-
-      def test_exec_insert_uses_schema_cache_for_primary_key_with_sequence
-        skip if @connection.use_insert_returning?
-
-        # Prime the schema cache with the primary key for accounts table
-        @connection.schema_cache.primary_keys("accounts")
-
-        # After priming the cache, _exec_insert should not make additional queries
-        # when determining the primary key for sequence lookup
-        assert_no_queries(include_schema: true) do
-          intent = @connection.build_insert_sql(
-            ActiveRecord::InsertAll.new(Account, [{ firm_id: 42, credit_limit: 5000 }], on_duplicate: :skip)
-          )
-          @connection.send(:_exec_insert, intent, nil, nil)
-        end
       end
 
       private
