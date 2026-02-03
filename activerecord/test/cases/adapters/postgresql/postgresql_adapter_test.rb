@@ -262,6 +262,22 @@ module ActiveRecord
         assert_equal expect.to_i, result.rows.first.first
       end
 
+      def test_insert_uses_schema_cache_with_insert_returning_disabled
+        connection = connection_without_insert_returning
+        
+        # Prime the schema cache with the primary key for postgresql_partitioned_table_parent
+        connection.schema_cache.primary_keys("postgresql_partitioned_table_parent")
+        
+        # After priming the cache, insert should not make additional schema queries
+        # for the primary key lookup. We expect:
+        # 1. INSERT query
+        # 2. SELECT pg_get_serial_sequence (to get sequence name - not cached)
+        # 3. SELECT currval (to get the inserted ID)
+        assert_queries_count(3, include_schema: true) do
+          connection.insert("INSERT INTO postgresql_partitioned_table_parent (number) VALUES (1)")
+        end
+      end
+
       def test_serial_sequence
         assert_equal "public.accounts_id_seq",
           @connection.serial_sequence("accounts", "id")
