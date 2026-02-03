@@ -168,11 +168,11 @@ module ActiveRecord
 
       def test_insert_uses_schema_cache_for_primary_key
         # Prime the schema cache with the primary key for courses table
-        @cache.primary_keys("courses")
+        @connection.schema_cache.primary_keys("courses")
 
-        # After priming the cache, insert should not make additional queries
-        # when determining the primary key for RETURNING or sequence lookup
-        assert_no_queries(include_schema: true) do
+        # After priming the cache, insert should not make additional schema queries
+        # (only the INSERT query itself should be made)
+        assert_queries_count(1, include_schema: true) do
           @connection.insert("INSERT INTO courses (name) VALUES ('Ruby 101')")
         end
       end
