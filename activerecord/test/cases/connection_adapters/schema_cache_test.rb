@@ -166,6 +166,17 @@ module ActiveRecord
         assert_equal 0, @cache.size
       end
 
+      def test_insert_uses_schema_cache_for_primary_key
+        # Prime the schema cache with the primary key for courses table
+        @cache.primary_keys("courses")
+
+        # After priming the cache, insert should not make additional queries
+        # when determining the primary key for RETURNING or sequence lookup
+        assert_no_queries(include_schema: true) do
+          @connection.insert("INSERT INTO courses (name) VALUES ('Ruby 101')")
+        end
+      end
+
       def test_marshal_dump_and_load_with_ignored_tables
         assert_not ActiveRecord.schema_cache_ignored_table?("professors")
 
