@@ -173,6 +173,11 @@ module ActiveRecord
   #
   # If a <tt>before_*</tt> callback throws +:abort+, all the later callbacks and
   # the associated action are cancelled.
+  #
+  # If an <tt>after_*</tt> callback throws +:abort+, all the later after callbacks
+  # are cancelled. Note that the action has already been performed, but the callback
+  # chain will halt and return +false+ to indicate that a callback was aborted.
+  #
   # \Callbacks are generally run in the order they are defined, with the exception of callbacks defined as
   # methods on the model, which are called last.
   #
