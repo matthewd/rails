@@ -142,7 +142,7 @@ module ActiveRecord
             end
 
             start_intent_log(intent)
-            with_raw_connection(allow_retry: false, materialize_transactions: false, pipeline_mode: true) do |_conn|
+            with_raw_connection(allow_retry: true, materialize_transactions: false, pipeline_mode: true) do |_conn|
               intent.retry_budget ||= build_retry_budget(
                 allow_retry: intent.allow_retry, reconnectable: reconnect_can_restore_state?
               )

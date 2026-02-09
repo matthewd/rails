@@ -1130,6 +1130,7 @@ module ActiveRecord
             reconnectable = ensure_connection_ready(allow_retry:, materialize_transactions:)
 
             budget = build_retry_budget(allow_retry:, reconnectable:)
+            replay_intents = nil
 
             begin
               # Handle pipeline mode: explicit request, or restore original state
@@ -1140,6 +1141,12 @@ module ActiveRecord
               elsif !was_in_pipeline && pipeline_active?
                 # Nested queries entered pipeline mode - exit to restore state
                 exit_pipeline_mode
+              end
+
+              # Re-queue any intents saved for replay from a previous attempt
+              if replay_intents
+                replay_intents.each { |intent| pipeline_add_query(intent) }
+                replay_intents = nil
               end
 
               # Lock pipelining while yielding to prevent nested queries from changing mode
@@ -1158,7 +1165,9 @@ module ActiveRecord
 
               if attempt_retry(translated_exception, budget)
                 if retryable_connection_error?(translated_exception)
-                  abandon_pipelined_intents(translated_exception)
+                  replay_intents = pipeline_mode &&
+                    abandon_pipelined_intents(translated_exception, allow_recovery: true)
+                  abandon_pipelined_intents(translated_exception) unless replay_intents
                   ensure_connection_ready(allow_retry:, materialize_transactions: false)
                 end
                 retry
