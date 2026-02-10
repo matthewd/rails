@@ -797,6 +797,8 @@ module ActiveRecord
       end
 
       def finalize_remaining_intents # :nodoc:
+        flush_pipeline if pipeline_pending?
+
         intents = @unfinalized_intents
         @unfinalized_intents = []
 

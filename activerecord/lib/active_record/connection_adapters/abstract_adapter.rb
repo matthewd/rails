@@ -200,7 +200,8 @@ module ActiveRecord
         @needs_reconnect = false
         @unfinalized_intents = []
         @pipelining_locked = false
-
+        @with_connection_depth = 0
+        @deferred_pool_release = false
         @pool_jitter = rand * max_jitter
       end
 
@@ -343,6 +344,18 @@ module ActiveRecord
         duration * (1.0 - @pool_jitter)
       end
 
+      attr_accessor :deferred_pool_release # :nodoc:
+
+      def increment_with_connection_depth # :nodoc:
+        @with_connection_depth += 1
+      end
+
+      def decrement_with_connection_depth # :nodoc:
+        @with_connection_depth -= 1
+      end
+
+      attr_reader :with_connection_depth # :nodoc:
+
       # this method must only be called while holding connection pool's mutex
       def expire(update_idle = true) # :nodoc:
         if in_use?
@@ -353,6 +366,7 @@ module ActiveRecord
           end
 
           finalize_remaining_intents
+          @deferred_pool_release = false
 
           _run_checkin_callbacks do
             @idle_since = Process.clock_gettime(Process::CLOCK_MONOTONIC) if update_idle
@@ -462,6 +476,10 @@ module ActiveRecord
       end
 
       def pipeline_active?
+        false
+      end
+
+      def pipeline_pending?
         false
       end
 
@@ -942,6 +960,14 @@ module ActiveRecord
         true
       end
       private :can_perform_case_insensitive_comparison_for?
+
+      def maybe_deferred_release # :nodoc:
+        return unless @deferred_pool_release
+        return if pipeline_pending?
+        return if @with_connection_depth > 0
+        @deferred_pool_release = false
+        pool.checkin(self)
+      end
 
       # Check the connection back in to the connection pool
       def close
