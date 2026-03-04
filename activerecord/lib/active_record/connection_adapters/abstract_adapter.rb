@@ -1208,7 +1208,9 @@ module ActiveRecord
               @verified = false
               raise
             ensure
-              dirty_current_transaction if materialize_transactions
+              # Pipeline enqueue only queues intent(s); transaction dirtiness should
+              # be decided when intents are actually resolved.
+              dirty_current_transaction if materialize_transactions && pipeline_mode != true
             end
           end
         end
