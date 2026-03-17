@@ -218,8 +218,9 @@ module ActiveRecord
             # Pipeline if already active (add to existing batch)
             return true if pipeline_active?
 
-            # Pipeline if explicitly requested by the caller
-            return true if intent.prefer_pipeline
+            # Pipeline if explicitly requested, or if deferred execution
+            # cannot use the async executor.
+            return true if intent.prefer_pipeline || (intent.allow_async && !async_enabled?)
 
             # Otherwise, don't pipeline by default
             # Future: add logic for starting pipeline mode based on transaction state
