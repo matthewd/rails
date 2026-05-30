@@ -507,6 +507,7 @@ module ActiveRecord
       def disconnect!
         @lock.synchronize do
           exit_pipeline_mode rescue nil
+          discard_pipeline_buffer
 
           super
           @raw_connection&.close rescue nil
@@ -516,6 +517,7 @@ module ActiveRecord
       end
 
       def discard! # :nodoc:
+        discard_pipeline_buffer
         super
         @raw_connection&.socket_io&.reopen(IO::NULL) rescue nil
         @raw_connection = nil
