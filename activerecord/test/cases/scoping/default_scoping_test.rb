@@ -737,6 +737,13 @@ class DefaultScopingTest < ActiveRecord::TestCase
     assert_includes wheres, "salary"
   end
 
+  def test_repeated_unscoped_named_default_scope_preserves_previous_exclusions
+    wheres = DeveloperWithNamedDefaultScopes.unscoped(:mentor).unscoped(:firm).unscoped(:firm).where_values_hash
+    assert_not_includes wheres, "mentor_id"
+    assert_not_includes wheres, "firm_id"
+    assert_includes wheres, "salary"
+  end
+
   def test_unscoped_chained_with_no_names_removes_unnamed_default_scope
     wheres = DeveloperWithNamedDefaultScopes.unscoped(:mentor).unscoped.where_values_hash
     assert_not_includes wheres, "salary"
