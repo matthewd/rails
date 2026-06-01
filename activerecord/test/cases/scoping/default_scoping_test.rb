@@ -753,6 +753,22 @@ class DefaultScopingTest < ActiveRecord::TestCase
     assert_includes wheres, "firm_id"
   end
 
+  def test_unscoped_unknown_named_default_scope_raises
+    error = assert_raises(ArgumentError) do
+      DeveloperWithNamedDefaultScopes.unscoped(:missing)
+    end
+
+    assert_match(/:missing/, error.message)
+  end
+
+  def test_unscoped_named_default_scope_raises_with_default_scope_override
+    error = assert_raises(ArgumentError) do
+      ClassMethodDeveloperCalledDavid.unscoped(:david)
+    end
+
+    assert_match(/default_scope method/, error.message)
+  end
+
   def test_unscoped_chained_removes_multiple_named_default_scopes
     wheres = DeveloperWithNamedDefaultScopes.unscoped(:mentor).unscoped(:firm).where_values_hash
     assert_not_includes wheres, "mentor_id"
