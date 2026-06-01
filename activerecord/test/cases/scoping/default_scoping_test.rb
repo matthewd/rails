@@ -277,7 +277,7 @@ class DefaultScopingTest < ActiveRecord::TestCase
   end
 
   def test_named_default_scope_with_all_queries_runs_on_reload_when_unscoped
-    dev = DeveloperWithNamedDefaultMentorScopeAllQueries.create!(name: "Eileen", mentor_id: 2)
+    dev = DeveloperWithNamedDefaultMentorScopeAllQueries.create!(name: "Eileen", mentor_id: 1)
     reload_sql = capture_sql { dev.reload({ unscoped: true }) }.first
 
     assert_match(/mentor_id/, reload_sql)

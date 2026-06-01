@@ -789,7 +789,9 @@ module ActiveRecord
     def reload(options = nil)
       self.class.connection_pool.clear_query_cache
 
-      fresh_object = if apply_scoping?(options)
+      fresh_object = if options && options[:unscoped]
+        reload_unscoped_relation(options[:unscoped]).scoping { _find_record(options) }
+      elsif apply_scoping?(options)
         _find_record((options || {}).merge(all_queries: true))
       else
         self.class.raw_relation.scoping { _find_record(options) }
@@ -868,6 +870,45 @@ module ActiveRecord
         @association_cache.find_all do |_, assoc|
           assoc.owner.strict_loading? && !assoc.owner.strict_loading_n_plus_one_only?
         end.map(&:first)
+      end
+
+      def reload_unscoped_relation(unscoped)
+        names = []
+        unscoped_defaults = false
+
+        case unscoped
+        when Array
+          unscoped.each do |value|
+            case value
+            when true
+              unscoped_defaults = true
+            when Symbol, String
+              names << value
+            else
+              raise ArgumentError, "Reload unscoping values must be symbols, strings, or true."
+            end
+          end
+
+          if names.empty? && !unscoped_defaults
+            raise ArgumentError, "Reload unscoping must include a default scope name or true."
+          end
+        when Symbol, String
+          names << unscoped
+        else
+          unscoped_defaults = true
+        end
+
+        relation = if names.any?
+          self.class.unscoped(*names)
+        else
+          self.class.unscoped
+        end
+
+        if unscoped_defaults && names.any?
+          relation = relation.unscoped
+        end
+
+        relation
       end
 
       def _find_record(options)
