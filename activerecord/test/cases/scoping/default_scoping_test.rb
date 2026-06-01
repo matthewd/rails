@@ -233,6 +233,18 @@ class DefaultScopingTest < ActiveRecord::TestCase
     assert_match(/mentor_id/, reload_sql)
   end
 
+  def test_default_scope_with_all_queries_does_not_apply_current_scope_on_reload
+    Mentor.create!
+    dev = DeveloperWithDefaultMentorScopeAllQueries.create!(name: "Eileen", salary: 80000)
+
+    reload_sql = DeveloperWithDefaultMentorScopeAllQueries.where(salary: 80000).scoping do
+      capture_sql { dev.reload }.first
+    end
+
+    assert_match(/mentor_id/, reload_sql)
+    assert_no_match(/salary/, reload_sql)
+  end
+
   def test_named_default_scope_with_all_queries_runs_on_reload
     Mentor.create!
     dev = DeveloperWithNamedDefaultMentorScopeAllQueries.create!(name: "Eileen")
