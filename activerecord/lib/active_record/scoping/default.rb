@@ -225,8 +225,9 @@ module ActiveRecord
               end
             elsif default_scopes.any?
               already_excluded = current_scope&.excluded_default_scopes || []
-              scopes = default_scopes - excluded - already_excluded
-              relation.excluded_default_scopes = excluded
+              excluded_scopes = already_excluded | excluded
+              scopes = default_scopes - excluded_scopes
+              relation.excluded_default_scopes = excluded_scopes
 
               return relation if scopes.empty?
 
