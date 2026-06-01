@@ -78,6 +78,32 @@ class CounterCacheTest < ActiveRecord::TestCase
     assert_equal 1, @topic.reload.replies_count
   end
 
+  test "belongs_to counter cache uses only all-query default scopes" do
+    parent_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "topics"
+      self.inheritance_column = :_type_disabled
+
+      default_scope :approved, -> { where(approved: true) }
+      default_scope :first, -> { where(id: 1) }, all_queries: true
+    end
+    Object.const_set(:ScopedCounterCacheParent, parent_class)
+
+    child_class = Class.new(ActiveRecord::Base) do
+      def self.name; "ScopedCounterCacheChild"; end
+
+      self.table_name = "topics"
+      self.inheritance_column = :_type_disabled
+
+      belongs_to :parent, class_name: "ScopedCounterCacheParent", foreign_key: "parent_id", counter_cache: "replies_count"
+    end
+
+    assert_difference -> { @topic.reload.replies_count } do
+      child_class.create!(title: "Counter cache child", parent_id: @topic.id, approved: true)
+    end
+  ensure
+    Object.send(:remove_const, :ScopedCounterCacheParent) if Object.const_defined?(:ScopedCounterCacheParent)
+  end
+
   test "increment counter by specific amount" do
     assert_difference -> { @topic.reload.replies_count }, +2 do
       Topic.increment_counter(:replies_count, @topic.id, by: 2)
