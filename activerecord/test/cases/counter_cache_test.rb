@@ -44,6 +44,40 @@ class CounterCacheTest < ActiveRecord::TestCase
     end
   end
 
+  test "update counters uses only all-query default scopes" do
+    topic_class = Class.new(ActiveRecord::Base) do
+      def self.name; "ScopedCounterCacheTopic"; end
+
+      self.table_name = "topics"
+      self.inheritance_column = :_type_disabled
+
+      default_scope :approved, -> { where(approved: true) }
+      default_scope :first, -> { where(id: 1) }, all_queries: true
+    end
+
+    assert_difference -> { @topic.reload.replies_count } do
+      topic_class.update_counters(@topic.id, replies_count: 1)
+    end
+  end
+
+  test "reset counters uses only all-query default scopes" do
+    topic_class = Class.new(ActiveRecord::Base) do
+      def self.name; "ScopedCounterCacheTopic"; end
+
+      self.table_name = "topics"
+      self.inheritance_column = :_type_disabled
+
+      has_many :replies, foreign_key: "parent_id", class_name: "Reply"
+      default_scope :approved, -> { where(approved: true) }
+      default_scope :first, -> { where(id: 1) }, all_queries: true
+    end
+
+    @topic.update_columns(replies_count: 0)
+    topic_class.reset_counters(@topic.id, :replies)
+
+    assert_equal 1, @topic.reload.replies_count
+  end
+
   test "increment counter by specific amount" do
     assert_difference -> { @topic.reload.replies_count }, +2 do
       Topic.increment_counter(:replies_count, @topic.id, by: 2)
