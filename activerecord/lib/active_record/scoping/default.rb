@@ -84,7 +84,7 @@ module ActiveRecord
           unscoped_relation = if default_scope_override?
             raise_unscoping_named_default_scopes_not_supported! if names.any?
 
-            relation
+            raw_relation
           else
             scopes_to_exclude = if names.empty?
               default_scopes.reject(&:named?)
@@ -241,7 +241,7 @@ module ActiveRecord
             raise ArgumentError, "Named default scopes cannot be unscoped when default_scope is defined as a default_scope method."
           end
 
-          def build_default_scope(relation = relation(), all_queries: nil, excluded: [])
+          def build_default_scope(relation = raw_relation, all_queries: nil, excluded: [])
             return relation if abstract_class?
 
             if default_scope_override?

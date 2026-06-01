@@ -416,7 +416,7 @@ module ActiveRecord
         cache.compute_if_absent(key) { StatementCache.create(connection, &block) }
       end
 
-      def relation # :nodoc:
+      def raw_relation # :nodoc:
         relation = Relation.create(self)
 
         if finder_needs_type_condition? && !ignore_default_scope?

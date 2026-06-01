@@ -1336,7 +1336,7 @@ module ActiveRecord
     end
 
     def empty_scope? # :nodoc:
-      @values == model.relation.values
+      @values == model.raw_relation.values
     end
 
     def has_limit_or_offset? # :nodoc:

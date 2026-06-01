@@ -26,14 +26,14 @@ module ActiveRecord
             if self == scope.model
               scope.clone
             else
-              relation.merge!(scope)
+              raw_relation.merge!(scope)
             end
           else
             default_scoped(all_queries: all_queries)
           end
         end
 
-        def scope_for_association(scope = relation) # :nodoc:
+        def scope_for_association(scope = raw_relation) # :nodoc:
           if current_scope&.empty_scope?
             scope
           else
@@ -42,7 +42,7 @@ module ActiveRecord
         end
 
         # Returns a scope for the model with default scopes.
-        def default_scoped(scope = relation, all_queries: nil)
+        def default_scoped(scope = raw_relation, all_queries: nil)
           build_default_scope(scope, all_queries: all_queries)
         end
 
