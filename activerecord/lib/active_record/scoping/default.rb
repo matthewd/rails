@@ -58,9 +58,9 @@ module ActiveRecord
         #   }
         #
         # When called with one or more names, +unscoped+ removes only the named
-        # default scopes that match. Unnamed default scopes are preserved. To
-        # remove both a named scope and the unnamed default scopes, chain a
-        # bare +unscoped+ call:
+        # default scopes that match. Unnamed default scopes are preserved. An
+        # unknown name raises an +ArgumentError+. To remove both a named scope
+        # and the unnamed default scopes, chain a bare +unscoped+ call:
         #
         #   class Article < ActiveRecord::Base
         #     default_scope { where(visible: true) }
@@ -82,13 +82,14 @@ module ActiveRecord
         #   # SELECT * FROM articles
         def unscoped(*names, &block)
           unscoped_relation = if default_scope_override?
+            raise_unscoping_named_default_scopes_not_supported! if names.any?
+
             relation
           else
             scopes_to_exclude = if names.empty?
               default_scopes.reject(&:named?)
             else
-              names = names.map(&:to_sym)
-              default_scopes.select { |s| names.include?(s.name) }
+              default_scopes_for_unscoping(names)
             end
 
             build_default_scope(excluded: scopes_to_exclude)
@@ -214,6 +215,30 @@ module ActiveRecord
             default_scope = DefaultScope.new(scope, all_queries, name)
 
             self.default_scopes += [default_scope]
+          end
+
+          def default_scopes_for_unscoping(names)
+            names = names.map do |scope_name|
+              unless scope_name.respond_to?(:to_sym)
+                raise ArgumentError, "Default scope names must be symbols or strings."
+              end
+
+              scope_name.to_sym
+            end
+
+            scopes = default_scopes.select { |scope| names.include?(scope.name) }
+            unknown_names = names - scopes.map(&:name)
+
+            if unknown_names.any?
+              formatted_names = unknown_names.map { |scope_name| ":#{scope_name}" }.join(", ")
+              raise ArgumentError, "Unknown default scope name(s) for #{name}: #{formatted_names}"
+            end
+
+            scopes
+          end
+
+          def raise_unscoping_named_default_scopes_not_supported!
+            raise ArgumentError, "Named default scopes cannot be unscoped when default_scope is defined as a default_scope method."
           end
 
           def build_default_scope(relation = relation(), all_queries: nil, excluded: [])
