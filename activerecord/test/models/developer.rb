@@ -171,6 +171,11 @@ class DeveloperWithDefaultMentorScopeAllQueries < ActiveRecord::Base
   default_scope -> { where(mentor_id: 1) }, all_queries: true
 end
 
+class DeveloperWithNamedDefaultMentorScopeAllQueries < ActiveRecord::Base
+  self.table_name = "developers"
+  default_scope :mentor, -> { where(mentor_id: 1) }, all_queries: true
+end
+
 class DeveloperWithDefaultNilableFirmScopeAllQueries < ActiveRecord::Base
   self.table_name = "developers"
   firm_id = nil # Could be something like Current.firm_id

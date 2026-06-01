@@ -217,9 +217,25 @@ class DefaultScopingTest < ActiveRecord::TestCase
     assert_no_match(/mentor_id/, reload_sql)
   end
 
+  def test_named_default_scope_doesnt_run_on_reload
+    dev = DeveloperWithNamedDefaultScopes.create!(name: "David", mentor_id: 2, firm_id: 2)
+    reload_sql = capture_sql { dev.reload }.first
+
+    assert_no_match(/mentor_id/, reload_sql)
+    assert_no_match(/firm_id/, reload_sql)
+  end
+
   def test_default_scope_with_all_queries_runs_on_reload
     Mentor.create!
     dev = DeveloperWithDefaultMentorScopeAllQueries.create!(name: "Eileen")
+    reload_sql = capture_sql { dev.reload }.first
+
+    assert_match(/mentor_id/, reload_sql)
+  end
+
+  def test_named_default_scope_with_all_queries_runs_on_reload
+    Mentor.create!
+    dev = DeveloperWithNamedDefaultMentorScopeAllQueries.create!(name: "Eileen")
     reload_sql = capture_sql { dev.reload }.first
 
     assert_match(/mentor_id/, reload_sql)
@@ -243,6 +259,13 @@ class DefaultScopingTest < ActiveRecord::TestCase
 
   def test_default_scope_with_all_queries_doesnt_run_on_destroy_when_unscoped
     dev = DeveloperWithDefaultMentorScopeAllQueries.create!(name: "Eileen", mentor_id: 2)
+    reload_sql = capture_sql { dev.reload({ unscoped: true }) }.first
+
+    assert_no_match(/mentor_id/, reload_sql)
+  end
+
+  def test_named_default_scope_with_all_queries_doesnt_run_on_reload_when_unscoped
+    dev = DeveloperWithNamedDefaultMentorScopeAllQueries.create!(name: "Eileen", mentor_id: 2)
     reload_sql = capture_sql { dev.reload({ unscoped: true }) }.first
 
     assert_no_match(/mentor_id/, reload_sql)
