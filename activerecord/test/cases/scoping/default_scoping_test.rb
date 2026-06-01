@@ -276,11 +276,37 @@ class DefaultScopingTest < ActiveRecord::TestCase
     assert_no_match(/mentor_id/, reload_sql)
   end
 
-  def test_named_default_scope_with_all_queries_doesnt_run_on_reload_when_unscoped
+  def test_named_default_scope_with_all_queries_runs_on_reload_when_unscoped
     dev = DeveloperWithNamedDefaultMentorScopeAllQueries.create!(name: "Eileen", mentor_id: 2)
     reload_sql = capture_sql { dev.reload({ unscoped: true }) }.first
 
-    assert_no_match(/mentor_id/, reload_sql)
+    assert_match(/mentor_id/, reload_sql)
+  end
+
+  def test_named_default_scope_can_be_unscoped_on_reload
+    dev = DeveloperWithNamedDefaultScopes.create!(name: "David", mentor_id: 1, firm_id: 2)
+    reload_sql = capture_sql { dev.reload({ unscoped: :firm }) }.first
+
+    assert_match(/salary/, reload_sql)
+    assert_match(/mentor_id/, reload_sql)
+    assert_no_match(/firm_id/, reload_sql)
+  end
+
+  def test_reload_unscopes_named_and_unnamed_default_scopes
+    dev = DeveloperWithNamedDefaultScopes.create!(name: "David", mentor_id: 1, firm_id: 2)
+    reload_sql = capture_sql { dev.reload({ unscoped: [:firm, true] }) }.first
+
+    assert_no_match(/salary/, reload_sql)
+    assert_match(/mentor_id/, reload_sql)
+    assert_no_match(/firm_id/, reload_sql)
+  end
+
+  def test_reload_raises_for_invalid_unscoped_array_value
+    dev = DeveloperWithNamedDefaultScopes.create!(name: "David", mentor_id: 1, firm_id: 2)
+
+    assert_raises(ArgumentError) do
+      dev.reload({ unscoped: [:firm, false] })
+    end
   end
 
   def test_scope_overwrites_default
