@@ -792,7 +792,7 @@ module ActiveRecord
       fresh_object = if apply_scoping?(options)
         _find_record((options || {}).merge(all_queries: true))
       else
-        self.class.unscoped { _find_record(options) }
+        self.class.relation.scoping { _find_record(options) }
       end
 
       @association_cache = fresh_object.instance_variable_get(:@association_cache)
