@@ -70,7 +70,8 @@ module ActiveRecord
                     :retry_budget
 
       def initialize(adapter:, arel: nil, raw_sql: nil, processed_sql: nil, name: "SQL", binds: [], prepare: false, allow_async: false,
-                     allow_retry: false, materialize_transactions: true, batch: false)
+                     allow_retry: false, materialize_transactions: true, batch: false,
+                     deliver_pipeline_result_before_sync: false)
         if arel.nil? && raw_sql.nil? && processed_sql.nil?
           raise ArgumentError, "One of arel, raw_sql, or processed_sql must be provided"
         end
@@ -86,6 +87,7 @@ module ActiveRecord
         @allow_retry = allow_retry
         @materialize_transactions = materialize_transactions
         @batch = batch
+        @deliver_pipeline_result_before_sync = deliver_pipeline_result_before_sync
         @processed_sql = processed_sql
         @type_casted_binds = nil
         @notification_payload = nil
@@ -125,6 +127,7 @@ module ActiveRecord
           allow_retry: allow_retry,
           materialize_transactions: materialize_transactions,
           batch: batch,
+          deliver_pipeline_result_before_sync: deliver_pipeline_result_before_sync?,
           type_casted_binds: type_casted_binds,
           notification_payload: notification_payload
         }
@@ -133,6 +136,10 @@ module ActiveRecord
       # Returns a string representation showing key attributes
       def inspect
         "#<#{self.class.name} name=#{name.inspect} allow_retry=#{allow_retry} materialize_transactions=#{materialize_transactions}>"
+      end
+
+      def deliver_pipeline_result_before_sync? # :nodoc:
+        @deliver_pipeline_result_before_sync
       end
 
       # Called by background thread to execute if not already done
@@ -295,6 +302,13 @@ module ActiveRecord
       # Check if result has been populated yet (without blocking)
       def raw_result_available?
         @raw_result_available
+      end
+
+      def clear_raw_result # :nodoc:
+        if @raw_result.respond_to?(:clear) && (!@raw_result.respond_to?(:cleared?) || !@raw_result.cleared?)
+          @raw_result.clear
+        end
+        @raw_result = nil
       end
 
       # Access the raw result, ensuring it's available first
