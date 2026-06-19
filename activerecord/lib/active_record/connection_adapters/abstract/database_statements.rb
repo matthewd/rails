@@ -644,28 +644,32 @@ module ActiveRecord
       end
 
       def perform_sync_attempt(intent) # :nodoc:
+        collecting_warnings = false
+
         begin
           result = perform_query(@raw_connection, intent)
-          query_completed = true
+          collecting_warnings = true
+          warnings = collect_warnings(result)
+          collecting_warnings = false
         rescue ::RangeError
           raise
         rescue => error
           translated = translate_exception_class(error, intent.processed_sql, intent.binds)
           invalidate_transaction(translated)
-          intent.deliver_failure(translated)
-          return
-        ensure
-          begin
-            handle_warnings(result, intent.processed_sql)
-          rescue
-            raise if query_completed
 
-            # The query failed, so we need to swallow this exception
-            # from handle_warnings to avoid masking the original.
+          unless collecting_warnings
+            begin
+              warnings = collect_warnings(result)
+            rescue
+              # The query failed, so we need to swallow this exception
+              # from warning collection to avoid masking the original.
+            end
           end
-        end
 
-        intent.deliver_result(result)
+          intent.deliver_failure(translated, warnings: warnings)
+        else
+          intent.deliver_result(result, warnings: warnings)
+        end
       end
 
       def start_intent_log(intent) # :nodoc:
@@ -738,6 +742,17 @@ module ActiveRecord
         end
       end
 
+      def handle_warnings(intent, warnings) # :nodoc:
+        return unless action = ActiveRecord.db_warnings_action
+
+        warnings&.each do |warning|
+          next if warning_ignored?(warning)
+
+          warning.sql = intent.processed_sql
+          action.call(warning)
+        end
+      end
+
       private
         DEFAULT_INSERT_VALUE = Arel.sql("DEFAULT").freeze
         private_constant :DEFAULT_INSERT_VALUE
@@ -746,7 +761,8 @@ module ActiveRecord
           raise NotImplementedError
         end
 
-        def handle_warnings(raw_result, sql)
+        def collect_warnings(raw_result)
+          []
         end
 
         # Receive a native adapter result object and returns an ActiveRecord::Result object.
