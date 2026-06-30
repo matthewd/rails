@@ -648,7 +648,7 @@ module ActiveRecord
         collecting_warnings = false
 
         begin
-          exit_pipeline_mode if pipeline_active?
+          exit_pipeline_mode(waiting_on: intent) if pipeline_active?
           result = perform_query(@raw_connection, intent)
           collecting_warnings = true
           warnings = collect_warnings(result)
@@ -688,6 +688,7 @@ module ActiveRecord
           transaction:       current_transaction.user_transaction.presence,
           affected_rows:     0,
           row_count:         0,
+          pipelined:         false,
         }
         intent.notification_payload = payload
 
