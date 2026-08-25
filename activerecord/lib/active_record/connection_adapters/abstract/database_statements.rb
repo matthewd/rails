@@ -706,6 +706,8 @@ module ActiveRecord
         start_intent_log(intent)
         begin
           @lock.synchronize do
+            exit_pipeline_mode if pipeline_active?
+
             reconnectable = ensure_connection_ready(
               allow_retry: intent.allow_retry,
               materialize_transactions: false
@@ -724,7 +726,6 @@ module ActiveRecord
       end
 
       def perform_sync_attempt(intent) # :nodoc:
-        exit_pipeline_mode if pipeline_active?
         result = perform_query(@raw_connection, intent)
         query_completed = true
         warnings = collect_warnings(result)

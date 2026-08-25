@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "cases/helper"
+require "models/author"
 
 module ActiveRecord
   class PostgresqlPipelineTest < ActiveRecord::PostgreSQLTestCase
@@ -64,15 +65,36 @@ module ActiveRecord
       assert_not_predicate @connection, :pipeline_active?
     end
 
-    def test_synchronous_queries_exit_pipeline_mode
+    def test_pipeline_exit_closes_connection_when_flush_leaves_unread_results
+      subscriber_error = StandardError.new("subscriber failed")
+      subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |event|
+        raise subscriber_error if event.payload[:sql] == "SELECT 1 AS n"
+      end
+      @connection.enter_pipeline_mode
+      first = build_intent("SELECT 1 AS n")
+      second = build_intent("SELECT 2 AS n")
+      first.execute!
+      @connection.pipeline_sync
+      second.execute!
+
+      assert_same subscriber_error, assert_raises(StandardError) { @connection.exit_pipeline_mode }
+
+      assert_not_predicate @connection, :connected?
+      assert_predicate first, :raw_result_available?
+      assert_raises(ActiveRecord::ConnectionFailed) { second.raw_result }
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+    end
+
+    def test_ineligible_synchronous_queries_exit_pipeline_mode
       @connection.enter_pipeline_mode
       pending = add_query("SELECT 1 AS n")
 
-      result = @connection.exec_query("SELECT 2 AS n")
+      result = @connection.exec_query("SELECT 2 AS n; SELECT 3 AS n")
 
       assert_not_predicate @connection, :pipeline_active?
       assert_equal [[1]], cast_rows(pending)
-      assert_equal [[2]], result.rows
+      assert_equal [[3]], result.rows
     end
 
     def test_raw_connection_access_exits_pipeline_mode
@@ -128,6 +150,23 @@ module ActiveRecord
       assert_equal [[1]], cast_rows(pending)
     end
 
+    def test_active_treats_an_aborted_pipeline_probe_as_healthy
+      @connection.enter_pipeline_mode
+      failing = build_intent("SELECT * FROM nonexistent_pipeline_table")
+      aborted = build_intent("SELECT 1 AS n")
+      failing.execute!
+      aborted.execute!
+
+      assert_predicate @connection, :active?
+      assert_not_predicate failing, :raw_result_available?
+      assert_not_predicate aborted, :raw_result_available?
+
+      @connection.exit_pipeline_mode
+
+      assert_raises(ActiveRecord::StatementInvalid) { failing.raw_result }
+      assert_equal :server_aborted, aborted.not_run_reason
+    end
+
     def test_failed_active_probe_keeps_unsynced_work_pending
       @connection.enter_pipeline_mode
       pending = add_query("SELECT 1 AS n")
@@ -139,6 +178,30 @@ module ActiveRecord
 
       assert_equal [pending], @connection.instance_variable_get(:@pending_intents)
       assert_not_predicate pending, :raw_result_available?
+    end
+
+    def test_active_probe_does_not_commit_unsynced_work
+      @connection.execute("DROP TABLE IF EXISTS pipeline_probe_test")
+      @connection.execute("CREATE TABLE pipeline_probe_test (value integer)")
+      @connection.enter_pipeline_mode
+      insert = build_intent("INSERT INTO pipeline_probe_test VALUES (1)")
+      insert.execute!
+
+      assert_predicate @connection, :active?
+      assert_not_predicate insert, :raw_result_available?
+
+      observer = ActiveRecord::Base.connection_pool.checkout
+      begin
+        assert_equal 0, observer.select_value("SELECT COUNT(*) FROM pipeline_probe_test")
+      ensure
+        ActiveRecord::Base.connection_pool.checkin(observer)
+      end
+
+      @connection.flush_pipeline
+
+      assert_equal 1, @connection.select_value("SELECT COUNT(*) FROM pipeline_probe_test")
+    ensure
+      @connection.execute("DROP TABLE IF EXISTS pipeline_probe_test")
     end
 
     def test_checkin_drains_and_exits_pipeline_mode
@@ -163,6 +226,24 @@ module ActiveRecord
 
       assert_not_predicate @connection, :pipeline_active?
       assert_equal [[1]], cast_rows(pending)
+    end
+
+    def test_disconnect_cleans_up_when_pipeline_delivery_raises
+      subscriber_error = StandardError.new("subscriber failed")
+      subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |event|
+        raise subscriber_error if event.payload[:sql] == "SELECT 1 AS n"
+      end
+      @connection.enter_pipeline_mode
+      pending = build_intent("SELECT 1 AS n")
+      pending.execute!
+
+      assert_same subscriber_error, assert_raises(StandardError) { @connection.disconnect! }
+
+      assert_not_predicate @connection, :connected?
+      assert_nil @connection.instance_variable_get(:@raw_connection)
+      assert_equal [[1]], pending.cast_result.rows
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
     end
 
     def test_prepare_statement_rejects_pipeline_mode
@@ -203,7 +284,7 @@ module ActiveRecord
       test_pool&.disconnect!
     end
 
-    def test_schema_search_path_write_exits_pipeline_mode
+    def test_schema_search_path_write_does_not_trust_pipeline_status
       search_path = @connection.schema_search_path
       @connection.instance_variable_set(:@schema_search_path, nil)
       @connection.enter_pipeline_mode
@@ -211,7 +292,9 @@ module ActiveRecord
 
       @connection.schema_search_path = search_path
 
-      assert_not_predicate @connection, :pipeline_active?
+      assert_predicate @connection, :pipeline_active?
+      assert_not_predicate @connection, :pipeline_pending?
+      assert_equal search_path, @connection.select_value("SHOW search_path")
       assert_equal [[1]], cast_rows(pending)
     end
 
@@ -266,6 +349,134 @@ module ActiveRecord
       assert_not_predicate @connection, :pipeline_pending?
     end
 
+    def test_bind_casting_precedes_pipeline_routing
+      mapped_timezone = @connection.instance_variable_get(:@mapped_default_timezone)
+      other_timezone = ActiveRecord.default_timezone == :utc ? :local : :utc
+      @connection.instance_variable_set(:@mapped_default_timezone, other_timezone)
+      @connection.enter_pipeline_mode
+      intent = build_intent("SELECT $1::int", binds: [42])
+
+      intent.execute!
+
+      assert_predicate @connection, :pipeline_active?
+      assert_equal [[42]], intent.cast_result.rows
+    ensure
+      @connection.instance_variable_set(:@mapped_default_timezone, mapped_timezone)
+    end
+
+    def test_active_pipeline_routes_query_intents
+      @connection.enter_pipeline_mode
+      intent = build_intent("SELECT 1 AS n")
+
+      intent.execute!
+
+      assert_predicate @connection, :pipeline_pending?
+      assert_not_predicate intent, :raw_result_available?
+      assert_equal [[1]], intent.cast_result.rows
+      assert_predicate @connection, :pipeline_active?
+      assert_not_predicate @connection, :pipeline_pending?
+    end
+
+    def test_queries_execute_immediately_without_pipeline_capability
+      @connection.stub(:supports_pipeline?, false) do
+        intent = build_intent("SELECT 1 AS n")
+        intent.execute!
+
+        assert_predicate intent, :raw_result_available?
+        assert_equal [[1]], intent.cast_result.rows
+        assert_not_predicate @connection, :pipeline_active?
+      end
+    end
+
+    def test_queries_outside_pipeline_execute_immediately
+      intent = build_intent("SELECT 1 AS n")
+
+      intent.execute!
+
+      assert_predicate intent, :raw_result_available?
+      assert_equal [[1]], intent.cast_result.rows
+      assert_not_predicate @connection, :pipeline_active?
+    end
+
+    def test_prepared_queries_drain_pipeline_mode
+      @connection.enter_pipeline_mode
+      pending = build_intent("SELECT 1 AS n")
+      prepared = build_intent("SELECT 2 AS n", prepare: true)
+
+      pending.execute!
+      prepared.execute!
+
+      assert_not_predicate @connection, :pipeline_active?
+      assert_equal [[1]], pending.cast_result.rows
+      assert_equal [[2]], prepared.cast_result.rows
+    end
+
+    def test_preparable_arel_queries_drain_pipeline_mode
+      @connection.enter_pipeline_mode
+      pending = build_intent("SELECT 1 AS n")
+      preparable = ConnectionAdapters::QueryIntent.new(
+        adapter: @connection,
+        arel: Author.where(id: 1).arel,
+        name: "PIPELINE",
+        prepare: nil,
+        materialize_transactions: false
+      )
+
+      pending.execute!
+      preparable.execute!
+
+      assert_not_predicate @connection, :pipeline_active?
+      assert_equal [[1]], pending.cast_result.rows
+      assert_predicate preparable, :raw_result_available?
+    end
+
+    def test_multi_statement_queries_drain_pipeline_mode
+      @connection.enter_pipeline_mode
+      pending = build_intent("SELECT 1 AS n")
+      multi_statement = build_intent("SELECT 2 AS n; SELECT 3 AS n")
+
+      pending.execute!
+      multi_statement.execute!
+
+      assert_not_predicate @connection, :pipeline_active?
+      assert_equal [[1]], pending.cast_result.rows
+      assert_predicate multi_statement, :raw_result_available?
+    end
+
+    def test_pipelined_intent_dirties_transaction_on_delivery
+      @connection.transaction do
+        @connection.enter_pipeline_mode
+        intent = build_intent("SELECT 1 AS n", materialize_transactions: true)
+
+        intent.execute!
+
+        assert_predicate @connection.transaction_manager, :restorable?
+        assert_equal [[1]], intent.cast_result.rows
+        assert_not_predicate @connection.transaction_manager, :restorable?
+        raise ActiveRecord::Rollback
+      end
+    end
+
+    def test_notification_errors_do_not_orphan_later_results
+      subscriber_error_class = Class.new(Exception)
+      subscriber_error = subscriber_error_class.new("subscriber failed")
+      subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |event|
+        raise subscriber_error if event.payload[:sql] == "SELECT 1 AS n"
+      end
+
+      @connection.enter_pipeline_mode
+      first = build_intent("SELECT 1 AS n")
+      second = build_intent("SELECT 2 AS n")
+      first.execute!
+      second.execute!
+
+      assert_same subscriber_error, assert_raises(subscriber_error_class) { first.raw_result }
+      assert_predicate second, :raw_result_available?
+      assert_equal [[2]], second.cast_result.rows
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+    end
+
     def test_pipelined_query_error_preserves_native_diagnostics
       @connection.enter_pipeline_mode
       failed = add_query("SELECT * FROM pipeline_missing_table")
@@ -291,6 +502,44 @@ module ActiveRecord
       assert_equal :server_aborted, not_run.not_run_reason
       assert_equal [[1]], cast_rows(not_run)
       assert_nil not_run.not_run_reason
+    end
+
+    def test_pipeline_error_rolls_back_earlier_write_in_implicit_transaction
+      @connection.execute("DROP TABLE IF EXISTS pipeline_batch_test")
+      @connection.execute("CREATE TABLE pipeline_batch_test (value text)")
+      @connection.enter_pipeline_mode
+      inserted = build_intent("INSERT INTO pipeline_batch_test (value) VALUES ('first')")
+      failed = build_intent("INSERT INTO nonexistent_pipeline_table (value) VALUES ('second')")
+      inserted.execute!
+      failed.execute!
+
+      @connection.flush_pipeline
+
+      assert_equal 1, inserted.affected_rows
+      assert_raises(ActiveRecord::StatementInvalid) { failed.raw_result }
+      @connection.exit_pipeline_mode
+      assert_equal 0, @connection.select_value("SELECT COUNT(*) FROM pipeline_batch_test")
+    ensure
+      @connection.exit_pipeline_mode if @connection.pipeline_active?
+      @connection.execute("DROP TABLE IF EXISTS pipeline_batch_test") if @connection.connected?
+    end
+
+    def test_not_run_query_does_not_recover_inside_failed_transaction
+      @connection.transaction do
+        @connection.enter_pipeline_mode
+        failed = build_intent("SELECT * FROM pipeline_missing_table", materialize_transactions: true)
+        not_run = build_intent("SELECT 1 AS n", materialize_transactions: true)
+        failed.execute!
+        not_run.execute!
+        @connection.flush_pipeline
+
+        assert_raises(ActiveRecord::StatementInvalid) { failed.raw_result }
+        assert_equal :server_aborted, not_run.not_run_reason
+        error = assert_raises(ActiveRecord::StatementInvalid) { not_run.raw_result }
+        assert_match(/current transaction is aborted/, error.message)
+
+        raise ActiveRecord::Rollback
+      end
     end
 
     def test_warnings_are_delivered_with_their_query
@@ -447,12 +696,14 @@ module ActiveRecord
     end
 
     private
-      def build_intent(sql)
+      def build_intent(sql, binds: [], prepare: false, materialize_transactions: false)
         ConnectionAdapters::QueryIntent.new(
           adapter: @connection,
           raw_sql: sql,
           name: "PIPELINE",
-          materialize_transactions: false
+          binds: binds,
+          prepare: prepare,
+          materialize_transactions: materialize_transactions
         )
       end
 

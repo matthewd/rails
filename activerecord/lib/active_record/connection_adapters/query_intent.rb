@@ -306,12 +306,20 @@ module ActiveRecord
           execute_or_wait
         end
 
-        @event_buffer&.flush
-        if @not_run_reason && !@finalized
-          reset_for_rerun
-          run_query!
+        loop do
+          adapter.flush_pipeline unless @raw_result_available
+          @event_buffer&.flush
+
+          if @not_run_reason && !@finalized
+            reset_for_rerun
+            run_query!
+            next
+          end
+
+          pump_retries
+          break if @raw_result_available
         end
-        pump_retries
+
         @event_buffer&.flush
 
         if @not_run_reason

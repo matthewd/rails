@@ -131,6 +131,36 @@ module ActiveRecord
           intent.finish
         end
 
+        def execute_intent(intent) # :nodoc:
+          # Lock in bind values before routing decision; this also ensures
+          # timezone is current before we commit to running the query
+          intent.type_casted_binds
+          return super unless should_pipeline?(intent)
+
+          if intent.materialize_transactions
+            # Validate before BEGIN - can raise locally (e.g. ReadOnlyError)
+            intent.processed_sql
+            materialize_transactions
+          end
+
+          start_intent_log(intent)
+          begin
+            with_raw_connection(allow_retry: false, materialize_transactions: false, pipeline_mode: true) do
+              intent.retry_budget ||= build_retry_budget(
+                allow_retry: intent.allow_retry,
+                reconnectable: reconnect_can_restore_state?
+              )
+              pipeline_add_query(intent)
+            end
+          rescue Exception => error
+            intent.finish_log(exception: error) unless intent.raw_result_available?
+            raise
+          end
+
+          # No immediate result - will be populated when pipeline flushes
+          nil
+        end
+
         private
           IDLE_TRANSACTION_STATUSES = [PG::PQTRANS_IDLE, PG::PQTRANS_INTRANS, PG::PQTRANS_INERROR].freeze
           private_constant :IDLE_TRANSACTION_STATUSES
@@ -155,6 +185,36 @@ module ActiveRecord
             [sequence_name, nil]
           end
 
+          # Decide whether this query should be pipelined
+          def should_pipeline?(intent)
+            return false unless supports_pipeline?
+
+            # Don't pipeline if connection is dirty (userspace has raw connection)
+            return false if @raw_connection_dirty
+
+            # Don't pipeline batch queries
+            return false if intent.batch
+
+            sql = intent.processed_sql
+            return false unless sql.is_a?(String)
+
+            sql_for_match = sql.valid_encoding? ? sql : sql.b
+
+            # Unbound SQL ordinarily uses the simple-query protocol, so keep
+            # semicolon-bearing strings on that path. Bound SQL already uses the
+            # extended protocol and receives its normal multiple-command error.
+            # has_binds? also compiles Arel and determines intent.prepare.
+            if !intent.has_binds? && sql_for_match.include?(";")
+              return false
+            end
+
+            # Don't pipeline prepared statements (they need different handling)
+            # Must check AFTER has_binds?/processed_sql to ensure compile_arel! has run
+            return false if intent.prepare
+
+            pipeline_active?
+          end
+
           def cancel_any_running_query
             return if @raw_connection.nil? || IDLE_TRANSACTION_STATUSES.include?(@raw_connection.transaction_status)
 
@@ -173,6 +233,10 @@ module ActiveRecord
           def perform_query(raw_connection, intent)
             if fatal = consume_notice_receiver_fatal_error
               raise fatal
+            end
+
+            if pipeline_active?
+              raise "BUG: perform_query called while in pipeline mode (sql: #{intent.processed_sql.inspect})"
             end
 
             raw_connection.discard_results
@@ -214,8 +278,10 @@ module ActiveRecord
 
             verified!
 
-            intent.notification_payload[:affected_rows] = result.cmd_tuples
-            intent.notification_payload[:row_count] = result.ntuples
+            if intent.notification_payload
+              intent.notification_payload[:affected_rows] = result.cmd_tuples
+              intent.notification_payload[:row_count] = result.ntuples
+            end
             result
           end
 
