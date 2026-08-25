@@ -395,6 +395,152 @@ module ActiveRecord
       assert_not_predicate @connection, :pipeline_pending?
     end
 
+    def test_sql_payload_records_pipeline_path_and_enqueue_depth
+      events = capture_sql_payloads do
+        @connection.exec_query("SELECT 0 AS n; SELECT 0 AS n", "SYNC")
+        @connection.enter_pipeline_mode
+        first = build_intent("SELECT 1 AS n")
+        second = build_intent("SELECT 2 AS n")
+        first.execute!
+        second.execute!
+        @connection.flush_pipeline
+      end
+
+      synchronous = find_sql_payload(events, "SELECT 0 AS n; SELECT 0 AS n")
+      first = find_sql_payload(events, "SELECT 1 AS n")
+      second = find_sql_payload(events, "SELECT 2 AS n")
+
+      assert_not synchronous.key?(:pipelined)
+      assert_not synchronous.key?(:pipeline_depth_at_enqueue)
+      assert first[:pipelined]
+      assert_equal 0, first[:pipeline_depth_at_enqueue]
+      assert_equal 1, first[:row_count]
+      assert second[:pipelined]
+      assert_equal 1, second[:pipeline_depth_at_enqueue]
+    end
+
+    def test_failed_enqueue_records_intended_pipeline_path
+      events = capture_sql_payloads do
+        @connection.enter_pipeline_mode
+        intent = build_intent("SELECT 1 AS n")
+        raw_connection = @connection.instance_variable_get(:@raw_connection)
+
+        @connection.stub(:connection_retries, 0) do
+          raw_connection.stub(:send_query_params, ->(*) { raise PG::ConnectionBad, "closed" }) do
+            assert_raises(ActiveRecord::ConnectionNotEstablished) { intent.execute! }
+          end
+        end
+      end
+
+      event = find_sql_payload(events, "SELECT 1 AS n")
+      assert event[:pipelined]
+      assert_equal 0, event[:pipeline_depth_at_enqueue]
+      assert_equal 0.0, event[:pipeline_wait_duration_ms]
+    end
+
+    def test_result_observation_attributes_wait_to_the_observed_intent
+      events = capture_sql_payloads do
+        @connection.enter_pipeline_mode
+        first = build_intent("SELECT 1 AS n FROM pg_sleep(0.02)")
+        observed = build_intent("SELECT 2 AS n")
+        first.execute!
+        observed.execute!
+        observed.cast_result
+      end
+
+      first = find_sql_payload(events, "SELECT 1 AS n FROM pg_sleep(0.02)")
+      observed = find_sql_payload(events, "SELECT 2 AS n")
+
+      assert_equal 0.0, first[:pipeline_wait_duration_ms]
+      assert_operator observed[:pipeline_wait_duration_ms], :>, 0.0
+    end
+
+    def test_direct_pipeline_drain_attributes_wait_to_the_first_intent
+      events = capture_sql_payloads do
+        @connection.enter_pipeline_mode
+        first = build_intent("SELECT 1 AS n FROM pg_sleep(0.02)")
+        second = build_intent("SELECT 2 AS n")
+        first.execute!
+        second.execute!
+        @connection.flush_pipeline
+      end
+
+      first = find_sql_payload(events, "SELECT 1 AS n FROM pg_sleep(0.02)")
+      second = find_sql_payload(events, "SELECT 2 AS n")
+
+      assert_operator first[:pipeline_wait_duration_ms], :>, 0.0
+      assert_equal 0.0, second[:pipeline_wait_duration_ms]
+    end
+
+    def test_active_pipeline_drain_attributes_wait_to_the_first_intent
+      events = capture_sql_payloads do
+        @connection.enter_pipeline_mode
+        first = build_intent("SELECT 1 AS n FROM pg_sleep(0.02)")
+        second = build_intent("SELECT 2 AS n")
+        first.execute!
+        second.execute!
+        @connection.pipeline_sync
+
+        assert_predicate @connection, :active?
+      end
+
+      first = find_sql_payload(events, "SELECT 1 AS n FROM pg_sleep(0.02)")
+      second = find_sql_payload(events, "SELECT 2 AS n")
+
+      assert_operator first[:pipeline_wait_duration_ms], :>, 0.0
+      assert_equal 0.0, second[:pipeline_wait_duration_ms]
+    end
+
+    def test_pipeline_error_observation_records_wait
+      events = capture_sql_payloads do
+        @connection.enter_pipeline_mode
+        failing = build_intent("SELECT 1 / 0 FROM pg_sleep(0.02)")
+        failing.execute!
+
+        assert_raises(ActiveRecord::StatementInvalid) { failing.raw_result }
+      end
+
+      failing = find_sql_payload(events, "SELECT 1 / 0 FROM pg_sleep(0.02)")
+      assert_operator failing[:pipeline_wait_duration_ms], :>, 0.0
+    end
+
+    def test_pipeline_replay_preserves_wait_attribution
+      initial_connection_id = connection_id_from_server(@connection)
+      sql = sleeping_query(1, initial_connection_id)
+
+      events = capture_sql_payloads do
+        @connection.enter_pipeline_mode
+        intent = build_intent(sql, allow_retry: true)
+        intent.execute!
+        @connection.pipeline_sync
+        kill_connection_from_server(initial_connection_id)
+        intent.cast_result
+      end
+
+      event = find_sql_payload(events, sql)
+      assert_operator event[:pipeline_wait_duration_ms], :>, 0.0
+    end
+
+    def test_query_that_drains_a_pipeline_retains_synchronous_event_semantics
+      events = capture_sql_payloads do
+        @connection.enter_pipeline_mode
+        pending = build_intent("SELECT 1 AS n FROM pg_sleep(0.02)")
+        pending.execute!
+        @connection.instance_variable_set(:@verified, false)
+        @connection.instance_variable_set(:@last_activity, nil)
+        @connection.exec_query("SELECT 2 AS n; SELECT 3 AS n", "SYNC")
+      end
+
+      pending = find_sql_payload(events, "SELECT 1 AS n FROM pg_sleep(0.02)")
+      synchronous = find_sql_payload(events, "SELECT 2 AS n; SELECT 3 AS n")
+
+      assert pending[:pipelined]
+      assert_equal 0.0, pending[:pipeline_wait_duration_ms]
+      assert_not synchronous.key?(:pipelined)
+      assert_not synchronous.key?(:pipeline_depth_at_enqueue)
+      assert_not synchronous.key?(:pipeline_wait_duration_ms)
+    end
+
     def test_queries_execute_immediately_without_pipeline_capability
       @connection.stub(:supports_pipeline?, false) do
         intent = build_intent("SELECT 1 AS n")

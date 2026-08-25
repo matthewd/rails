@@ -487,7 +487,7 @@ module ActiveRecord
         raise NotImplementedError
       end
 
-      def exit_pipeline_mode
+      def exit_pipeline_mode(waiting_on: nil)
       end
 
       def flush_pipeline(waiting_on: nil)

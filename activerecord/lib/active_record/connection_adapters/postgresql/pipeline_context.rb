@@ -18,6 +18,8 @@ module ActiveRecord
         class SyncIntent # :nodoc:
         end
 
+        PipelineWaitContext = Struct.new(:recipient, :started_at) # :nodoc:
+
         class ReplayWindow # :nodoc:
           def initialize(retry_required: [], replay_safe: [])
             @retry_required = retry_required
@@ -90,7 +92,7 @@ module ActiveRecord
               @retry_required + @replay_safe
             end
         end
-        private_constant :ReplayWindow
+        private_constant :PipelineWaitContext, :ReplayWindow
 
         class ConnectionProbeIntent # :nodoc:
           attr_reader :error
@@ -214,14 +216,14 @@ module ActiveRecord
           end
         end
 
-        def exit_pipeline_mode
+        def exit_pipeline_mode(waiting_on: nil)
           @lock.synchronize do
             return unless pipeline_active?
             raise "Cannot exit pipeline mode: pipelining is locked" if @pipelining_locked
 
             begin
               begin
-                flush_pipeline if connected?
+                flush_pipeline(waiting_on: waiting_on) if connected?
               ensure
                 abandon_pipelined_intents
               end
@@ -244,6 +246,13 @@ module ActiveRecord
             raise "Pipeline mode not active" unless pipeline_active?
 
             @pending_intents ||= []
+            if intent.respond_to?(:notification_payload) && (payload = intent.notification_payload)
+              payload[:pipelined] = true
+              payload[:pipeline_wait_duration_ms] ||= 0.0
+              unless payload.key?(:pipeline_depth_at_enqueue)
+                payload[:pipeline_depth_at_enqueue] = pipeline_real_query_intent_count
+              end
+            end
 
             # Send the query to the pipeline.
             # Always use send_query_params in pipeline mode (even with empty binds array).
@@ -270,6 +279,8 @@ module ActiveRecord
             return unless pipeline_active?
             return unless pipeline_pending?
 
+            pipeline_wait = pipeline_wait_context(waiting_on)
+
             # Track which intent was at the head of the last replay
             # attempt. If we come back around and the same intent is
             # still leading, we're not making progress - give up.
@@ -287,25 +298,25 @@ module ActiveRecord
 
               if sync_error
                 begin
-                  consume_pipeline
+                  consume_pipeline(pipeline_wait: pipeline_wait)
                 rescue PG::Error, IOError, SystemCallError => error
                   sync_error = error
                 end
 
-                if replayable = recover_pipeline_window(sync_error, last_replayed_head)
+                if replayable = recover_pipeline_window(sync_error, last_replayed_head, pipeline_wait)
                   last_replayed_head = replayable.first
-                  next if replay_pipeline_intents(replayable)
+                  next if replay_pipeline_intents(replayable, pipeline_wait)
                 end
 
                 return
               end
 
               begin
-                drain_pipeline
+                drain_pipeline(pipeline_wait: pipeline_wait)
               rescue PG::Error, IOError, SystemCallError => error
-                if replayable = recover_pipeline_window(error, last_replayed_head)
+                if replayable = recover_pipeline_window(error, last_replayed_head, pipeline_wait)
                   last_replayed_head = replayable.first
-                  next if replay_pipeline_intents(replayable)
+                  next if replay_pipeline_intents(replayable, pipeline_wait)
                 end
               end
 
@@ -316,26 +327,32 @@ module ActiveRecord
           pool.release_connection_if_unheld(self) unless waiting_on
         end
 
-        def drain_pipeline
+        def drain_pipeline(pipeline_wait: nil)
           @lock.synchronize do
             @pending_intents ||= []
+            direct_drain = pipeline_wait.nil?
+            pipeline_wait ||= pipeline_wait_context(nil)
 
-            while @pending_intents.any?
-              pending_count = @pending_intents.length
-              buffer_count = pipeline_buffer.length
+            begin
+              while @pending_intents.any?
+                pending_count = @pending_intents.length
+                buffer_count = pipeline_buffer.length
 
-              consume_pipeline
-              break if @pending_intents.empty?
+                consume_pipeline(pipeline_wait: pipeline_wait)
+                break if @pending_intents.empty?
 
-              next if @pending_intents.length != pending_count || pipeline_buffer.length != buffer_count
-              break unless @raw_connection.is_busy
+                next if @pending_intents.length != pending_count || pipeline_buffer.length != buffer_count
+                break unless @raw_connection.is_busy
 
-              @raw_connection.block
+                @raw_connection.block
+              end
+            ensure
+              attribute_pipeline_wait(pipeline_wait) if direct_drain
             end
           end
         end
 
-        def consume_pipeline
+        def consume_pipeline(pipeline_wait: nil)
           @lock.synchronize do
             @pending_intents ||= []
             return if @pending_intents.empty?
@@ -360,7 +377,7 @@ module ActiveRecord
                     @pipeline_replay_retry_required_through = nil
                   end
                   sync_result.clear
-                  deliver_pipeline_buffer
+                  deliver_pipeline_buffer(pipeline_wait: pipeline_wait)
                   next
                 end
 
@@ -402,6 +419,40 @@ module ActiveRecord
         end
 
         private
+          def pipeline_real_query_intent_count
+            @pending_intents.count { |intent| intent.is_a?(QueryIntent) }
+          end
+
+          def pipeline_wait_context(waiting_on)
+            PipelineWaitContext.new(pipeline_wait_recipient(waiting_on), monotonic_time_ms)
+          end
+
+          def pipeline_wait_recipient(waiting_on)
+            if waiting_on
+              waiting_on if @pending_intents.include?(waiting_on)
+            else
+              @pending_intents.find { |intent| intent.is_a?(QueryIntent) }
+            end
+          end
+
+          def attribute_pipeline_wait(pipeline_wait)
+            recipient = pipeline_wait&.recipient
+            started_at = pipeline_wait&.started_at
+            return unless recipient && started_at
+
+            if payload = recipient.notification_payload
+              payload[:pipeline_wait_duration_ms] =
+                (payload[:pipeline_wait_duration_ms] || 0.0) + (monotonic_time_ms - started_at)
+            end
+
+            pipeline_wait.recipient = nil
+            pipeline_wait.started_at = nil
+          end
+
+          def monotonic_time_ms
+            Process.clock_gettime(Process::CLOCK_MONOTONIC, :float_millisecond)
+          end
+
           def deliver_pipeline_probe_result(intent, raw_result)
             @pending_intents.delete_at(pipeline_buffer.length)
             take_notice_receiver_warnings
@@ -455,7 +506,7 @@ module ActiveRecord
             end
           end
 
-          def replay_pipeline_intents(window)
+          def replay_pipeline_intents(window, pipeline_wait = nil)
             reconnect!(restore_transactions: true)
             enter_pipeline_mode
             submit_pipeline_replay(window)
@@ -471,7 +522,12 @@ module ActiveRecord
             server_fatal_intent = failure_intent if cause.respond_to?(:result) && connection_terminating_severity?(cause.result)
 
             @raw_connection&.close
-            abandon_pipelined_intents(translated, server_fatal_intent: server_fatal_intent)
+            abandon_pipelined_intents(
+              translated,
+              server_fatal_intent: server_fatal_intent,
+              pipeline_wait: pipeline_wait
+            )
+            attribute_pipeline_wait(pipeline_wait) if window.to_a.include?(pipeline_wait&.recipient)
             settle_pipeline_replay_window(window, translated)
             raise error unless translated.is_a?(ActiveRecord::ConnectionNotEstablished) || translated.is_a?(ActiveRecord::ConnectionFailed)
 
@@ -504,7 +560,7 @@ module ActiveRecord
             end
           end
 
-          def recover_pipeline_window(error, last_replayed_head)
+          def recover_pipeline_window(error, last_replayed_head, pipeline_wait = nil)
             failure_intent = take_pipeline_connection_error_intent(error)
             translated = translate_pipeline_connection_error(error)
             cause = translated.cause
@@ -515,7 +571,8 @@ module ActiveRecord
               translated,
               server_fatal_intent: server_fatal_intent,
               allow_recovery: allow_recovery,
-              last_replayed_head: last_replayed_head
+              last_replayed_head: last_replayed_head,
+              pipeline_wait: pipeline_wait
             )
           end
 
@@ -648,7 +705,11 @@ module ActiveRecord
             pipeline_buffer.clear
           end
 
-          def deliver_pipeline_buffer
+          def deliver_pipeline_buffer(pipeline_wait: nil)
+            if pipeline_buffer.any? { |_kind, intent, *| intent.equal?(pipeline_wait&.recipient) }
+              attribute_pipeline_wait(pipeline_wait)
+            end
+
             delivery_error = nil
 
             pipeline_buffer.each do |kind, intent, value, warnings, _raw_result|
@@ -728,7 +789,7 @@ module ActiveRecord
           # replay list is the same as the last attempt, we're not making
           # progress and fall through to deliver terminal states instead.
           def abandon_pipelined_intents(connection_error = nil, server_fatal_intent: nil,
-            allow_recovery: false, last_replayed_head: nil)
+            allow_recovery: false, last_replayed_head: nil, pipeline_wait: nil)
             discard_pipeline_buffer
 
             intents = @pending_intents
@@ -742,6 +803,11 @@ module ActiveRecord
             if allow_recovery && !no_progress && consume_pipeline_retry_budgets(connection_error, replayable)
               replayable.each(&:reset_for_retry)
               return replayable
+            end
+
+            terminal_intents = replayable.to_a
+            if terminal_intents.any? { |intent| intent.equal?(pipeline_wait&.recipient) }
+              attribute_pipeline_wait(pipeline_wait)
             end
 
             error = connection_error || ActiveRecord::ConnectionFailed.new("Connection lost during pipeline execution")

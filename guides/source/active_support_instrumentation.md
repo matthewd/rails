@@ -602,6 +602,12 @@ Jobs using [Continuation][] also emit the following events.
 | `:row_count`         | Number of rows returned by the query                   |
 | `:cached`            | `true` is added when result comes from the query cache |
 | `:statement_name`    | SQL Statement name (Postgres only)                     |
+| `:pipelined`         | `true` is added when the query is routed to a pipeline |
+
+PostgreSQL adds `:pipeline_depth_at_enqueue` to pipelined events with the
+number of queries already pending when the query was enqueued. It also adds
+`:pipeline_wait_duration_ms` with the blocking time attributed to resolving
+the query's pipeline.
 
 Adapters may add their own data as well.
 

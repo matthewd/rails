@@ -96,11 +96,16 @@ class PipelinedQueriesTest < ActiveRecord::PostgreSQLTestCase
     @connection.enable_query_cache!
     @connection.select_all("SELECT 1 AS n")
 
-    future = @connection.select_all("SELECT 1 AS n", pipeline: true)
+    future = nil
+    events = capture_notifications("sql.active_record") do
+      future = @connection.select_all("SELECT 1 AS n", pipeline: true)
+    end
 
     assert_kind_of ActiveRecord::FutureResult::Complete, future
     assert_not_predicate future, :pending?
     assert_equal [{ "n" => 1 }], future.result.to_a
+    event = events.find { |candidate| candidate.payload[:cached] }
+    assert_not event.payload.key?(:pipelined)
   ensure
     @connection.disable_query_cache!
   end
