@@ -36,6 +36,7 @@ module ActiveRecord
       def checkin(_); end
       def remove(_); end
       def async_executor; end
+      def release_connection_if_unheld(_ = nil); false; end
 
       def db_config
         NULL_CONFIG
@@ -193,7 +194,7 @@ module ActiveRecord
         end
 
         def held?
-          sticky || @with_connection_depth > 0
+          sticky || @with_connection_depth > 0 || connection&.connection_lease_required?
         end
       end
 
@@ -455,8 +456,9 @@ module ActiveRecord
         false
       end
 
-      def release_connection_if_unheld # :nodoc:
+      def release_connection_if_unheld(connection = nil) # :nodoc:
         lease = connection_lease
+        return false if connection && !lease.connection.equal?(connection)
         return false unless lease.connection
         return false if lease.held?
 

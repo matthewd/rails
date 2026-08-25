@@ -479,6 +479,10 @@ module ActiveRecord
         false
       end
 
+      def connection_lease_required? # :nodoc:
+        pipeline_pending? || @unfinalized_intents.any?(&:connection_required?)
+      end
+
       def enter_pipeline_mode
         raise NotImplementedError
       end
@@ -486,7 +490,7 @@ module ActiveRecord
       def exit_pipeline_mode
       end
 
-      def flush_pipeline
+      def flush_pipeline(waiting_on: nil)
       end
 
       # Should primary key values be selected from their corresponding

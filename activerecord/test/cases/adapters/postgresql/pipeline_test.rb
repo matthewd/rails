@@ -735,4 +735,210 @@ module ActiveRecord
         end
       end
   end
+
+  class PostgresqlPipelineLeaseTest < ActiveRecord::PostgreSQLTestCase
+    self.use_transactional_tests = false
+
+    def setup
+      super
+      pool_config = ActiveRecord::Base.connection_pool.db_config
+      @pool = ConnectionAdapters::ConnectionPool.new(
+        ConnectionAdapters::PoolConfig.new(ActiveRecord::Base, pool_config, :writing, :default)
+      )
+    end
+
+    def teardown
+      @pool.disconnect!
+      super
+    end
+
+    def test_pending_pipeline_holds_auto_managed_lease
+      intent = nil
+      connection = nil
+
+      @pool.with_connection do |conn|
+        connection = conn
+        conn.connect!
+        conn.enter_pipeline_mode
+        intent = build_intent(conn)
+        intent.execute!
+      end
+
+      assert_same connection, @pool.active_connection?
+      assert_predicate connection, :pipeline_pending?
+      assert_not_predicate intent, :raw_result_available?
+
+      original_cast = connection.method(:cast_result)
+      rows = connection.stub(:cast_result, ->(result) do
+        assert_same connection, @pool.active_connection?
+        original_cast.call(result)
+      end) { intent.cast_result.rows }
+
+      assert_equal [[1]], rows
+      assert_not_predicate @pool, :active_connection?
+    end
+
+    def test_pipeline_drained_inside_later_block_releases_on_block_exit
+      intent = nil
+      connection = nil
+
+      @pool.with_connection do |conn|
+        connection = conn
+        conn.connect!
+        conn.enter_pipeline_mode
+        intent = build_intent(conn)
+        intent.execute!
+      end
+
+      @pool.with_connection do |conn|
+        assert_same connection, conn
+        assert_equal [[1]], intent.cast_result.rows
+        assert_same connection, @pool.active_connection?
+      end
+
+      assert_not_predicate @pool, :active_connection?
+    end
+
+    def test_nested_connection_blocks_retain_lease_until_outer_exit
+      intent = nil
+      connection = nil
+
+      @pool.with_connection do |outer_connection|
+        connection = outer_connection
+        connection.connect!
+        connection.enter_pipeline_mode
+        intent = build_intent(connection)
+        intent.execute!
+
+        @pool.with_connection do |inner_connection|
+          assert_same connection, inner_connection
+          assert_equal [[1]], intent.cast_result.rows
+        end
+
+        assert_predicate connection, :in_use?
+      end
+
+      assert_not_predicate connection, :in_use?
+    end
+
+    def test_sticky_lease_remains_after_pipeline_drains
+      intent = nil
+      connection = nil
+
+      @pool.with_connection do |conn|
+        connection = conn
+        conn.connect!
+        conn.enter_pipeline_mode
+        intent = build_intent(conn)
+        intent.execute!
+      end
+
+      assert_same connection, @pool.lease_connection
+      assert_equal [[1]], intent.cast_result.rows
+      assert_same connection, @pool.active_connection?
+    ensure
+      @pool.release_connection
+    end
+
+    def test_resettable_not_run_outcome_keeps_lease_until_rerun
+      failing = nil
+      not_run = nil
+      connection = nil
+
+      @pool.with_connection do |conn|
+        connection = conn
+        conn.connect!
+        conn.enter_pipeline_mode
+        failing = build_intent(conn, "SELECT * FROM pipeline_missing_table")
+        not_run = build_intent(conn, "SELECT 1 AS n")
+        failing.execute!
+        not_run.execute!
+      end
+
+      assert_same connection, @pool.active_connection?
+      assert_equal [[1]], not_run.cast_result.rows
+      assert_not_predicate @pool, :active_connection?
+      assert_predicate failing, :finalized?
+      assert_predicate not_run, :finalized?
+    end
+
+    def test_explicit_release_terminalizes_not_run_outcome
+      connection = nil
+      not_run = nil
+
+      @pool.with_connection do |conn|
+        connection = conn
+        conn.connect!
+        conn.enter_pipeline_mode
+        failing = build_intent(conn, "SELECT * FROM pipeline_missing_table")
+        not_run = build_intent(conn, "SELECT 1 AS n")
+        failing.execute!
+        not_run.execute!
+      end
+
+      @pool.release_connection
+
+      assert_not_predicate connection, :pipeline_active?
+      error = assert_raises(ActiveRecord::QueryNotRun) { not_run.cast_result }
+      assert_equal "Query was not run due to pipeline failure (server_aborted)", error.message
+      assert_equal :server_aborted, error.reason
+    end
+
+    def test_release_discards_connection_when_pipeline_delivery_raises
+      connection = nil
+      intent = nil
+      subscriber_error = StandardError.new("subscriber failed")
+      subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |event|
+        raise subscriber_error if event.payload[:sql] == "SELECT 1 AS n"
+      end
+
+      @pool.with_connection do |conn|
+        connection = conn
+        conn.connect!
+        conn.enter_pipeline_mode
+        intent = build_intent(conn)
+        intent.execute!
+      end
+
+      assert_same subscriber_error, assert_raises(StandardError) { @pool.release_connection }
+
+      assert_not_predicate @pool, :active_connection?
+      assert_not_includes @pool.connections, connection
+      assert_not_predicate connection, :connected?
+      assert_not_predicate connection, :pipeline_active?
+      assert_equal [[1]], intent.cast_result.rows
+      @pool.with_connection { |conn| assert_not_same connection, conn }
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+    end
+
+    def test_explicit_release_drains_pending_pipeline
+      intent = nil
+      connection = nil
+
+      @pool.with_connection do |conn|
+        connection = conn
+        conn.connect!
+        conn.enter_pipeline_mode
+        intent = build_intent(conn)
+        intent.execute!
+      end
+
+      @pool.release_connection
+
+      assert_not_predicate @pool, :active_connection?
+      assert_not_predicate connection, :pipeline_active?
+      assert_equal [[1]], intent.cast_result.rows
+    end
+
+    private
+      def build_intent(connection, sql = "SELECT 1 AS n")
+        ConnectionAdapters::QueryIntent.new(
+          adapter: connection,
+          raw_sql: sql,
+          name: "PIPELINE",
+          materialize_transactions: false
+        )
+      end
+  end
 end

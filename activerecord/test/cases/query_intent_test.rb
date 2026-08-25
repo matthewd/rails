@@ -38,6 +38,47 @@ module ActiveRecord
       end
     end
 
+    test "an inactive async session is canceled rather than pending" do
+      intent = build_intent(@connection)
+      session = ActiveRecord::AsynchronousQueriesTracker::Session.new
+      intent.session = session
+      intent.instance_variable_set(:@executed, true)
+
+      assert_predicate intent, :pending?
+
+      session.finalize
+
+      assert_not_predicate intent, :pending?
+      assert_predicate intent, :canceled?
+    end
+
+    test "unexpected background exceptions make the intent terminal" do
+      intent = build_intent(@connection)
+      session = ActiveRecord::AsynchronousQueriesTracker::Session.new
+      @connection.pool.stub(:schedule_query, ->(*) { }) do
+        intent.send(:async_schedule!, session)
+      end
+      intent.instance_variable_set(:@executed, true)
+      error = StandardError.new("unexpected failure")
+      attempts = 0
+      execute = lambda do |*|
+        attempts += 1
+        raise error
+      end
+
+      @connection.pool.stub(:with_connection, ->(&block) { block.call(@connection) }) do
+        @connection.stub(:execute_intent, execute) do
+          intent.execute_or_skip
+        end
+      end
+
+      assert_equal 1, attempts
+      assert_not_predicate intent, :pending?
+      assert_predicate intent, :raw_result_available?
+      assert_not_predicate intent, :connection_required?
+      assert_same error, assert_raises(StandardError) { intent.raw_result }
+    end
+
     test "not-run outcomes execute when observed" do
       intent = build_intent(@connection)
       intent.deliver_not_run(reason: :not_sent)

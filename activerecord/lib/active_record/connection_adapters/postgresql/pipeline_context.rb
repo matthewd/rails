@@ -97,6 +97,7 @@ module ActiveRecord
               probe.clear_raw_result
             end
           end
+          pool.release_connection_if_unheld(self)
         end
 
         def enter_pipeline_mode
@@ -169,7 +170,7 @@ module ActiveRecord
           intent
         end
 
-        def flush_pipeline
+        def flush_pipeline(waiting_on: nil)
           @lock.synchronize do
             return unless pipeline_active?
             return unless pipeline_pending?
@@ -181,6 +182,8 @@ module ActiveRecord
               abandon_pipelined_intents(translate_pipeline_connection_error(error))
             end
           end
+        ensure
+          pool.release_connection_if_unheld(self) unless waiting_on
         end
 
         def drain_pipeline

@@ -154,10 +154,24 @@ module ActiveRecord
                 @adapter = connection
                 @ran_async = true
                 run_query!
-                pump_retries
+
+                # If pipelined, flush with instrumentation before releasing connection.
+                # Keep retrying or flushing until the result is settled so the intent
+                # cannot outlive this connection lease.
+                loop do
+                  flush_pipelined_result(connection) unless @raw_result_available
+                  if @not_run_reason && !@finalized
+                    reset_for_rerun
+                    run_query!
+                    next
+                  end
+                  pump_retries
+                  break if @raw_result_available
+                end
               end
             rescue => error
               @error = error
+              settle_failure
             ensure
               ActiveSupport::IsolatedExecutionState[:active_record_instrumenter] = previous_instrumenter
               @mutex.unlock
@@ -168,7 +182,7 @@ module ActiveRecord
 
       # Is this intent still pending (result not yet available)?
       def pending?
-        !@raw_result_available && @session&.active?
+        !@raw_result_available && (@session ? @session.active? : @executed)
       end
 
       # Was this intent canceled?
@@ -287,10 +301,16 @@ module ActiveRecord
         @raw_result_available
       end
 
+      def connection_required? # :nodoc:
+        @executed && !@finalized && !canceled? && (!@raw_result_available || @not_run_reason)
+      end
+
       # Access the raw result, ensuring it's available first
       def raw_result
         ensure_result
         @raw_result
+      ensure
+        adapter&.pool&.release_connection_if_unheld(adapter)
       end
 
       # Ensure the result is available, blocking if necessary
@@ -307,7 +327,7 @@ module ActiveRecord
         end
 
         loop do
-          adapter.flush_pipeline unless @raw_result_available
+          flush_pipelined_result(adapter) unless @raw_result_available
           @event_buffer&.flush
 
           if @not_run_reason && !@finalized
@@ -369,17 +389,27 @@ module ActiveRecord
       def cast_result
         raise "Cannot call cast_result before query has executed" unless @executed
         raise "Cannot call cast_result after affected_rows has been called" if defined?(@affected_rows)
+        return @cast_result if defined?(@cast_result)
 
-        ensure_result
-        @cast_result ||= adapter.send(:cast_result, @raw_result)
+        begin
+          ensure_result
+          @cast_result = adapter.send(:cast_result, @raw_result)
+        ensure
+          adapter&.pool&.release_connection_if_unheld(adapter)
+        end
       end
 
       def affected_rows
         raise "Cannot call affected_rows before query has executed" unless @executed
         raise "Cannot call affected_rows after cast_result has been called" if defined?(@cast_result)
+        return @affected_rows if defined?(@affected_rows)
 
-        ensure_result
-        @affected_rows ||= adapter.send(:affected_rows, @raw_result)
+        begin
+          ensure_result
+          @affected_rows = adapter.send(:affected_rows, @raw_result)
+        ensure
+          adapter&.pool&.release_connection_if_unheld(adapter)
+        end
       end
 
       def finish_log(exception: nil) # :nodoc:
@@ -428,6 +458,10 @@ module ActiveRecord
 
         def mark_transaction_dirty
           adapter.send(:dirty_current_transaction) if @materialize_transactions
+        end
+
+        def flush_pipelined_result(connection)
+          connection.flush_pipeline(waiting_on: self)
         end
 
         def async_schedule!(session)
@@ -499,7 +533,18 @@ module ActiveRecord
                 @adapter = connection
                 @ran_async = false  # Foreground fallback, not actually async
                 run_query!
-                pump_retries
+
+                # If pipelined, flush with instrumentation before releasing connection.
+                loop do
+                  flush_pipelined_result(connection) unless @raw_result_available
+                  if @not_run_reason && !@finalized
+                    reset_for_rerun
+                    run_query!
+                    next
+                  end
+                  pump_retries
+                  break if @raw_result_available
+                end
               end
             else
               # Result was computed by background thread while we waited for mutex
