@@ -724,6 +724,7 @@ module ActiveRecord
       end
 
       def perform_sync_attempt(intent) # :nodoc:
+        exit_pipeline_mode if pipeline_active?
         result = perform_query(@raw_connection, intent)
         query_completed = true
         warnings = collect_warnings(result)
@@ -796,6 +797,8 @@ module ActiveRecord
       end
 
       def finalize_remaining_intents # :nodoc:
+        flush_pipeline if pipeline_pending?
+
         intents = @unfinalized_intents
         @unfinalized_intents = []
 

@@ -199,7 +199,7 @@ module ActiveRecord
         @verified = false
         @needs_reconnect = false
         @unfinalized_intents = []
-
+        @pipelining_locked = false
         @pool_jitter = rand * max_jitter
       end
 
@@ -465,6 +465,28 @@ module ActiveRecord
       # Does this adapter support application-enforced advisory locking?
       def supports_advisory_locks?
         false
+      end
+
+      def supports_pipeline?
+        false
+      end
+
+      def pipeline_active?
+        false
+      end
+
+      def pipeline_pending?
+        false
+      end
+
+      def enter_pipeline_mode
+        raise NotImplementedError
+      end
+
+      def exit_pipeline_mode
+      end
+
+      def flush_pipeline
       end
 
       # Should primary key values be selected from their corresponding
@@ -909,7 +931,7 @@ module ActiveRecord
       # this client. If that is the case, generally you'll want to invalidate
       # the query cache using +ActiveRecord::Base.clear_query_cache+.
       def raw_connection
-        with_raw_connection do |conn|
+        with_raw_connection(pipeline_mode: false) do |conn|
           disable_lazy_transactions!
           @raw_connection_dirty = true
           conn
@@ -1128,14 +1150,30 @@ module ActiveRecord
         # still-yielded connection in the outer block), but we currently
         # provide no special enforcement there.
         #
-        def with_raw_connection(allow_retry: false, materialize_transactions: true)
+        def with_raw_connection(allow_retry: false, materialize_transactions: true, pipeline_mode: nil)
           @lock.synchronize do
+            was_in_pipeline = pipeline_active?
             reconnectable = ensure_connection_ready(allow_retry:, materialize_transactions:)
 
             budget = build_retry_budget(allow_retry:, reconnectable:)
 
             begin
-              yield @raw_connection
+              if pipeline_mode == true
+                enter_pipeline_mode
+              elsif pipeline_mode == false
+                exit_pipeline_mode
+              elsif !was_in_pipeline && pipeline_active?
+                exit_pipeline_mode
+              end
+
+              was_pipelining_locked = @pipelining_locked
+              @pipelining_locked = true
+
+              begin
+                yield @raw_connection
+              ensure
+                @pipelining_locked = was_pipelining_locked
+              end
             rescue => original_exception
               translated_exception = translate_exception_class(original_exception, nil, nil)
               invalidate_transaction(translated_exception)
