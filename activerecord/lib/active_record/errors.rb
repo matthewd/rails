@@ -230,6 +230,18 @@ module ActiveRecord
   class WrappedDatabaseException < StatementInvalid
   end
 
+  # Raised when a pipeline query was definitively not executed.
+  class QueryNotRun < StatementInvalid
+    attr_reader :reason
+
+    def initialize(reason: nil, **)
+      @reason = reason
+      message = "Query was not run due to pipeline failure"
+      message = "#{message} (#{reason})" if reason
+      super(message, **)
+    end
+  end
+
   # Raised when a record cannot be inserted or updated because it would violate a uniqueness constraint.
   class RecordNotUnique < WrappedDatabaseException
   end

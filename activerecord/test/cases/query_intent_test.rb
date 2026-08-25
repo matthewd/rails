@@ -31,8 +31,58 @@ module ActiveRecord
         intent.deliver_failure(ActiveRecord::StatementInvalid.new("boom"))
       end
       assert_raises(ActiveRecord::ConnectionAdapters::QueryIntent::FinalizedError) do
+        intent.deliver_not_run(reason: :not_sent)
+      end
+      assert_raises(ActiveRecord::ConnectionAdapters::QueryIntent::FinalizedError) do
         intent.reset_for_retry
       end
+    end
+
+    test "not-run outcomes execute when observed" do
+      intent = build_intent(@connection)
+      intent.deliver_not_run(reason: :not_sent)
+
+      raw_result = intent.raw_result
+
+      assert_equal [[1]], @connection.send(:cast_result, raw_result).rows
+      assert_nil intent.not_run_reason
+      assert_predicate intent, :finalized?
+    end
+
+    test "unobserved not-run outcomes are finalized as failures" do
+      intent = build_intent(@connection)
+
+      events = capture_notifications("sql.active_record") do
+        @connection.start_intent_log(intent)
+        intent.deliver_not_run(reason: :not_sent)
+        @connection.finalize_remaining_intents
+      end
+
+      event = events.find { _1.payload[:sql] == "SELECT 1" }
+      error = event.payload[:exception_object]
+      assert_predicate intent, :finalized?
+      assert_instance_of ActiveRecord::QueryNotRun, error
+      assert_equal "Query was not run due to pipeline failure (not_sent)", error.message
+      assert_equal :not_sent, error.reason
+      assert_equal "SELECT 1", error.sql
+      assert_equal [], error.binds
+      assert_same @connection.pool, error.connection_pool
+    end
+
+    test "checkin makes not-run outcomes terminal" do
+      intent = build_intent(@connection)
+      @connection.start_intent_log(intent)
+      intent.deliver_not_run(reason: :not_sent)
+
+      @connection.finalize_remaining_intents
+
+      error = assert_raises(ActiveRecord::QueryNotRun) { intent.raw_result }
+      assert_equal "Query was not run due to pipeline failure (not_sent)", error.message
+      assert_equal :not_sent, error.reason
+      assert_equal "SELECT 1", error.sql
+      assert_equal [], error.binds
+      assert_same @connection.pool, error.connection_pool
+      assert_predicate intent, :finalized?
     end
 
     test "warning collection failures are delivered through the intent" do

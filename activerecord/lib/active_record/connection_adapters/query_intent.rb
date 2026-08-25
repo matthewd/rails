@@ -63,7 +63,7 @@ module ActiveRecord
 
       attr_reader :arel, :name, :prepare, :allow_retry, :allow_async,
                   :materialize_transactions, :batch, :pool, :session, :lock_wait,
-                  :event_buffer, :error, :finalized
+                  :event_buffer, :error, :not_run_reason, :finalized
       alias_method :finalized?, :finalized
       attr_writer :raw_sql, :session
       attr_accessor :adapter, :binds, :ran_async, :notification_payload, :log_handle,
@@ -95,6 +95,7 @@ module ActiveRecord
         @outcome_handled = false
         @warning_error = nil
         @executed = false
+        @not_run_reason = nil
         @write_query = nil
 
         # Deferred execution state
@@ -262,6 +263,14 @@ module ActiveRecord
         end
       end
 
+      def deliver_not_run(reason:, warnings: nil)
+        raise FinalizedError, "delivering not_run to a finalized intent" if @finalized
+
+        @not_run_reason = reason
+        @warnings = warnings
+        @raw_result_available = true
+      end
+
       def reset_for_retry
         raise FinalizedError, "resetting a finalized intent" if @finalized
 
@@ -298,8 +307,30 @@ module ActiveRecord
         end
 
         @event_buffer&.flush
+        if @not_run_reason && !@finalized
+          reset_for_rerun
+          run_query!
+        end
         pump_retries
         @event_buffer&.flush
+
+        if @not_run_reason
+          @error = ActiveRecord::QueryNotRun.new(
+            reason: @not_run_reason,
+            sql: processed_sql,
+            binds: binds,
+            connection_pool: adapter.pool
+          )
+          begin
+            adapter.handle_warnings(self, @warnings)
+          rescue
+            # The query did not run, so warning handling must not mask that.
+          end
+          finish_log(exception: @error)
+          @outcome_handled = true
+          @event_buffer&.flush
+          raise @error
+        end
 
         if @error
           begin
@@ -371,6 +402,20 @@ module ActiveRecord
             mark_transaction_dirty
             @raw_result_available = true
           end
+        end
+
+        def reset_for_rerun
+          raise FinalizedError, "resetting a finalized intent for rerun" if @finalized
+
+          @raw_result = nil
+          @raw_result_available = false
+          @warnings = nil
+          @outcome_handled = false
+          @warning_error = nil
+          @error = nil
+          @not_run_reason = nil
+          remove_instance_variable(:@cast_result) if defined?(@cast_result)
+          remove_instance_variable(:@affected_rows) if defined?(@affected_rows)
         end
 
         def mark_transaction_dirty

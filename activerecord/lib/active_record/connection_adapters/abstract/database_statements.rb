@@ -802,7 +802,17 @@ module ActiveRecord
         intents.each do |intent|
           next if intent.finalized?
 
-          intent.finish_log(exception: intent.error)
+          exception = intent.error
+          if exception.nil? && intent.not_run_reason
+            exception = ActiveRecord::QueryNotRun.new(
+              reason: intent.not_run_reason,
+              sql: intent.processed_sql,
+              binds: intent.binds,
+              connection_pool: @pool
+            )
+          end
+
+          intent.finish_log(exception: exception)
         end
       end
 
