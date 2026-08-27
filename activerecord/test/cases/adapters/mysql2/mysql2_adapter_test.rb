@@ -309,7 +309,7 @@ class Mysql2AdapterTest < ActiveRecord::Mysql2TestCase
   end
 
   def test_statement_timeout_error_codes
-    raw_conn = @conn.raw_connection
+    raw_conn = underlying_raw_connection(@conn)
     error = assert_raises(ActiveRecord::StatementTimeout) do
       raw_conn.stub(:query, ->(_sql) { raise Mysql2::Error.new("fail", 50700, ActiveRecord::ConnectionAdapters::AbstractMysqlAdapter::ER_FILSORT_ABORT) }) {
         @conn.execute("SELECT 1")
@@ -326,7 +326,7 @@ class Mysql2AdapterTest < ActiveRecord::Mysql2TestCase
   end
 
   def test_no_database_selected_error_translates_to_connection_failed
-    raw_conn = @conn.raw_connection
+    raw_conn = underlying_raw_connection(@conn)
     error = assert_raises(ActiveRecord::ConnectionFailed) do
       raw_conn.stub(:query, ->(_sql) { raise Mysql2::Error.new("No database selected", 50700, ActiveRecord::ConnectionAdapters::AbstractMysqlAdapter::ER_NO_DB_ERROR) }) {
         @conn.execute("SELECT 1")
@@ -337,7 +337,7 @@ class Mysql2AdapterTest < ActiveRecord::Mysql2TestCase
 
   def test_database_timezone_changes_synced_to_connection
     with_timezone_config default: :local do
-      assert_changes(-> { @conn.raw_connection.query_options[:database_timezone] }, from: :utc, to: :local) do
+      assert_changes(-> { underlying_raw_connection(@conn).query_options[:database_timezone] }, from: :utc, to: :local) do
         @conn.execute("SELECT 1")
       end
     end

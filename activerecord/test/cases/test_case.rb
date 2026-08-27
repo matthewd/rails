@@ -14,6 +14,7 @@ require_relative "../support/connection"
 require_relative "../support/adapter_helper"
 require_relative "../support/load_schema_helper"
 require_relative "../support/postgresql_config"
+require_relative "../support/ractor_connection_proxy_test_mode"
 
 module ActiveRecord
   # = Active Record Test Case
@@ -321,7 +322,7 @@ module ActiveRecord
     end
 
     def clean_up_connection_handler
-      handler = ActiveRecord::Base.connection_handler
+      handler = underlying_connection_handler
       pool_managers = handler.instance_variable_get(:@connection_name_to_pool_manager)
       removed_pool_configs = []
 

@@ -128,24 +128,24 @@ class TrilogyAdapterTest < ActiveRecord::TrilogyTestCase
   end
 
   test "#active? answers false with connection and exception" do
-    @conn.instance_variable_get(:@raw_connection).stub(:ping, -> { raise ::Trilogy::BaseError.new }) do
+    underlying_connection(@conn).instance_variable_get(:@raw_connection).stub(:ping, -> { raise ::Trilogy::BaseError.new }) do
       assert_equal false, @conn.active?
     end
   end
 
   test "#reconnect answers new connection with existing connection" do
-    old_connection = @conn.instance_variable_get(:@raw_connection)
+    old_connection = underlying_connection(@conn).instance_variable_get(:@raw_connection)
     @conn.reconnect!
-    connection = @conn.instance_variable_get(:@raw_connection)
+    connection = underlying_connection(@conn).instance_variable_get(:@raw_connection)
 
     assert_instance_of Trilogy, connection
     assert_not_equal old_connection, connection
   end
 
   test "#reset answers new connection with existing connection" do
-    old_connection = @conn.instance_variable_get(:@raw_connection)
+    old_connection = underlying_connection(@conn).instance_variable_get(:@raw_connection)
     @conn.reset!
-    connection = @conn.instance_variable_get(:@raw_connection)
+    connection = underlying_connection(@conn).instance_variable_get(:@raw_connection)
 
     assert_instance_of Trilogy, connection
     assert_not_equal old_connection, connection
@@ -364,7 +364,7 @@ class TrilogyAdapterTest < ActiveRecord::TrilogyTestCase
 
   test "EPIPE raises ActiveRecord::ConnectionFailed" do
     assert_raises(ActiveRecord::ConnectionFailed) do
-      @conn.raw_connection.stub(:query, -> (*) { raise Trilogy::SyscallError::EPIPE }) do
+      underlying_raw_connection(@conn).stub(:query, -> (*) { raise Trilogy::SyscallError::EPIPE }) do
         @conn.execute("SELECT 1")
       end
     end
@@ -372,7 +372,7 @@ class TrilogyAdapterTest < ActiveRecord::TrilogyTestCase
 
   test "ETIMEDOUT raises ActiveRecord::ConnectionFailed" do
     assert_raises(ActiveRecord::ConnectionFailed) do
-      @conn.raw_connection.stub(:query, -> (*) { raise Trilogy::SyscallError::ETIMEDOUT }) do
+      underlying_raw_connection(@conn).stub(:query, -> (*) { raise Trilogy::SyscallError::ETIMEDOUT }) do
         @conn.execute("SELECT 1")
       end
     end
@@ -380,7 +380,7 @@ class TrilogyAdapterTest < ActiveRecord::TrilogyTestCase
 
   test "ECONNREFUSED raises ActiveRecord::ConnectionFailed" do
     assert_raises(ActiveRecord::ConnectionFailed) do
-      @conn.raw_connection.stub(:query, -> (*) { raise Trilogy::SyscallError::ECONNREFUSED }) do
+      underlying_raw_connection(@conn).stub(:query, -> (*) { raise Trilogy::SyscallError::ECONNREFUSED }) do
         @conn.execute("SELECT 1")
       end
     end
@@ -388,7 +388,7 @@ class TrilogyAdapterTest < ActiveRecord::TrilogyTestCase
 
   test "ECONNRESET raises ActiveRecord::ConnectionFailed" do
     assert_raises(ActiveRecord::ConnectionFailed) do
-      @conn.raw_connection.stub(:query, -> (*) { raise Trilogy::SyscallError::ECONNRESET }) do
+      underlying_raw_connection(@conn).stub(:query, -> (*) { raise Trilogy::SyscallError::ECONNRESET }) do
         @conn.execute("SELECT 1")
       end
     end

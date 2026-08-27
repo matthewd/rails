@@ -16,6 +16,37 @@ module AdapterHelper
     current_adapter?(:SQLite3Adapter) && !ActiveRecord::Base.connection_pool.db_config.configuration_hash[:strict]
   end
 
+  # Exposes proxy targets for arranging and observing concrete-side state while
+  # application behavior continues through the proxy. Tests of the concrete
+  # adapter itself use the same helpers to retain their original subject.
+  def underlying_connection(connection = @connection)
+    if defined?(ARTest::RactorConnectionProxyTestMode)
+      ARTest::RactorConnectionProxyTestMode.target_connection(connection)
+    else
+      connection
+    end
+  end
+
+  def underlying_raw_connection(connection = @connection)
+    underlying_connection(connection).raw_connection
+  end
+
+  def underlying_connection_pool(pool = ActiveRecord::Base.connection_pool)
+    if defined?(ARTest::RactorConnectionProxyTestMode)
+      ARTest::RactorConnectionProxyTestMode.target_connection_pool(pool)
+    else
+      pool
+    end
+  end
+
+  def underlying_connection_handler(handler = ActiveRecord::Base.connection_handler)
+    if defined?(ARTest::RactorConnectionProxyTestMode)
+      ARTest::RactorConnectionProxyTestMode.target_handler(handler)
+    else
+      handler
+    end
+  end
+
   def mysql_enforcing_gtid_consistency?
     current_adapter?(:Mysql2Adapter, :TrilogyAdapter) && "ON" == ActiveRecord::Base.lease_connection.show_variable("enforce_gtid_consistency")
   end
@@ -105,13 +136,15 @@ module AdapterHelper
   # Detects whether the server side of the connection physically has a
   # transaction open, independently of the adapter's opinion. Skips if we don't
   # know how to detect this.
-  def raw_transaction_open?(connection)
+  def raw_transaction_open?(connection = @connection)
+    raw_connection = underlying_connection(connection).instance_variable_get(:@raw_connection)
+
     if current_adapter?(:PostgreSQLAdapter)
-      connection.instance_variable_get(:@raw_connection).transaction_status == ::PG::PQTRANS_INTRANS
+      raw_connection.transaction_status == ::PG::PQTRANS_INTRANS
     elsif current_adapter?(:Mysql2Adapter, :TrilogyAdapter)
       begin
-        connection.instance_variable_get(:@raw_connection).query("SAVEPOINT transaction_test")
-        connection.instance_variable_get(:@raw_connection).query("RELEASE SAVEPOINT transaction_test")
+        raw_connection.query("SAVEPOINT transaction_test")
+        raw_connection.query("RELEASE SAVEPOINT transaction_test")
 
         true
       rescue
@@ -119,7 +152,7 @@ module AdapterHelper
       end
     elsif current_adapter?(:SQLite3Adapter)
       begin
-        connection.instance_variable_get(:@raw_connection).transaction { nil }
+        raw_connection.transaction { nil }
         false
       rescue
         true
@@ -132,17 +165,18 @@ module AdapterHelper
   # Arrange for the server to disconnect the connection, leaving it broken (by
   # setting, and then sleeping to exceed, a very short timeout). Skips if we
   # can't do so.
-  def remote_disconnect(connection)
+  def remote_disconnect(connection = @connection)
+    target_connection = underlying_connection(connection)
+
     if current_adapter?(:PostgreSQLAdapter)
+      raw_connection = target_connection.instance_variable_get(:@raw_connection)
       # Connection was left in a bad state, need to reconnect to simulate fresh disconnect
-      connection.verify! if connection.instance_variable_get(:@raw_connection).status == ::PG::CONNECTION_BAD
-      unless connection.instance_variable_get(:@raw_connection).transaction_status == ::PG::PQTRANS_INTRANS
-        connection.instance_variable_get(:@raw_connection).async_exec("begin")
-      end
-      connection.instance_variable_get(:@raw_connection).async_exec("set idle_in_transaction_session_timeout = '10ms'")
+      target_connection.verify! if raw_connection.status == ::PG::CONNECTION_BAD
+      raw_connection.async_exec("begin") unless raw_connection.transaction_status == ::PG::PQTRANS_INTRANS
+      raw_connection.async_exec("set idle_in_transaction_session_timeout = '10ms'")
       sleep 0.2
     elsif current_adapter?(:Mysql2Adapter, :TrilogyAdapter)
-      connection.query_command("set @@wait_timeout=1", materialize_transactions: false)
+      target_connection.query_command("set @@wait_timeout=1", materialize_transactions: false)
       sleep 1.2
     else
       skip("remote_disconnect unsupported")
@@ -163,6 +197,7 @@ module AdapterHelper
   # Uses a separate connection to admin-kill the connection with the given ID
   # from the server side. Skips if we can't do so.
   def kill_connection_from_server(connection_id, pool = ActiveRecord::Base.connection_pool)
+    pool = underlying_connection_pool(pool)
     actor_connection = pool.checkout
     pool.remove(actor_connection)
 

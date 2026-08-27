@@ -233,6 +233,14 @@ module ActiveRecord
           assert_equal real.high_precision_current_timestamp, conn.high_precision_current_timestamp
         end
 
+        def test_test_helpers_expose_the_token_pinned_connection
+          @connection = proxy_connection
+          target = RactorConnectionProxy.connections.fetch(@connection.connection_token)
+
+          assert_same target, underlying_connection
+          assert_same target.raw_connection, underlying_raw_connection
+        end
+
         def test_proxy_health_methods_reflect_underlying_connection
           conn = proxy_connection
 

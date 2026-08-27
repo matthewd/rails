@@ -109,7 +109,7 @@ module ActiveRecord
 
           # mimic a connection that hasn't checked and cached the server version yet i.e. without a raw_connection
           connection.pool.instance_variable_set(:@server_version, nil)
-          connection.raw_connection.stub(:server_version, 0) do
+          underlying_raw_connection(connection).stub(:server_version, 0) do
             error = assert_raises ActiveRecord::ConnectionNotEstablished do
               connection.reconnect!
             end
@@ -131,7 +131,7 @@ module ActiveRecord
           # mimic a connection that hasn't checked and cached the server version yet i.e. without a raw_connection
           connection.pool.instance_variable_set(:@server_version, nil)
           # https://github.com/ged/ruby-pg/commit/a565e153d4d05955342ad24d4845378eee956935
-          connection.raw_connection.stub(:server_version, -> { raise PG::ConnectionBad, "PQserverVersion() can't get server version" }) do
+          underlying_raw_connection(connection).stub(:server_version, -> { raise PG::ConnectionBad, "PQserverVersion() can't get server version" }) do
             error = assert_raises ActiveRecord::ConnectionNotEstablished do
               connection.reconnect!
             end
@@ -983,7 +983,7 @@ module ActiveRecord
       end
 
       def test_retryable_query_error_handles_closed_connection
-        @connection.raw_connection.close
+        underlying_raw_connection.close
 
         assert_raises ActiveRecord::ConnectionNotEstablished do
           @connection.execute("SELECT 1")
@@ -993,7 +993,7 @@ module ActiveRecord
       end
 
       def test_translate_no_connection_exception_to_not_established
-        raw_connection = @connection.raw_connection
+        raw_connection = underlying_raw_connection
         pid = connection_id_from_server(@connection)
         kill_connection_from_server(pid)
         # If you run `@connection.execute` after the backend process has been terminated,
@@ -1048,7 +1048,7 @@ module ActiveRecord
         # -- the #raw_connection accessor would mark the connection dirty and
         # defeat recovery; in real use the notice is captured during AR's own
         # get_result.
-        raw = @connection.instance_variable_get(:@raw_connection)
+        raw = underlying_connection.instance_variable_get(:@raw_connection)
         raw.socket_io.wait_readable(1)
         raw.consume_input
         assert_nil raw.get_result
@@ -1071,7 +1071,7 @@ module ActiveRecord
         # With no clean reconnect available, the next query surfaces the failure
         # -- and it must carry the captured FATAL as its cause, not the generic
         # socket error that merely tripped over the already-dead connection.
-        raw = @connection.raw_connection
+        raw = underlying_raw_connection
         raw.socket_io.wait_readable(1)
         raw.consume_input
         assert_nil raw.get_result
@@ -1085,7 +1085,7 @@ module ActiveRecord
 
       def test_flush_on_dead_connection_translates_to_connection_failed
         pid = connection_id_from_server(@connection)
-        raw_connection = @connection.raw_connection
+        raw_connection = underlying_raw_connection
 
         # Queue a slow query, then kill the backend while it's running
         raw_connection.send_query("SELECT pg_sleep(1)")

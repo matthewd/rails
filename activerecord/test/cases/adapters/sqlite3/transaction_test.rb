@@ -89,7 +89,7 @@ class SQLite3TransactionTest < ActiveRecord::SQLite3TestCase
     with_connection(flags: shared_cache_flags) do |conn|
       conn.connect!
       conn.transaction(joinable: false, isolation: :read_uncommitted) do
-        conn.instance_variable_get(:@raw_connection).read_uncommitted = true
+        underlying_connection(conn).instance_variable_get(:@raw_connection).read_uncommitted = true
         assert(read_uncommitted?(conn))
         conn.transaction_manager.materialize_transactions
         assert(read_uncommitted?(conn))
@@ -101,7 +101,7 @@ class SQLite3TransactionTest < ActiveRecord::SQLite3TestCase
 
   private
     def read_uncommitted?(conn)
-      conn.instance_variable_get(:@raw_connection).get_first_value("PRAGMA read_uncommitted") != 0
+      underlying_connection(conn).instance_variable_get(:@raw_connection).get_first_value("PRAGMA read_uncommitted") != 0
     end
 
     def shared_cache_flags

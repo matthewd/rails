@@ -14,11 +14,13 @@ module ActiveRecord
       end
 
       teardown do
-        ENV["DATABASE_URL"] = @previous_database_url
-        ENV["RACK_ENV"] = @previous_rack_env
-        ENV["RAILS_ENV"] = @previous_rails_env
-        ActiveRecord::ConnectionAdapters.instance_variable_set(:@adapters, @adapters_was)
-        ActiveRecord.protocol_adapters = @protocol_adapters
+        if defined?(@adapters_was)
+          ENV["DATABASE_URL"] = @previous_database_url
+          ENV["RACK_ENV"] = @previous_rack_env
+          ENV["RAILS_ENV"] = @previous_rails_env
+          ActiveRecord::ConnectionAdapters.instance_variable_set(:@adapters, @adapters_was)
+          ActiveRecord.protocol_adapters = @protocol_adapters
+        end
       end
 
       def resolve_config(config, env_name = ActiveRecord::ConnectionHandling::DEFAULT_ENV.call)

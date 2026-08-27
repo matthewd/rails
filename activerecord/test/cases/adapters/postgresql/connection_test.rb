@@ -240,7 +240,7 @@ module ActiveRecord
 
     private
       def cause_server_side_disconnect
-        unless @connection.instance_variable_get(:@raw_connection).transaction_status == ::PG::PQTRANS_INTRANS
+        unless underlying_connection.instance_variable_get(:@raw_connection).transaction_status == ::PG::PQTRANS_INTRANS
           @connection.execute("begin")
         end
         @connection.execute("set idle_in_transaction_session_timeout = '10ms'")

@@ -96,7 +96,7 @@ class WarningsTest < ActiveRecord::AbstractMysqlTestCase
   test "db_warnings_action handles when warning_count does not match returned warnings" do
     with_db_warnings_action(:raise) do
       # force warnings to 1, but SHOW WARNINGS will return [].
-      @connection.raw_connection.stub(:warning_count, 1) do
+      underlying_raw_connection.stub(:warning_count, 1) do
         error = assert_raises(ActiveRecord::SQLWarning) do
           @connection.execute('SELECT "x"')
         end

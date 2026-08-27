@@ -154,14 +154,16 @@ class ConnectionTest < ActiveRecord::AbstractMysqlTestCase
     def test_passing_arbitrary_flags_to_adapter
       run_without_connection do |orig_connection|
         ActiveRecord::Base.establish_connection(orig_connection.merge(flags: Mysql2::Client::COMPRESS))
-        assert_equal (Mysql2::Client::COMPRESS | Mysql2::Client::FOUND_ROWS), ActiveRecord::Base.lease_connection.raw_connection.query_options[:flags]
+        connection = ActiveRecord::Base.lease_connection
+        assert_equal (Mysql2::Client::COMPRESS | Mysql2::Client::FOUND_ROWS), underlying_raw_connection(connection).query_options[:flags]
       end
     end
 
     def test_passing_flags_by_array_to_adapter
       run_without_connection do |orig_connection|
         ActiveRecord::Base.establish_connection(orig_connection.merge(flags: ["COMPRESS"]))
-        assert_equal ["COMPRESS", "FOUND_ROWS"], ActiveRecord::Base.lease_connection.raw_connection.query_options[:flags]
+        connection = ActiveRecord::Base.lease_connection
+        assert_equal ["COMPRESS", "FOUND_ROWS"], underlying_raw_connection(connection).query_options[:flags]
       end
     end
   end

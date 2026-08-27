@@ -214,6 +214,19 @@ namespace :db do
   end
 end
 
+namespace :test do
+  namespace :ractor_proxy do
+    adapters.each do |adapter|
+      desc "Run #{adapter} tests through the Ractor connection proxy"
+      task adapter do
+        ENV["AR_RACTOR_PROXY"] = "1"
+        ENV["TESTOPTS"] = [ENV["TESTOPTS"], "--exclude=/RactorConnectionTest/"].compact.join(" ")
+        Rake::Task["test:#{adapter}"].invoke
+      end
+    end
+  end
+end
+
 task build_mysql_databases: "db:mysql:build"
 task drop_mysql_databases: "db:mysql:drop"
 task rebuild_mysql_databases: "db:mysql:rebuild"

@@ -64,7 +64,7 @@ module ActiveRecord
         clobber_existing = clobber
 
         pool_spec = ActiveSupport::Ractors.on_main do
-          pool = ActiveRecord::Base.connection_handler.establish_connection(
+          pool = RactorConnectionProxy.connection_handler.establish_connection(
             db_config,
             owner_name: connection_owner_name,
             role: connection_role,

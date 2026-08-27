@@ -261,8 +261,10 @@ module ActiveRecord
     end
 
     teardown do
-      ActiveRecord::Tasks::DatabaseTasks.instance_variable_set(:@tasks, @tasks_was)
-      ActiveRecord::ConnectionAdapters.instance_variable_set(:@adapters, @adapters_was)
+      if defined?(@tasks_was)
+        ActiveRecord::Tasks::DatabaseTasks.instance_variable_set(:@tasks, @tasks_was)
+        ActiveRecord::ConnectionAdapters.instance_variable_set(:@adapters, @adapters_was)
+      end
     end
 
     def test_register_task
@@ -1074,11 +1076,11 @@ module ActiveRecord
       # Use a memory db here to avoid having to rollback at the end
       setup do
         migrations_path = [MIGRATIONS_ROOT, folder_name].join("/")
-        file = ActiveRecord::Base.lease_connection.raw_connection.filename
+        file = underlying_raw_connection(ActiveRecord::Base.lease_connection).filename
         @conn = ActiveRecord::Base.establish_connection adapter: "sqlite3",
           database: ":memory:", migrations_paths: migrations_path
         source_db = SQLite3::Database.new file
-        dest_db = ActiveRecord::Base.lease_connection.raw_connection
+        dest_db = underlying_raw_connection(ActiveRecord::Base.lease_connection)
         backup = SQLite3::Backup.new(dest_db, "main", source_db, "main")
         backup.step(-1)
         backup.finish

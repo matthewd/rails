@@ -170,11 +170,12 @@ class FixturesTest < ActiveRecord::TestCase
         assert_nothing_raised do
           conn = ActiveRecord::Base.lease_connection
           conn.execute("SELECT 1; SELECT 2;")
+          raw_connection = underlying_raw_connection(conn)
           case adapter_name
           when "Trilogy"
-            conn.raw_connection.next_result while conn.raw_connection.more_results_exist?
+            raw_connection.next_result while raw_connection.more_results_exist?
           else
-            conn.raw_connection.abandon_results!
+            raw_connection.abandon_results!
           end
         end
 
@@ -190,11 +191,12 @@ class FixturesTest < ActiveRecord::TestCase
         assert_nothing_raised do
           conn = ActiveRecord::Base.lease_connection
           conn.execute("SELECT 1; SELECT 2;")
+          raw_connection = underlying_raw_connection(conn)
           case adapter_name
           when "Trilogy"
-            conn.raw_connection.next_result while conn.raw_connection.more_results_exist?
+            raw_connection.next_result while raw_connection.more_results_exist?
           else
-            conn.raw_connection.abandon_results!
+            raw_connection.abandon_results!
           end
         end
       end
@@ -223,11 +225,12 @@ class FixturesTest < ActiveRecord::TestCase
         assert_raises(ActiveRecord::StatementInvalid) do
           conn = ActiveRecord::Base.lease_connection
           conn.execute("SELECT 1; SELECT 2;")
+          raw_connection = underlying_raw_connection(conn)
           case adapter_name
           when "Trilogy"
-            conn.raw_connection.next_result while conn.raw_connection.more_results_exist?
+            raw_connection.next_result while raw_connection.more_results_exist?
           else
-            conn.raw_connection.abandon_results!
+            raw_connection.abandon_results!
           end
         end
 
@@ -239,11 +242,12 @@ class FixturesTest < ActiveRecord::TestCase
         assert_raises(ActiveRecord::StatementInvalid) do
           conn = ActiveRecord::Base.lease_connection
           conn.execute("SELECT 1; SELECT 2;")
+          raw_connection = underlying_raw_connection(conn)
           case adapter_name
           when "Trilogy"
-            conn.raw_connection.next_result while conn.raw_connection.more_results_exist?
+            raw_connection.next_result while raw_connection.more_results_exist?
           else
-            conn.raw_connection.abandon_results!
+            raw_connection.abandon_results!
           end
         end
       end

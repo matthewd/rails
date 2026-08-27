@@ -41,7 +41,7 @@ module ActiveRecord
       connection = Sample.lease_connection
       connection.connect!
 
-      connection.instance_variable_get(:@raw_connection).stub(:set_server_option, -> (*) { flunk "Server option changed!" }) do
+      underlying_connection(connection).instance_variable_get(:@raw_connection).stub(:set_server_option, -> (*) { flunk "Server option changed!" }) do
         queries = capture_notifications("sql.active_record") do
           connection.begin_isolated_db_transaction(:read_committed)
         end.map { _1.payload[:sql] }
@@ -70,7 +70,7 @@ module ActiveRecord
         connection = Sample.lease_connection
         connection.send(:max_allowed_packet) # eagerly compute so execute_batch doesn't do it lazily
 
-        connection.instance_variable_get(:@raw_connection).stub(:set_server_option, -> (*) { flunk "Server option changed!" }) do
+        underlying_connection(connection).instance_variable_get(:@raw_connection).stub(:set_server_option, -> (*) { flunk "Server option changed!" }) do
           queries = capture_notifications("sql.active_record") do
             connection.begin_isolated_db_transaction(:read_committed)
           end.map { _1.payload[:sql] }

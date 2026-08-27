@@ -1074,7 +1074,7 @@ module ActiveRecord
         )
         conn.connect!
 
-        assert_not_predicate conn.raw_connection, :readonly?
+        assert_not_predicate underlying_raw_connection(conn), :readonly?
       end
 
       def test_db_is_not_readonly_when_readonly_option_is_unspecified
@@ -1084,7 +1084,7 @@ module ActiveRecord
         )
         conn.connect!
 
-        assert_not_predicate conn.raw_connection, :readonly?
+        assert_not_predicate underlying_raw_connection(conn), :readonly?
       end
 
       def test_db_is_readonly_when_readonly_option_is_true
@@ -1095,7 +1095,7 @@ module ActiveRecord
         )
         conn.connect!
 
-        assert_predicate conn.raw_connection, :readonly?
+        assert_predicate underlying_raw_connection(conn), :readonly?
       end
 
       def test_writes_are_not_permitted_to_readonly_databases

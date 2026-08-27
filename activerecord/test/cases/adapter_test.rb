@@ -48,13 +48,13 @@ module ActiveRecord
     def test_valid_column
       @connection.native_database_types.each_key do |type|
         assert @connection.valid_type?(type)
-        assert @connection.class.valid_type?(type)
+        assert underlying_connection.class.valid_type?(type)
       end
     end
 
     def test_invalid_column
       assert_not @connection.valid_type?(:foobar)
-      assert_not @connection.class.valid_type?(:foobar)
+      assert_not underlying_connection.class.valid_type?(:foobar)
     end
 
     def test_tables
@@ -789,20 +789,21 @@ module ActiveRecord
       end
 
       test "a non-StandardError interrupt marks the connection for re-verification" do
+        connection = underlying_connection
         # A recently-used, verified connection is the state a mid-query interrupt poisons.
-        @connection.execute("SELECT 1")
+        connection.execute("SELECT 1")
         error = Class.new(Exception)
 
         assert_raises error do
-          @connection.send(:with_raw_connection) do
+          connection.send(:with_raw_connection) do
             raise error
           end
         end
 
         # It can't be reused on the "verified" flag or the recently-used shortcut, so both
         # are cleared and the connection is re-verified before its next use.
-        assert_not_predicate @connection, :verified?
-        assert_nil @connection.instance_variable_get(:@last_activity)
+        assert_not_predicate connection, :verified?
+        assert_nil connection.instance_variable_get(:@last_activity)
       end
 
       test "quoting a string on a 'clean' failed connection will not prevent reconnecting" do
@@ -979,9 +980,10 @@ module ActiveRecord
       end
 
       test "can reconnect and retry queries under limit when retry deadline is set" do
+        connection = underlying_connection
         attempts = 0
-        @connection.stub(:retry_deadline, 0.1) do
-          @connection.send(:with_raw_connection, allow_retry: true) do
+        connection.stub(:retry_deadline, 0.1) do
+          connection.send(:with_raw_connection, allow_retry: true) do
             if attempts == 0
               attempts += 1
               raise ActiveRecord::ConnectionFailed.new("Something happened to the connection")
@@ -991,9 +993,10 @@ module ActiveRecord
       end
 
       test "does not reconnect and retry queries when retries are disabled" do
+        connection = underlying_connection
         assert_raises(ActiveRecord::ConnectionFailed) do
           attempts = 0
-          @connection.send(:with_raw_connection) do
+          connection.send(:with_raw_connection) do
             if attempts == 0
               attempts += 1
               raise ActiveRecord::ConnectionFailed.new("Something happened to the connection")
@@ -1003,10 +1006,11 @@ module ActiveRecord
       end
 
       test "does not reconnect and retry queries that exceed retry deadline" do
+        connection = underlying_connection
         assert_raises(ActiveRecord::ConnectionFailed) do
           attempts = 0
-          @connection.stub(:retry_deadline, 0.1) do
-            @connection.send(:with_raw_connection, allow_retry: true) do
+          connection.stub(:retry_deadline, 0.1) do
+            connection.send(:with_raw_connection, allow_retry: true) do
               if attempts == 0
                 sleep(0.2)
                 attempts += 1
@@ -1028,7 +1032,7 @@ module ActiveRecord
       end
 
       test "disconnect and recover on #configure_connection failure" do
-        connection = ActiveRecord::Base.connection_pool.send(:new_connection)
+        connection = underlying_connection_pool.send(:new_connection)
 
         failures = [ActiveRecord::ConnectionFailed.new("Oops"), ActiveRecord::ConnectionFailed.new("Oops 2")]
         connection.singleton_class.define_method(:configure_connection) do
@@ -1049,7 +1053,7 @@ module ActiveRecord
       end
 
       test "disconnect and recover on #configure_connection timeout" do
-        connection = ActiveRecord::Base.connection_pool.send(:new_connection)
+        connection = underlying_connection_pool.send(:new_connection)
 
         slow = [5]
         connection.singleton_class.define_method(:configure_connection) do
@@ -1098,7 +1102,8 @@ module ActiveRecord
   class AdapterThreadSafetyTest < ActiveRecord::TestCase
     setup do
       @threads = []
-      @connection = ActiveRecord::Base.connection_pool.checkout
+      @connection = underlying_connection_pool.checkout
+      @connection.lock_thread = Thread.current
     end
 
     teardown do
@@ -1170,7 +1175,7 @@ if ActiveRecord::Base.lease_connection.savepoint_errors_invalidate_transactions?
   class InvalidateTransactionTest < ActiveRecord::TestCase
     def test_invalidates_transaction_on_rollback_error
       @invalidated = false
-      connection = ActiveRecord::Base.lease_connection
+      connection = underlying_connection(ActiveRecord::Base.lease_connection)
 
       connection.transaction do
         connection.send(:with_raw_connection) do

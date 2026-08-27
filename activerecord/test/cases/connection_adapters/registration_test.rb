@@ -12,7 +12,9 @@ module ActiveRecord
       end
 
       def teardown
-        ActiveRecord::ConnectionAdapters.instance_variable_set(:@adapters, @original_adapters)
+        if defined?(@original_adapters)
+          ActiveRecord::ConnectionAdapters.instance_variable_set(:@adapters, @original_adapters)
+        end
       end
 
       test "#register registers a new database adapter and #resolve can find it and raises if it cannot" do
