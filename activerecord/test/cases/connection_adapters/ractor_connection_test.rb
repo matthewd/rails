@@ -297,6 +297,21 @@ module ActiveRecord
           end
         end
 
+        def test_disconnected_proxy_can_reconnect_its_token_pinned_connection
+          conn = proxy_connection
+          connection_token = conn.connection_token
+
+          conn.disconnect!
+
+          assert conn.connected?
+          assert_not conn.active?
+          assert RactorConnectionProxy.connections.key?(connection_token)
+
+          assert_same conn, conn.reconnect!
+          assert conn.active?
+          assert_equal 1, conn.select_value("SELECT 1")
+        end
+
         def test_execute_returns_materialized_result
           # Raw driver results cannot cross the Ractor boundary; this is the
           # documented transport behavior of the proxy's `execute`.
@@ -476,6 +491,21 @@ module ActiveRecord
             value
           end
           assert_equal 42, result
+        end
+
+        def test_disconnect_and_reconnect_from_worker_ractor
+          result = on_ractor do
+            pool = ConnectionAdapters::RactorConnectionHandler.instance.retrieve_connection_pool("ActiveRecord::Base")
+            conn = pool.lease_connection
+            conn.disconnect!
+            disconnected = !conn.active?
+            conn.reconnect!
+            value = conn.select_value("SELECT 42")
+            pool.release_connection
+            [disconnected, value]
+          end
+
+          assert_equal [true, 42], result
         end
 
         def test_transaction_from_worker_ractor

@@ -537,13 +537,7 @@ module ActiveRecord
       end
 
       def disconnect!
-        if @connection_token
-          begin
-            remote_adapter_call(:disconnect!)
-          ensure
-            release_connection
-          end
-        end
+        remote_adapter_call(:disconnect!) if @connection_token
         reset_transaction
       end
 
