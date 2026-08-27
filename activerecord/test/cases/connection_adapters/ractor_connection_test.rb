@@ -677,6 +677,20 @@ module ActiveRecord
           end
         end
 
+        def test_establish_connection_from_worker_with_database_config
+          result = on_ractor do
+            handler = ConnectionAdapters::RactorConnectionHandler.instance
+            config = handler.retrieve_connection_pool("ActiveRecord::Base").db_config
+            pool = handler.establish_connection(config, owner_name: "RactorDatabaseConfigBase")
+            value = pool.lease_connection.select_value("SELECT 42")
+            pool.release_connection
+            handler.remove_connection_pool("RactorDatabaseConfigBase")
+            [value, pool.db_config.env_name, pool.db_config.name]
+          end
+
+          assert_equal [42, db_config.env_name, db_config.name], result
+        end
+
         def test_establish_connection_from_worker_with_mutable_config
           database_path = File.join(Dir.tmpdir, "ractor_connection_test_#{Process.pid}.sqlite3")
           selected = on_ractor(database_path) do |path|

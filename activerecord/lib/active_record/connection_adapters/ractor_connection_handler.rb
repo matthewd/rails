@@ -6,7 +6,34 @@ module ActiveRecord
   module ConnectionAdapters
     class RactorConnectionHandler # :nodoc:
       INSTANCE = new.freeze
-      def self.instance = INSTANCE
+
+      class << self
+        def instance = INSTANCE
+
+        def config_spec(config)
+          spec = case config
+          when ActiveRecord::DatabaseConfigurations::UrlConfig
+            [:url, config.env_name, config.name, config.url, config.configuration_hash]
+          when ActiveRecord::DatabaseConfigurations::HashConfig
+            [:hash, config.env_name, config.name, config.configuration_hash]
+          else
+            [:raw, config]
+          end
+          RactorConnectionProxy.shareable_copy(spec)
+        end
+
+        def config_from_spec(spec)
+          type, *values = spec
+          case type
+          when :url
+            ActiveRecord::DatabaseConfigurations::UrlConfig.new(*values)
+          when :hash
+            ActiveRecord::DatabaseConfigurations::HashConfig.new(*values)
+          when :raw
+            values.first
+          end
+        end
+      end
 
       def connection_pool_list(role = nil)
         RactorConnectionProxy.main_pool_specs(role).map { |pool_spec| RactorConnectionPool.new(pool_spec) }
@@ -65,13 +92,14 @@ module ActiveRecord
 
       def establish_connection(config, owner_name: Base, role: Base.current_role, shard: Base.current_shard, clobber: false)
         connection_owner_name = (owner_name.respond_to?(:name) ? owner_name.name : owner_name).to_s
-        db_config = RactorConnectionProxy.shareable_copy(config)
+        db_config_spec = self.class.config_spec(config)
         connection_role = role
         connection_shard = shard
         clobber_existing = clobber
 
         pool_spec = ActiveSupport::Ractors.on_main do
-          pool = RactorConnectionProxy.connection_handler.establish_connection(
+          db_config = RactorConnectionHandler.config_from_spec(db_config_spec)
+          pool = ActiveRecord::Base.connection_handler.establish_connection(
             db_config,
             owner_name: connection_owner_name,
             role: connection_role,
