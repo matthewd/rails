@@ -218,6 +218,20 @@ module ActiveRecord
           assert_not handler.active_connections?
         end
 
+        def test_handler_removes_connection_pool_from_worker_ractor
+          result = on_ractor do
+            handler = ConnectionAdapters::RactorConnectionHandler.instance
+            config = handler.retrieve_connection_pool("ActiveRecord::Base").db_config.configuration_hash
+            pool = handler.establish_connection(config, owner_name: "RactorRemovableBase")
+            value = pool.lease_connection.select_value("SELECT 42")
+            pool.release_connection
+            removed = handler.remove_connection_pool("RactorRemovableBase")
+            [value, removed.adapter, handler.retrieve_connection_pool("RactorRemovableBase").nil?]
+          end
+
+          assert_equal [42, db_config.adapter, true], result
+        end
+
         # --- proxy: concrete adapter fidelity ---
 
         def test_proxy_reports_concrete_adapter_behavior

@@ -135,6 +135,18 @@ module ActiveRecord
           end
         end
 
+        def remove_connection_pool(connection_name, role, shard)
+          shareable_connection_name = shareable_copy(connection_name.to_s)
+          main_operation do
+            db_config = connection_handler.remove_connection_pool(
+              shareable_connection_name,
+              role: role,
+              shard: shard,
+            )
+            shareable_copy(db_config)
+          end
+        end
+
         def dispatch_to_main_pool(connection_name, role, shard, method_name, args, kwargs, connection_pool: nil)
           shareable_connection_name = shareable_copy(connection_name.to_s)
           shareable_args = shareable_copy(args)

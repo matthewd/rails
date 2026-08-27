@@ -56,6 +56,13 @@ module ActiveRecord
         each_connection_pool(role).each(&:flush!)
       end
 
+      def remove_connection_pool(connection_name, role: ActiveRecord::Base.current_role, shard: ActiveRecord::Base.current_shard)
+        if pool = retrieve_connection_pool(connection_name, role: role, shard: shard)
+          pool.release_connection
+        end
+        RactorConnectionProxy.remove_connection_pool(connection_name, role, shard)
+      end
+
       def establish_connection(config, owner_name: Base, role: Base.current_role, shard: Base.current_shard, clobber: false)
         connection_owner_name = (owner_name.respond_to?(:name) ? owner_name.name : owner_name).to_s
         db_config = RactorConnectionProxy.shareable_copy(config)
