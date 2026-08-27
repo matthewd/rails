@@ -69,7 +69,7 @@ module ActiveRecord
       attr_accessor :adapter, :binds, :ran_async, :notification_payload, :log_handle,
                     :retry_budget
 
-      def initialize(adapter:, arel: nil, raw_sql: nil, processed_sql: nil, name: "SQL", binds: [], prepare: false, allow_async: false,
+      def initialize(adapter:, arel: nil, raw_sql: nil, processed_sql: nil, name: "SQL", binds: [], type_casted_binds: nil, prepare: false, allow_async: false,
                      allow_retry: false, materialize_transactions: true, batch: false)
         if arel.nil? && raw_sql.nil? && processed_sql.nil?
           raise ArgumentError, "One of arel, raw_sql, or processed_sql must be provided"
@@ -87,7 +87,7 @@ module ActiveRecord
         @materialize_transactions = materialize_transactions
         @batch = batch
         @processed_sql = processed_sql
-        @type_casted_binds = nil
+        @type_casted_binds = type_casted_binds
         @notification_payload = nil
         @raw_result = nil
         @raw_result_available = false

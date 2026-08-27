@@ -16,6 +16,20 @@ module ActiveRecord
       super
     end
 
+    test "uses provided type-casted binds" do
+      type_casted_binds = ["already cast"]
+      intent = ActiveRecord::ConnectionAdapters::QueryIntent.new(
+        adapter: @connection,
+        raw_sql: "SELECT ?",
+        binds: ["uncast"],
+        type_casted_binds: type_casted_binds,
+      )
+
+      @connection.stub(:type_casted_binds, ->(*) { flunk }) do
+        assert_same type_casted_binds, intent.type_casted_binds
+      end
+    end
+
     test "finalized intents cannot be delivered or reset" do
       connection = @connection
       intent = build_intent(connection)

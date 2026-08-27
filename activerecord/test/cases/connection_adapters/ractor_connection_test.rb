@@ -18,6 +18,21 @@ module ActiveRecord
         self.table_name = "topics"
       end
 
+      class NormalizedInteger < Type::Integer
+        attr_reader :normalization_count
+
+        def initialize(normalizer)
+          super()
+          @normalizer = normalizer
+          @normalization_count = 0
+        end
+
+        def serialize(value)
+          @normalization_count += 1
+          super(@normalizer.call(value))
+        end
+      end
+
       if !in_memory_db? && RUBY_VERSION >= "4.0"
         setup do
           create_widgets_table
@@ -255,6 +270,14 @@ module ActiveRecord
           assert_same target.raw_connection, underlying_raw_connection
         end
 
+        def test_proxy_builds_the_concrete_visitor_locally
+          real = ActiveRecord::Base.lease_connection
+          conn = proxy_connection
+
+          assert_instance_of real.visitor.class, conn.visitor
+          assert_same conn, conn.visitor.instance_variable_get(:@connection)
+        end
+
         def test_proxy_health_methods_reflect_underlying_connection
           conn = proxy_connection
 
@@ -369,6 +392,36 @@ module ActiveRecord
           assert_equal [["dear"]], rows
         end
 
+        def test_type_casted_binds_preserve_binary_data
+          real = ActiveRecord::Base.lease_connection
+          conn = proxy_connection
+          type = Type::Binary.new
+          value = "binary\0value".b
+
+          expected = real.type_casted_binds([Relation::QueryAttribute.new("payload", value, type)])
+          actual = conn.type_casted_binds([Relation::QueryAttribute.new("payload", value, type)])
+
+          assert_equal expected, actual
+          expected_value = expected.first.is_a?(Hash) ? expected.first[:value] : expected.first
+          actual_value = actual.first.is_a?(Hash) ? actual.first[:value] : actual.first
+          assert_equal expected_value.encoding, actual_value.encoding
+        end
+
+        def test_type_casted_binds_preserve_postgresql_arrays
+          skip unless current_adapter?(:PostgreSQLAdapter)
+
+          real = ActiveRecord::Base.lease_connection
+          conn = proxy_connection
+          type = real.lookup_cast_type("text[]")
+          value = ["café"]
+
+          expected = real.type_casted_binds([Relation::QueryAttribute.new("strings", value, type)])
+          actual = conn.type_casted_binds([Relation::QueryAttribute.new("strings", value, type)])
+
+          assert_equal expected, actual
+          assert_equal Encoding::UTF_8, actual.first.encoding
+        end
+
         def test_arel_compilation_uses_token_pinned_connection
           conn = proxy_connection
           table = Arel::Table.new(name: widgets_table)
@@ -386,6 +439,15 @@ module ActiveRecord
 
           # Compilation must not check out a second main-pool connection.
           assert_equal 1, ActiveRecord::Base.connection_pool.connections.size
+        end
+
+        def test_arel_bound_literals_use_concrete_bound_value_casting
+          real = ActiveRecord::Base.lease_connection
+          conn = proxy_connection
+          table = Arel::Table.new(name: widgets_table)
+          manager = table.project(table[:id]).where(Arel.sql("price = ?", 1))
+
+          assert_equal real.to_sql_and_binds(manager), conn.to_sql_and_binds(manager)
         end
 
         def test_unprepared_arel_compilation_inlines_bind_values
@@ -531,6 +593,33 @@ module ActiveRecord
           end
 
           assert_equal [true, 42], result
+        end
+
+        def test_worker_compiles_arel_with_unshareable_bind_state
+          ActiveRecord::Base.lease_connection.insert(
+            Arel.sql("INSERT INTO #{widgets_table} (name, price) VALUES ('local bind', 42)")
+          )
+          ActiveRecord::Base.release_connection
+
+          # Warm the type class's memoized serialization metadata while its
+          # type instance and normalizer remain worker-local.
+          NormalizedInteger.new(->(value) { value })
+
+          selected, shareable, normalization_count = on_ractor(widgets_table) do |table_name|
+            type = NormalizedInteger.new(->(value) { value + 1 })
+            table = Arel::Table.new(name: table_name)
+            bind = Relation::QueryAttribute.new("price", 41, type)
+            manager = table.project(table[:price]).where(table[:price].eq(bind))
+            pool = ConnectionAdapters::RactorConnectionHandler.instance.retrieve_connection_pool("ActiveRecord::Base")
+            conn = pool.lease_connection
+            value = conn.select_value(manager)
+            pool.release_connection
+            [value, Ractor.shareable?(type), type.normalization_count]
+          end
+
+          assert_equal 42, selected
+          assert_not shareable
+          assert_equal 1, normalization_count
         end
 
         def test_transaction_from_worker_ractor

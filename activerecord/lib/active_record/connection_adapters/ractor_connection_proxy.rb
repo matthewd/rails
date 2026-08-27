@@ -5,13 +5,13 @@
 require "ractor/dispatch"
 require "active_record/connection_adapters/ractor_connection_proxy/query_request"
 require "active_record/connection_adapters/ractor_connection_proxy/query_response"
-require "active_record/connection_adapters/ractor_connection_proxy/visitor_proxy"
 
 module ActiveRecord
   module ConnectionAdapters
     # Worker-Ractor stand-in for a concrete adapter. It runs the ordinary
-    # worker-side query pipeline locally and forwards everything else to a
-    # token-pinned physical connection on the main Ractor.
+    # worker-side query pipeline, including Arel compilation, locally and
+    # forwards physical connection operations to a token-pinned connection on
+    # the main Ractor.
     class RactorConnectionProxy < AbstractAdapter # :nodoc:
       ADAPTER_NAME = "RactorProxy"
 
@@ -206,46 +206,14 @@ module ActiveRecord
           end
         end
 
-        # Compiles an Arel AST with the concrete adapter's `to_sql_and_binds`,
-        # preserving its prepared-statement, collector, and retryability
-        # semantics. Returns `[sql, binds_payload, preparable, allow_retry]`.
-        def compile_on_connection(connection_token, ast_payload, prepared_statements, preparable, allow_retry, connection_pool: nil)
+        # Asks the concrete adapter how it transforms a case-sensitive
+        # comparison without transporting the caller's Arel graph.
+        def case_sensitive_comparison_requires_binary_on_connection(connection_token, table_name, column_name, connection_pool: nil)
           main_operation(connection_pool: connection_pool) do
             connection = fetch_connection(connection_token)
-            ast = Marshal.load(ast_payload)
-            result = if prepared_statements
-              connection.to_sql_and_binds(ast, [], preparable, allow_retry)
-            else
-              connection.unprepared_statement do
-                connection.to_sql_and_binds(ast, [], preparable, allow_retry)
-              end
-            end
-            sql, binds, compiled_preparable, compiled_allow_retry = result
-            ActiveSupport::Ractors.make_shareable(
-              [sql, Marshal.dump(binds), compiled_preparable, compiled_allow_retry], copy: true
-            )
-          end
-        end
-
-        # Compiles an Arel node with the concrete adapter's visitor and the
-        # caller's collector, reconstructed on the main Ractor. Returns
-        # `[value_payload, preparable, retryable]`.
-        def visitor_compile_on_connection(connection_token, node_payload, collector_payload, connection_pool: nil)
-          main_operation(connection_pool: connection_pool) do
-            connection = fetch_connection(connection_token)
-            node = Marshal.load(node_payload)
-            collector =
-              case collector_payload
-              when nil then Arel::Collectors::SQLString.new
-              when :substitute_binds
-                Arel::Collectors::SubstituteBinds.new(connection, Arel::Collectors::SQLString.new)
-              else
-                Marshal.load(collector_payload)
-              end
-            value = connection.visitor.compile(node, collector)
-            preparable = collector.preparable if collector.respond_to?(:preparable)
-            retryable = collector.retryable if collector.respond_to?(:retryable)
-            ActiveSupport::Ractors.make_shareable([Marshal.dump(value), preparable, retryable], copy: true)
+            attribute = Arel::Table.new(name: table_name)[column_name]
+            comparison = connection.case_sensitive_comparison(attribute, nil)
+            comparison.right.is_a?(Arel::Nodes::Bin)
           end
         end
 
@@ -419,12 +387,13 @@ module ActiveRecord
           end
 
           def perform_main_query(connection, request)
-            binds = request.binds_payload ? Marshal.load(request.binds_payload) : []
+            binds = request.type_casted_binds_payload ? Marshal.load(request.type_casted_binds_payload) : []
             intent = QueryIntent.new(
               adapter: connection,
               processed_sql: request.sql,
               name: request.name,
               binds: binds,
+              type_casted_binds: binds,
               prepare: request.prepare,
               allow_retry: request.allow_retry,
               materialize_transactions: false,
@@ -462,6 +431,7 @@ module ActiveRecord
             {
               adapter_class_name: klass.name,
               adapter_name: connection.adapter_name,
+              visitor_class: connection.visitor.class,
               prepared_statements: connection.instance_variable_get(:@prepared_statements),
               remote_methods: remote_adapter_methods(klass),
             }
@@ -512,11 +482,11 @@ module ActiveRecord
       end
 
       def initialize(pool, connection_token, profile, config)
+        @adapter_profile = profile
         super(nil, PLACEHOLDER_LOGGER, nil, config)
         @connection_token = connection_token
         @logger = nil
         @pool = pool
-        @adapter_profile = profile
         @prepared_statements = profile[:prepared_statements]
         @raw_connection = connection_token
         @verified = true
@@ -530,6 +500,8 @@ module ActiveRecord
       def adapter_name
         @adapter_profile[:adapter_name]
       end
+
+      attr_reader :connection_token
 
       # Whether this proxy still holds a token-pinned main-side connection.
       # For the state of the underlying physical connection, use #active?.
@@ -617,34 +589,27 @@ module ActiveRecord
         return [] if binds.nil? || binds.empty?
 
         self.class.cast_binds_on_connection(
-          @connection_token, self.class.dump_binds(binds), connection_pool: @pool
+          @connection_token, self.class.dump_binds(serialize_bind_values(binds)), connection_pool: @pool
         )
       end
 
-      def to_sql_and_binds(arel_or_sql, binds = [], preparable = nil, allow_retry = false) # :nodoc:
-        if arel_or_sql.respond_to?(:ast)
-          arel_or_sql = arel_or_sql.ast
-        end
+      def case_sensitive_comparison(attribute, value) # :nodoc:
+        requires_binary = self.class.case_sensitive_comparison_requires_binary_on_connection(
+          @connection_token, attribute.relation.name, attribute.name, connection_pool: @pool
+        )
 
-        if Arel.arel_node?(arel_or_sql) && !(String === arel_or_sql)
-          unless binds.empty?
-            raise "Passing bind parameters with an arel AST is forbidden. " \
-              "The values must be stored on the AST directly"
-          end
-
-          sql, binds_payload, compiled_preparable, compiled_allow_retry =
-            self.class.compile_on_connection(
-              @connection_token,
-              self.class.dump_object(arel_or_sql, "an Arel AST"),
-              prepared_statements?,
-              preparable,
-              allow_retry,
-              connection_pool: @pool,
-            )
-          [sql, Marshal.load(binds_payload), compiled_preparable, compiled_allow_retry]
+        if requires_binary
+          attribute.eq(Arel::Nodes::Bin.new(value))
         else
-          super
+          attribute.eq(value)
         end
+      end
+
+      # Keep application Arel and types local while the concrete adapter
+      # builds, executes, and formats its dialect-specific EXPLAIN query.
+      def explain(arel_or_sql, binds = [], options = []) # :nodoc:
+        sql, binds = to_sql_and_binds(arel_or_sql, binds)
+        remote_adapter_call(:explain, [sql, serialize_bind_values(binds), options])
       end
 
       # Raw driver results cannot cross the Ractor boundary; `execute`
@@ -655,34 +620,19 @@ module ActiveRecord
         intent.cast_result
       end
 
-      def remote_visitor_compile(node, collector) # :nodoc:
-        collector_payload =
-          case collector
-          when nil
-            nil
-          when Arel::Collectors::SubstituteBinds
-            :substitute_binds
-          else
-            self.class.dump_object(collector, "the Arel collector #{collector.class}")
-          end
-
-        value_payload, preparable, retryable = self.class.visitor_compile_on_connection(
-          @connection_token,
-          self.class.dump_object(node, "an Arel AST"),
-          collector_payload,
-          connection_pool: @pool,
-        )
-
-        if collector
-          collector.preparable = preparable if collector.respond_to?(:preparable=) && !preparable.nil?
-          collector.retryable = retryable if collector.respond_to?(:retryable=) && !retryable.nil?
-        end
-        Marshal.load(value_payload)
-      end
-
       private
+        def serialize_bind_values(binds)
+          binds.map do |value|
+            if ActiveModel::Attribute === value
+              value.value_for_database
+            else
+              value
+            end
+          end
+        end
+
         def arel_visitor
-          VisitorProxy.new(self)
+          @adapter_profile.fetch(:visitor_class).new(self)
         end
 
         def build_statement_pool
@@ -694,7 +644,7 @@ module ActiveRecord
         def perform_query(_raw_connection, intent)
           request = QueryRequest.new(
             sql: intent.processed_sql,
-            binds_payload: self.class.dump_binds(intent.binds),
+            type_casted_binds_payload: self.class.dump_binds(intent.type_casted_binds),
             name: intent.name,
             prepare: intent.prepare,
             batch: intent.batch,

@@ -7,11 +7,11 @@ module ActiveRecord
     class RactorConnectionProxy < AbstractAdapter # :nodoc:
       # Shareable request for the main-side `query` operation.
       class QueryRequest
-        attr_reader :sql, :binds_payload, :name, :prepare, :batch, :allow_retry
+        attr_reader :sql, :type_casted_binds_payload, :name, :prepare, :batch, :allow_retry
 
-        def initialize(sql:, binds_payload:, name:, prepare:, batch:, allow_retry:)
+        def initialize(sql:, type_casted_binds_payload:, name:, prepare:, batch:, allow_retry:)
           @sql = RactorConnectionProxy.shareable_copy(sql)
-          @binds_payload = binds_payload
+          @type_casted_binds_payload = type_casted_binds_payload
           @name = RactorConnectionProxy.shareable_copy(name)
           @prepare = !!prepare
           @batch = !!batch
