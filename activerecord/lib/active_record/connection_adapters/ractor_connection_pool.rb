@@ -65,8 +65,10 @@ module ActiveRecord
       end
 
       def dispatch_to_main_schema_cache(method_name, args, kwargs) # :nodoc:
+        connection_token = active_connection?&.connection_token
         RactorConnectionProxy.dispatch_to_main_schema_cache(
-          @connection_name, @role, @shard, method_name, args, kwargs, connection_pool: self
+          @connection_name, @role, @shard, method_name, args, kwargs,
+          connection_token: connection_token, connection_pool: self
         )
       end
 

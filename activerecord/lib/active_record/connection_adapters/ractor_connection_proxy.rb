@@ -148,14 +148,19 @@ module ActiveRecord
           end
         end
 
-        def dispatch_to_main_schema_cache(connection_name, role, shard, method_name, args, kwargs, connection_pool: nil)
+        def dispatch_to_main_schema_cache(connection_name, role, shard, method_name, args, kwargs, connection_token: nil, connection_pool: nil)
           shareable_connection_name = shareable_copy(connection_name.to_s)
           shareable_args = shareable_copy(args)
           shareable_kwargs = shareable_copy(kwargs)
           dispatched_method = method_name.to_sym
 
           main_operation(connection_pool: connection_pool) do
-            schema_cache = main_pool(shareable_connection_name, role, shard).schema_cache
+            pool = main_pool(shareable_connection_name, role, shard)
+            schema_cache = if connection_token
+              BoundSchemaReflection.for_lone_connection(pool.schema_reflection, fetch_connection(connection_token))
+            else
+              pool.schema_cache
+            end
             shareable_copy(schema_cache.__send__(dispatched_method, *shareable_args, **shareable_kwargs))
           end
         end

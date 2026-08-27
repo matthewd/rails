@@ -645,6 +645,24 @@ module ActiveRecord
           assert_not courses_known_to_primary
         end
 
+        def test_schema_cache_uses_the_token_pinned_connection
+          pool = RactorConnectionHandler.instance.retrieve_connection_pool("ActiveRecord::Base")
+          connection = pool.lease_connection
+          target = RactorConnectionProxy.connections.fetch(connection.connection_token)
+          fake_schema_cache = Object.new
+          def fake_schema_cache.columns_hash(_table_name) = {}
+
+          build_cache = ->(schema_reflection, schema_connection) do
+            assert_same target.pool.schema_reflection, schema_reflection
+            assert_same target, schema_connection
+            fake_schema_cache
+          end
+
+          BoundSchemaReflection.stub(:for_lone_connection, build_cache) do
+            assert_equal({}, pool.schema_cache.columns_hash("topics"))
+          end
+        end
+
         def test_establish_connection_from_worker_with_mutable_config
           database_path = File.join(Dir.tmpdir, "ractor_connection_test_#{Process.pid}.sqlite3")
           selected = on_ractor(database_path) do |path|
