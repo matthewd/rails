@@ -38,6 +38,12 @@ module Arel
     class DummySubNode < DummySuperNode
     end
 
+    class RactorVisitor < Visitor
+      def visit_Arel_Visitors_DummySuperNode(_node)
+        42
+      end
+    end
+
     class DispatchContaminationTest < Arel::Test
       setup do
         @connection = Table.engine.lease_connection
@@ -57,6 +63,11 @@ module Arel
         visitor.accept(node)
 
         assert_equal "( TRUE UNION FALSE )", node.to_sql
+      end
+
+      test "maintains a dispatch cache in each Ractor" do
+        assert_equal 42, RactorVisitor.new.accept(DummySuperNode.new)
+        assert_equal 42, on_ractor { RactorVisitor.new.accept(DummySuperNode.new) }
       end
 
       test "is threadsafe when implementing superclass fallback" do
