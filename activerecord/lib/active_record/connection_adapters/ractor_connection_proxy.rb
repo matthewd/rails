@@ -209,11 +209,18 @@ module ActiveRecord
         # Compiles an Arel AST with the concrete adapter's `to_sql_and_binds`,
         # preserving its prepared-statement, collector, and retryability
         # semantics. Returns `[sql, binds_payload, preparable, allow_retry]`.
-        def compile_on_connection(connection_token, ast_payload, preparable, allow_retry, connection_pool: nil)
+        def compile_on_connection(connection_token, ast_payload, prepared_statements, preparable, allow_retry, connection_pool: nil)
           main_operation(connection_pool: connection_pool) do
             connection = fetch_connection(connection_token)
-            sql, binds, compiled_preparable, compiled_allow_retry =
-              connection.to_sql_and_binds(Marshal.load(ast_payload), [], preparable, allow_retry)
+            ast = Marshal.load(ast_payload)
+            result = if prepared_statements
+              connection.to_sql_and_binds(ast, [], preparable, allow_retry)
+            else
+              connection.unprepared_statement do
+                connection.to_sql_and_binds(ast, [], preparable, allow_retry)
+              end
+            end
+            sql, binds, compiled_preparable, compiled_allow_retry = result
             ActiveSupport::Ractors.make_shareable(
               [sql, Marshal.dump(binds), compiled_preparable, compiled_allow_retry], copy: true
             )
@@ -629,6 +636,7 @@ module ActiveRecord
             self.class.compile_on_connection(
               @connection_token,
               self.class.dump_object(arel_or_sql, "an Arel AST"),
+              prepared_statements?,
               preparable,
               allow_retry,
               connection_pool: @pool,

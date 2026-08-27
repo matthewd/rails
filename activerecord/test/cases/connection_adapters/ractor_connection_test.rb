@@ -388,6 +388,17 @@ module ActiveRecord
           assert_equal 1, ActiveRecord::Base.connection_pool.connections.size
         end
 
+        def test_unprepared_arel_compilation_inlines_bind_values
+          conn = proxy_connection
+          table = Arel::Table.new(name: widgets_table)
+          bind = Relation::QueryAttribute.new("price", 42, Type::Integer.new)
+          manager = table.project(table[:id]).where(table[:price].eq(bind))
+
+          sql = conn.unprepared_statement { conn.to_sql(manager) }
+
+          assert_match(/ = 42\z/, sql)
+        end
+
         def test_transaction_commit_and_rollback_through_transaction_api
           conn = proxy_connection
 
