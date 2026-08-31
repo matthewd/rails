@@ -104,6 +104,18 @@ module ActiveRecord
         assert_equal 0, active_connections(pool).size
       end
 
+      def test_checkin_finalizes_intents_outside_pool_lock
+        connection = pool.lease_connection
+        pool_lock_held = nil
+        finalizer = -> { pool_lock_held = pool.mon_owned? }
+
+        connection.stub(:finalize_remaining_intents, finalizer) do
+          pool.release_connection
+        end
+
+        assert_not pool_lock_held
+      end
+
       def test_checkin_finalizes_unfinished_intent_logs_before_callbacks
         pool.with_connection { }
         intent = nil

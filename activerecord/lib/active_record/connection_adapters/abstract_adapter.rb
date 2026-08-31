@@ -342,27 +342,34 @@ module ActiveRecord
         duration * (1.0 - @pool_jitter)
       end
 
+      # this method must only be called while holding the connection lock
+      def finalize_for_checkin # :nodoc:
+        verify_expirable!
+        finalize_remaining_intents
+      end
+
       # this method must only be called while holding connection pool's mutex
       def expire(update_idle = true) # :nodoc:
-        if in_use?
-          if @owner != ActiveSupport::IsolatedExecutionState.context
-            raise ActiveRecordError, "Cannot expire connection, " \
-              "it is owned by a different thread: #{@owner}. " \
-              "Current thread: #{ActiveSupport::IsolatedExecutionState.context}."
-          end
+        verify_expirable!
 
-          finalize_remaining_intents
-
-          _run_checkin_callbacks do
-            @idle_since = Process.clock_gettime(Process::CLOCK_MONOTONIC) if update_idle
-            @owner = nil
-            enable_lazy_transactions!
-            unset_query_cache!
-          end
-        else
-          raise ActiveRecordError, "Cannot expire connection, it is not currently leased."
+        _run_checkin_callbacks do
+          @idle_since = Process.clock_gettime(Process::CLOCK_MONOTONIC) if update_idle
+          @owner = nil
+          enable_lazy_transactions!
+          unset_query_cache!
         end
       end
+
+      def verify_expirable!
+        if !in_use?
+          raise ActiveRecordError, "Cannot expire connection, it is not currently leased."
+        elsif @owner != ActiveSupport::IsolatedExecutionState.context
+          raise ActiveRecordError, "Cannot expire connection, " \
+            "it is owned by a different thread: #{@owner}. " \
+            "Current thread: #{ActiveSupport::IsolatedExecutionState.context}."
+        end
+      end
+      private :verify_expirable!
 
       # this method must only be called while holding connection pool's mutex (and a desire for segfaults)
       def steal! # :nodoc:

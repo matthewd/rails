@@ -698,8 +698,10 @@ module ActiveRecord
         return if @pinned_connection.equal?(conn)
 
         conn.lock.synchronize do
+          connection_lease.clear(conn)
+          conn.finalize_for_checkin
+
           synchronize do
-            connection_lease.clear(conn)
             conn.expire
             @available.add conn
           end
