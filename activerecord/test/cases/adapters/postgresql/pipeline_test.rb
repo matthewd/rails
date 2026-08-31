@@ -719,6 +719,147 @@ module ActiveRecord
       assert_raises(ActiveRecord::ConnectionNotEstablished) { intent.raw_result }
     end
 
+    def test_enqueue_connection_failure_replays_pending_unsynced_queries
+      initial_connection_id = @connection.instance_variable_get(:@raw_connection).backend_pid
+      @connection.enter_pipeline_mode
+      first = build_intent("SELECT 1 AS n")
+      second = build_intent("SELECT 2 AS n")
+      third = build_intent("SELECT 3 AS n")
+      first.execute!
+      second.execute!
+
+      raw_connection = @connection.instance_variable_get(:@raw_connection)
+      original_send = raw_connection.method(:send_query_params)
+      target_sql = [first, second, third].map(&:processed_sql)
+      send_attempts = 0
+      failing_send = lambda do |*args|
+        if target_sql.include?(args.first)
+          send_attempts += 1
+          raise PG::ConnectionBad, "closed" if send_attempts == 1
+        end
+
+        original_send.call(*args)
+      end
+
+      raw_connection.stub(:send_query_params, failing_send) do
+        third.execute!
+      end
+
+      assert_equal 4, send_attempts
+      assert_not_equal initial_connection_id, raw_connection.backend_pid
+      assert_predicate @connection, :pipeline_active?
+      assert_equal [[[1]], [[2]], [[3]]], [first, second, third].map { |intent| intent.cast_result.rows }
+    end
+
+    def test_failed_reconnect_during_enqueue_recovery_settles_pending_intents
+      @connection.enter_pipeline_mode
+      first = build_intent("SELECT 1 AS n")
+      second = build_intent("SELECT 2 AS n")
+      third = build_intent("SELECT 3 AS n")
+      first.execute!
+      second.execute!
+
+      raw_connection = @connection.instance_variable_get(:@raw_connection)
+      original_send = raw_connection.method(:send_query_params)
+      failing_send = lambda do |sql, *binds|
+        raise PG::ConnectionBad, "closed" if sql == third.processed_sql
+
+        original_send.call(sql, *binds)
+      end
+      reconnect_error = ActiveRecord::ConnectionFailed.new("reconnect failed")
+      original_ensure = @connection.method(:ensure_connection_ready)
+      failing_reconnect = lambda do |**kwargs|
+        if @connection.instance_variable_get(:@needs_reconnect)
+          raise reconnect_error
+        end
+
+        original_ensure.call(**kwargs)
+      end
+
+      raised = @connection.stub(:ensure_connection_ready, failing_reconnect) do
+        raw_connection.stub(:send_query_params, failing_send) do
+          assert_raises(ActiveRecord::ConnectionFailed) { third.execute! }
+        end
+      end
+
+      assert_same reconnect_error, raised
+      assert_predicate first, :raw_result_available?
+      assert_predicate second, :raw_result_available?
+      assert_equal :unsynced, first.not_run_reason
+      assert_equal :unsynced, second.not_run_reason
+      assert_not_predicate @connection, :pipeline_pending?
+    end
+
+    def test_repeated_enqueue_failure_settles_partially_replayed_queries
+      @connection.enter_pipeline_mode
+      first = build_intent("SELECT 1 AS n")
+      second = build_intent("SELECT 2 AS n")
+      third = build_intent("SELECT 3 AS n")
+      first.execute!
+      second.execute!
+
+      raw_connection = @connection.instance_variable_get(:@raw_connection)
+      original_send = raw_connection.method(:send_query_params)
+      target_sql = [first, second, third].map(&:processed_sql)
+      send_attempts = 0
+      failing_send = lambda do |*args|
+        if target_sql.include?(args.first)
+          send_attempts += 1
+          raise PG::ConnectionBad, "closed" if send_attempts == 1 || send_attempts == 3
+        end
+
+        original_send.call(*args)
+      end
+
+      @connection.stub(:connection_retries, 1) do
+        raw_connection.stub(:send_query_params, failing_send) do
+          assert_raises(ActiveRecord::ConnectionNotEstablished) { third.execute! }
+        end
+      end
+
+      assert_equal 3, send_attempts
+      assert_not_predicate @connection, :pipeline_pending?
+      assert_equal :unsynced, first.not_run_reason
+      assert_equal :unsynced, second.not_run_reason
+    end
+
+    def test_enqueue_recovery_preserves_queued_and_unsent_order
+      @connection.enter_pipeline_mode
+      first = build_intent("SELECT 1")
+      second = build_intent("SELECT 2")
+      third = build_intent("SELECT 3")
+      error = ActiveRecord::ConnectionFailed.new("connection closed")
+      window = replay_window(not_run: [first, second, third])
+      raw_connection = @connection.instance_variable_get(:@raw_connection)
+      original_send = raw_connection.method(:send_query_params)
+      target_sql = [first, second, third].map(&:processed_sql)
+      send_attempts = 0
+      failing_send = lambda do |*args|
+        if target_sql.include?(args.first)
+          send_attempts += 1
+          raise error if send_attempts == 2
+        end
+
+        original_send.call(*args)
+      end
+
+      raised = raw_connection.stub(:send_query_params, failing_send) do
+        assert_raises(ActiveRecord::ConnectionFailed) do
+          @connection.send(:submit_pipeline_replay, window)
+        end
+      end
+      assert_same error, raised
+
+      replayable = @connection.send(
+        :recover_pipeline_enqueue,
+        error,
+        window,
+        allow_recovery: true
+      )
+
+      assert_equal [first, second, third], replayable.to_a
+    end
+
     def test_pending_window_replays_after_connection_loss
       initial_connection_id = connection_id_from_server(@connection)
       @connection.enter_pipeline_mode

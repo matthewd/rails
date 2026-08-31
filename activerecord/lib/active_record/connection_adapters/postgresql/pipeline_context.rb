@@ -69,11 +69,23 @@ module ActiveRecord
             @retry_required.concat(@replay_safe.shift(index + 1)) if index
           end
 
+          def prepend!(window)
+            if @retry_required.any?
+              @retry_required = window.operations + @retry_required
+            else
+              @retry_required = window.retry_required.dup
+              @replay_safe = window.replay_safe + @replay_safe
+            end
+            self
+          end
+
           def to_a
             each.to_a
           end
 
           protected
+            attr_reader :retry_required, :replay_safe
+
             def operations
               @retry_required + @replay_safe
             end
@@ -412,6 +424,34 @@ module ActiveRecord
               else
                 intent.deliver_result(raw_result)
               end
+            end
+          end
+
+          def recover_pipeline_enqueue(error, replay_window, allow_recovery:)
+            if replay_window
+              pending_queries = @pending_intents&.any? { |intent| !intent.is_a?(SyncIntent) }
+              @raw_connection&.close
+              accepted = abandon_pipelined_intents(error, allow_recovery: allow_recovery)
+
+              unless allow_recovery
+                settle_pipeline_replay_window(replay_window, error)
+                return
+              end
+
+              if pending_queries && !accepted
+                settle_pipeline_replay_window(replay_window, error)
+                raise error
+              end
+
+              replay_window.prepend!(accepted) if accepted
+              return replay_window
+            end
+
+            pending_queries = @pending_intents&.any? { |intent| !intent.is_a?(SyncIntent) }
+            replayable = abandon_pipelined_intents(error, allow_recovery: allow_recovery)
+
+            if allow_recovery && (replayable || !pending_queries)
+              replayable || ReplayWindow.new
             end
           end
 

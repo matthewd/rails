@@ -1156,20 +1156,39 @@ module ActiveRecord
         #
         def with_raw_connection(allow_retry: false, materialize_transactions: true, pipeline_mode: nil)
           @lock.synchronize do
+            # Save pipeline state before any nested queries (connect!, materialize_transactions,
+            # verify! can all run nested queries that might change pipeline mode)
             was_in_pipeline = pipeline_active?
+
             reconnectable = ensure_connection_ready(allow_retry:, materialize_transactions:)
 
             budget = build_retry_budget(allow_retry:, reconnectable:)
+            pipeline_replay = nil
+            connection_retry_pending = false
 
             begin
+              if connection_retry_pending
+                ensure_connection_ready(allow_retry:, materialize_transactions: false)
+                connection_retry_pending = false
+              end
+
+              # Handle pipeline mode: explicit request, or restore original state
               if pipeline_mode == true
                 enter_pipeline_mode
               elsif pipeline_mode == false
                 exit_pipeline_mode
               elsif !was_in_pipeline && pipeline_active?
+                # Nested queries entered pipeline mode - exit to restore state
                 exit_pipeline_mode
               end
 
+              # Restore pipeline work saved by a previous attempt.
+              if pipeline_replay
+                submit_pipeline_replay(pipeline_replay)
+                pipeline_replay = nil
+              end
+
+              # Lock pipelining while yielding to prevent nested queries from changing mode
               was_pipelining_locked = @pipelining_locked
               @pipelining_locked = true
 
@@ -1183,10 +1202,18 @@ module ActiveRecord
               invalidate_transaction(translated_exception)
               downgrade_connection_after_error(translated_exception)
 
-              if attempt_retry(translated_exception, budget)
-                if retryable_connection_error?(translated_exception)
-                  ensure_connection_ready(allow_retry:, materialize_transactions: false)
-                end
+              retrying = attempt_retry(translated_exception, budget)
+
+              if pipeline_mode && (pipeline_replay || retryable_connection_error?(translated_exception))
+                pipeline_replay = recover_pipeline_enqueue(
+                  translated_exception,
+                  pipeline_replay,
+                  allow_recovery: retrying
+                )
+              end
+
+              if retrying
+                connection_retry_pending = retryable_connection_error?(translated_exception)
                 retry
               end
 
@@ -1199,7 +1226,9 @@ module ActiveRecord
               @verified = false
               raise
             ensure
-              dirty_current_transaction if materialize_transactions
+              # Pipeline enqueue only queues intent(s); transaction dirtiness should
+              # be decided when intents are actually resolved.
+              dirty_current_transaction if materialize_transactions && pipeline_mode != true
             end
           end
         end
@@ -1237,6 +1266,14 @@ module ActiveRecord
             deadline: retry_deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) + retry_deadline,
             reconnectable: reconnectable
           )
+        end
+
+        def recover_pipeline_enqueue(error, replay_window, allow_recovery:)
+          raise NotImplementedError
+        end
+
+        def submit_pipeline_replay(replay_window)
+          raise NotImplementedError
         end
 
         # Ensure the connection is ready to execute a query.
