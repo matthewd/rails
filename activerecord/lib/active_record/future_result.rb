@@ -49,6 +49,7 @@ module ActiveRecord
 
     def cancel
       @intent.cancel
+      self
     end
 
     def result

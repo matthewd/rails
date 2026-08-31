@@ -205,6 +205,22 @@ module ActiveRecord
       @connection.execute("DROP TABLE IF EXISTS pipeline_probe_test")
     end
 
+    def test_canceling_pipeline_future_drains_query_and_remains_canceled
+      @connection.enter_pipeline_mode
+      intent = build_intent("SELECT 1 AS n")
+      intent.execute!
+      future_result = intent.future_result
+
+      assert_predicate future_result, :pending?
+      assert_same future_result, future_result.cancel
+
+      assert_not_predicate future_result, :pending?
+      assert_predicate future_result, :canceled?
+      assert_not_predicate @connection, :pipeline_pending?
+      assert_predicate intent, :finalized?
+      assert_raises(ActiveRecord::FutureResult::Canceled) { future_result.result }
+    end
+
     def test_checkin_drains_and_exits_pipeline_mode
       @connection.enter_pipeline_mode
       pending = add_query("SELECT 1 AS n")
@@ -1498,6 +1514,75 @@ module ActiveRecord
           sleep 0.01
         end
       end
+  end
+
+  class PostgresqlPipelineFixtureConcurrencyTest < ActiveRecord::PostgreSQLTestCase
+    def setup
+      super
+      @pool = ActiveRecord::Base.connection_pool
+      @connection = ActiveRecord::Base.lease_connection
+    end
+
+    def teardown
+      @connection.exit_pipeline_mode if @connection.pipeline_active?
+      super
+    end
+
+    def test_concurrent_enqueue_observation_and_flush_on_pinned_connection
+      connections = Queue.new
+      promises = 4.times.map do |value|
+        Thread.new do
+          @pool.with_connection do |connection|
+            connections << connection
+            connection.select_value("SELECT #{value}", "TEST", pipeline: true)
+          end
+        end
+      end.map(&:value)
+
+      4.times { assert_same @connection, connections.pop }
+      assert promises.all?(&:pending?)
+
+      ready = Queue.new
+      readers = promises.map do |promise|
+        Thread.new do
+          ready.pop
+          promise.value
+        end
+      end
+      flushers = 4.times.map do
+        Thread.new do
+          ready.pop
+          @pool.with_connection(&:flush_pipeline)
+        end
+      end
+      (readers.length + flushers.length).times { ready << true }
+
+      flushers.each(&:value)
+      assert_equal [0, 1, 2, 3], readers.map(&:value).sort
+      assert_not_predicate @connection, :pipeline_pending?
+    end
+
+    def test_result_observation_can_race_synchronous_barrier
+      promise = @connection.select_value("SELECT 1", "TEST", pipeline: true)
+      ready = Queue.new
+
+      reader = Thread.new do
+        ready.pop
+        promise.value
+      end
+      barrier = Thread.new do
+        ready.pop
+        @pool.with_connection do |connection|
+          connection.select_value("SELECT 2; SELECT 3")
+        end
+      end
+      2.times { ready << true }
+
+      assert_equal 1, reader.value
+      assert_equal 3, barrier.value
+      assert_not_predicate @connection, :pipeline_active?
+      assert_not_predicate @connection, :pipeline_pending?
+    end
   end
 
   class PostgresqlPipelineLeaseTest < ActiveRecord::PostgreSQLTestCase

@@ -52,6 +52,20 @@ module ActiveRecord
       assert_predicate intent, :canceled?
     end
 
+    test "explicit cancellation is terminal" do
+      intent = build_intent(@connection)
+      intent.session = ActiveRecord::AsynchronousQueriesTracker::Session.new
+      intent.instance_variable_set(:@executed, true)
+      future_result = ActiveRecord::FutureResult.new(intent)
+
+      assert_predicate future_result, :pending?
+      assert_same future_result, future_result.cancel
+
+      assert_not_predicate future_result, :pending?
+      assert_predicate future_result, :canceled?
+      assert_raises(ActiveRecord::FutureResult::Canceled) { future_result.result }
+    end
+
     test "unexpected background exceptions make the intent terminal" do
       intent = build_intent(@connection)
       session = ActiveRecord::AsynchronousQueriesTracker::Session.new

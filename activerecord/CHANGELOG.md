@@ -1,3 +1,17 @@
+*   Add PostgreSQL query pipelining to the adapter select methods.
+
+    Passing `pipeline: true` to `select_all`, `select_one`, `select_value`, or
+    `select_rows` returns a future or promise. On a pipeline-capable adapter,
+    eligible queries remain on their executing connection so multiple calls can
+    share a network round trip, including inside transactions; observing any
+    result settles the pending batch. Without pipeline support, the query executes
+    immediately while retaining the same return shape.
+
+    Query-cache hits remain immediately complete. Like asynchronous queries,
+    pipeline cache misses do not populate the query cache.
+
+    *Matthew Draper*
+
 *   Add query predicate expressions for Active Record types.
 
     Types can include `ActiveRecord::Type::QueryPredicates` to define the SQL

@@ -61,7 +61,7 @@ module ActiveRecord
         end
       end
 
-      attr_reader :arel, :name, :prepare, :allow_retry, :allow_async,
+      attr_reader :arel, :name, :prepare, :allow_retry, :allow_async, :prefer_pipeline,
                   :materialize_transactions, :batch, :pool, :session, :lock_wait,
                   :event_buffer, :error, :not_run_reason, :finalized
       alias_method :finalized?, :finalized
@@ -70,7 +70,7 @@ module ActiveRecord
                     :retry_budget
 
       def initialize(adapter:, arel: nil, raw_sql: nil, processed_sql: nil, name: "SQL", binds: [], prepare: false, allow_async: false,
-                     allow_retry: false, materialize_transactions: true, batch: false)
+                     prefer_pipeline: false, allow_retry: false, materialize_transactions: true, batch: false)
         if arel.nil? && raw_sql.nil? && processed_sql.nil?
           raise ArgumentError, "One of arel, raw_sql, or processed_sql must be provided"
         end
@@ -82,6 +82,7 @@ module ActiveRecord
         @binds = binds
         @prepare = prepare
         @allow_async = allow_async
+        @prefer_pipeline = prefer_pipeline
         @ran_async = nil
         @allow_retry = allow_retry
         @materialize_transactions = materialize_transactions
@@ -97,6 +98,7 @@ module ActiveRecord
         @executed = false
         @not_run_reason = nil
         @write_query = nil
+        @canceled = false
 
         # Deferred execution state
         @pool = adapter.pool
@@ -182,17 +184,22 @@ module ActiveRecord
 
       # Is this intent still pending (result not yet available)?
       def pending?
-        !@raw_result_available && (@session ? @session.active? : @executed)
+        !canceled? && !@raw_result_available && (@session ? @session.active? : @executed)
       end
 
       # Was this intent canceled?
       def canceled?
-        @session && !@session.active?
+        @canceled || (@session && !@session.active?)
       end
 
       def cancel
         return unless pending?
-        @error = FutureResult::Canceled.new
+
+        @canceled = true
+        unless @session
+          adapter&.flush_pipeline
+          adapter&.pool&.release_connection_if_unheld(adapter)
+        end
       end
 
       # Returns raw SQL, compiling from arel if needed, memoized
@@ -315,6 +322,8 @@ module ActiveRecord
 
       # Ensure the result is available, blocking if necessary
       def ensure_result
+        raise FutureResult::Canceled if canceled?
+
         if @outcome_handled
           raise @error if @error
           raise @warning_error if @warning_error

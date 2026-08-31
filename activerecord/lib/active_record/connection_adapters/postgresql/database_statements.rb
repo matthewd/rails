@@ -135,7 +135,11 @@ module ActiveRecord
           # Lock in bind values before routing decision; this also ensures
           # timezone is current before we commit to running the query
           intent.type_casted_binds
-          return super unless should_pipeline?(intent)
+          unless should_pipeline?(intent)
+            raise ArgumentError, "Cannot pipeline this query" if intent.prefer_pipeline && supports_pipeline?
+
+            return super
+          end
 
           if intent.materialize_transactions
             # Validate before BEGIN - can raise locally (e.g. ReadOnlyError)
@@ -212,7 +216,10 @@ module ActiveRecord
             # Must check AFTER has_binds?/processed_sql to ensure compile_arel! has run
             return false if intent.prepare
 
-            pipeline_active?
+            # If pipelining is locked, maintain current state (don't change mode)
+            return pipeline_active? if @pipelining_locked
+
+            pipeline_active? || intent.prefer_pipeline
           end
 
           def cancel_any_running_query
