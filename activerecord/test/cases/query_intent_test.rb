@@ -276,21 +276,16 @@ module ActiveRecord
 
     test "a retried query returns its result through one notification" do
       connection = @connection
-      intent = build_intent(connection, allow_retry: true)
-      attempts = 0
-      original_perform_query = connection.method(:perform_query)
-      perform_query = ->(raw_connection, retry_intent) do
-        attempts += 1
-        if attempts == 1
-          raise ActiveRecord::LockWaitTimeout, "lock wait timeout"
-        else
-          original_perform_query.call(raw_connection, retry_intent)
-        end
-      end
+      table = "query_intent_retry_success"
+      sql = "SELECT value FROM #{table}"
+      drop_table(connection, table)
+      intent = build_intent(connection, sql: sql, allow_retry: true)
+      errors = nil
 
-      events = connection.stub(:connection_retries, 1) do
-        connection.stub(:backoff, ->(_) { }) do
-          connection.stub(:perform_query, perform_query) do
+      events = with_retryable_statement_invalid(connection, sql) do |seen_errors|
+        errors = seen_errors
+        connection.stub(:connection_retries, 1) do
+          connection.stub(:backoff, ->(_) { create_value_table(connection, table) }) do
             capture_notifications("sql.active_record") do
               intent.execute!
 
@@ -301,37 +296,41 @@ module ActiveRecord
         end
       end
 
-      query_events = events.select { _1.payload[:sql] == "SELECT 1" }
-      assert_equal 2, attempts
+      query_events = events.select { _1.payload[:sql] == sql }
+      assert_equal 1, errors.size
       assert_equal 1, query_events.size
       assert_not query_events.first.payload.key?(:exception)
       assert_predicate intent, :finalized?
+    ensure
+      drop_table(connection, table) if connection&.connected? && table
     end
 
     test "exhausted retries make the final failure available" do
       connection = @connection
-      intent = build_intent(connection, allow_retry: true)
-      perform_query_calls = 0
-      perform_query = ->(*) do
-        perform_query_calls += 1
-        raise ActiveRecord::LockWaitTimeout, "lock wait timeout"
-      end
+      table = "query_intent_retry_exhaustion"
+      sql = "SELECT value FROM #{table}"
+      drop_table(connection, table)
+      intent = build_intent(connection, sql: sql, allow_retry: true)
+      errors = nil
 
-      connection.stub(:connection_retries, 1) do
-        connection.stub(:backoff, ->(_) { }) do
-          connection.stub(:perform_query, perform_query) do
+      with_retryable_statement_invalid(connection, sql) do |seen_errors|
+        errors = seen_errors
+        connection.stub(:connection_retries, 1) do
+          connection.stub(:backoff, ->(_) { }) do
             intent.execute!
 
             assert_not_predicate intent, :raw_result_available?
-            error = assert_raises(ActiveRecord::LockWaitTimeout) { intent.cast_result }
-            assert_equal "lock wait timeout", error.message
+            error = assert_raises(ActiveRecord::StatementInvalid) { intent.cast_result }
+            assert_equal sql, error.sql
           end
         end
       end
 
       assert_predicate intent, :raw_result_available?
       assert_predicate intent, :finalized?
-      assert_equal 2, perform_query_calls
+      assert_equal 2, errors.size
+    ensure
+      drop_table(connection, table) if connection&.connected? && table
     end
 
     test "finalizing a provisional failure makes it available without retrying" do
@@ -363,25 +362,23 @@ module ActiveRecord
 
     test "retryable failures dirty transactions only after final delivery" do
       connection = @connection
-      intent = build_intent(connection, allow_retry: true, materialize_transactions: true)
+      table = "query_intent_retry_dirtiness"
+      sql = "SELECT value FROM #{table}"
+      drop_table(connection, table)
+      intent = build_intent(connection, sql: sql, allow_retry: true, materialize_transactions: true)
       dirty_count = 0
       dirty_count_before_retry = nil
-      perform_query_calls = 0
-      original_perform_query = connection.method(:perform_query)
-      perform_query = ->(raw_connection, retry_intent) do
-        perform_query_calls += 1
-        if perform_query_calls == 1
-          raise ActiveRecord::LockWaitTimeout, "lock wait timeout"
-        else
-          dirty_count_before_retry = dirty_count
-          original_perform_query.call(raw_connection, retry_intent)
-        end
+      errors = nil
+      backoff = lambda do |_attempt|
+        dirty_count_before_retry = dirty_count
+        create_value_table(connection, table)
       end
 
-      connection.stub(:connection_retries, 1) do
-        connection.stub(:backoff, ->(_) { }) do
-          connection.stub(:dirty_current_transaction, -> { dirty_count += 1 }) do
-            connection.stub(:perform_query, perform_query) do
+      with_retryable_statement_invalid(connection, sql) do |seen_errors|
+        errors = seen_errors
+        connection.stub(:connection_retries, 1) do
+          connection.stub(:backoff, backoff) do
+            connection.stub(:dirty_current_transaction, -> { dirty_count += 1 }) do
               intent.execute!
 
               assert_not_predicate intent, :raw_result_available?
@@ -393,19 +390,46 @@ module ActiveRecord
         end
       end
 
+      assert_equal 1, errors.size
       assert_equal 0, dirty_count_before_retry
       assert_equal 1, dirty_count
+    ensure
+      drop_table(connection, table) if connection&.connected? && table
     end
 
     private
-      def build_intent(connection, allow_retry: false, materialize_transactions: false)
+      def build_intent(connection, sql: "SELECT 1", allow_retry: false, materialize_transactions: false)
         ActiveRecord::ConnectionAdapters::QueryIntent.new(
           adapter: connection,
-          raw_sql: "SELECT 1",
+          raw_sql: sql,
           name: "SQL",
           allow_retry: allow_retry,
           materialize_transactions: materialize_transactions
         )
+      end
+
+      def with_retryable_statement_invalid(connection, sql)
+        original = connection.method(:retryable_query_error?)
+        errors = {}.compare_by_identity
+        retryable = lambda do |error|
+          if error.is_a?(ActiveRecord::StatementInvalid) && error.sql == sql
+            errors[error] = true
+            true
+          else
+            original.call(error)
+          end
+        end
+
+        connection.stub(:retryable_query_error?, retryable) { yield errors }
+      end
+
+      def create_value_table(connection, table)
+        connection.query_command("CREATE TABLE #{table} (value integer)", materialize_transactions: false)
+        connection.query_command("INSERT INTO #{table} VALUES (1)", materialize_transactions: false)
+      end
+
+      def drop_table(connection, table)
+        connection.query_command("DROP TABLE IF EXISTS #{table}", materialize_transactions: false)
       end
   end
 end
