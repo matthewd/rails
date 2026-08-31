@@ -551,7 +551,7 @@ module ActiveRecord
           with_exclusively_acquired_all_connections(raise_on_acquisition_timeout) do
             synchronize do
               return if self.discarded?
-              @connections.each do |conn|
+              @connections.dup.each do |conn|
                 if conn.in_use?
                   conn.steal!
 
@@ -704,6 +704,9 @@ module ActiveRecord
             @available.add conn
           end
         end
+      rescue Exception
+        conn.throw_away!
+        raise
       end
 
       # Remove a connection from the connection pool. The connection will

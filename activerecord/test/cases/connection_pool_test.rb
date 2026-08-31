@@ -134,6 +134,27 @@ module ActiveRecord
         adapter_class&.skip_callback(:checkin, :before, checkin_callback) if checkin_callback
       end
 
+      def test_checkin_discards_connection_when_callback_raises
+        connection = pool.lease_connection
+        checkin_error_class = Class.new(Exception)
+        checkin_error = checkin_error_class.new("error during checkin")
+        checkin_callback = -> { raise checkin_error }
+        adapter_class = ActiveRecord::ConnectionAdapters::AbstractAdapter
+        adapter_class.set_callback(:checkin, :before, checkin_callback)
+
+        assert_same checkin_error, assert_raises(checkin_error_class) { pool.release_connection }
+
+        assert_not_predicate pool, :active_connection?
+        assert_not_includes pool.connections, connection
+        assert_not_predicate connection, :connected?
+
+        adapter_class.skip_callback(:checkin, :before, checkin_callback)
+        checkin_callback = nil
+        pool.with_connection { |new_connection| assert_not_same connection, new_connection }
+      ensure
+        adapter_class&.skip_callback(:checkin, :before, checkin_callback) if checkin_callback
+      end
+
       def test_new_connection_no_query
         skip("Can't test with in-memory dbs") if in_memory_db?
         assert_equal 0, pool.connections.size
@@ -805,26 +826,32 @@ module ActiveRecord
       end
 
       def test_disconnect_closes_in_use_connections_when_checkin_fails
-        connection = @pool.lease_connection
-        connection.connect!
+        connections = [@pool.lease_connection, @pool.checkout]
+        connections.each(&:connect!)
 
         checkin_error = StandardError.new("error during checkin")
-        proc_to_raise = -> { raise checkin_error }
+        fail_checkin = true
+        checkin_callback = lambda do
+          if fail_checkin
+            fail_checkin = false
+            raise checkin_error
+          end
+        end
         subscriber = ActiveSupport::ErrorReporter::TestHelper::ErrorSubscriber.new
         ActiveSupport.error_reporter.subscribe(subscriber)
-        ActiveRecord::ConnectionAdapters::AbstractAdapter.set_callback(:checkin, :before, proc_to_raise)
+        ActiveRecord::ConnectionAdapters::AbstractAdapter.set_callback(:checkin, :before, checkin_callback)
 
         assert_nothing_raised do
           @pool.disconnect!
         end
 
-        assert_not_predicate connection, :connected?
+        connections.each { |connection| assert_not_predicate connection, :connected? }
         assert_empty @pool.connections
         assert_equal [[checkin_error, true, :warning, "active_record.connection_pool", {}]], subscriber.events
       ensure
-        ActiveRecord::ConnectionAdapters::AbstractAdapter.skip_callback(:checkin, :before, proc_to_raise) if proc_to_raise
+        ActiveRecord::ConnectionAdapters::AbstractAdapter.skip_callback(:checkin, :before, checkin_callback) if checkin_callback
         ActiveSupport.error_reporter.unsubscribe(subscriber) if subscriber
-        connection&.disconnect! rescue nil
+        connections&.each { |connection| connection.disconnect! rescue nil }
       end
 
       def test_disconnect_continues_when_connection_disconnect_fails
