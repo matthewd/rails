@@ -178,6 +178,7 @@ module ActiveRecord
 
       assert_equal [pending], @connection.instance_variable_get(:@pending_intents)
       assert_not_predicate pending, :raw_result_available?
+      assert_equal [[1]], cast_rows(pending)
     end
 
     def test_active_probe_does_not_commit_unsynced_work
@@ -680,30 +681,459 @@ module ActiveRecord
       @connection&.instance_variable_set(:@pending_intents, [])
     end
 
-    def test_sync_marker_is_recorded_only_after_connection_probe
+    def test_pipeline_sync_probe_failure_replays_without_retry_permission
+      initial_connection_id = connection_id_from_server(@connection)
       @connection.enter_pipeline_mode
-      add_query("SELECT 1 AS n")
+      intent = build_intent("SELECT 1 AS n")
+      intent.execute!
+      raw_connection = @connection.instance_variable_get(:@raw_connection)
+      original_consume = raw_connection.method(:consume_input)
+      consume_calls = 0
+      failing_consume = lambda do
+        consume_calls += 1
+        raise PG::ConnectionBad, "closed" if consume_calls == 1
+
+        original_consume.call
+      end
+
+      raw_connection.stub(:consume_input, failing_consume) do
+        assert_equal [[1]], intent.cast_result.rows
+      end
+
+      assert_operator consume_calls, :>, 1
+      assert_not_equal initial_connection_id, connection_id_from_server(@connection)
+    end
+
+    def test_pipeline_sync_send_failure_does_not_replay_without_retry_permission
+      @connection.enter_pipeline_mode
+      intent = build_intent("SELECT 1 AS n")
+      intent.execute!
       raw_connection = @connection.instance_variable_get(:@raw_connection)
 
       raw_connection.stub(:pipeline_sync, -> { raise PG::ConnectionBad, "closed" }) do
-        assert_raises(PG::ConnectionBad) { @connection.pipeline_sync }
-      end
-
-      pending = @connection.instance_variable_get(:@pending_intents)
-      assert_instance_of ConnectionAdapters::PostgreSQL::PipelineContext::SyncIntent, pending.last
-      pending.pop
-    end
-
-    def test_connection_failure_before_sync_marks_queries_not_run
-      @connection.enter_pipeline_mode
-      first = add_query("SELECT 1 AS n")
-      second = add_query("SELECT 2 AS n")
-      raw_connection = @connection.instance_variable_get(:@raw_connection)
-
-      raw_connection.stub(:flush, -> { raise PG::ConnectionBad, "closed" }) do
         @connection.flush_pipeline
       end
 
+      assert_instance_of ActiveRecord::ConnectionNotEstablished, intent.error
+      assert_nil intent.not_run_reason
+      assert_raises(ActiveRecord::ConnectionNotEstablished) { intent.raw_result }
+    end
+
+    def test_pending_window_replays_after_connection_loss
+      initial_connection_id = connection_id_from_server(@connection)
+      @connection.enter_pipeline_mode
+      first = build_intent(sleeping_query(1, initial_connection_id), allow_retry: true)
+      second = build_intent("SELECT 2 AS n", allow_retry: true)
+      first.execute!
+      second.execute!
+
+      kill_connection_from_server(initial_connection_id)
+
+      assert_equal [[1]], first.cast_result.rows
+      assert_equal [[2]], second.cast_result.rows
+      assert_not_equal initial_connection_id, connection_id_from_server(@connection)
+    end
+
+    def test_synced_retryable_pipeline_reconnects_and_replays
+      initial_connection_id = connection_id_from_server(@connection)
+      @connection.enter_pipeline_mode
+      intent = build_intent(
+        sleeping_query(1, initial_connection_id),
+        allow_retry: true
+      )
+      intent.execute!
+      @connection.pipeline_sync
+
+      kill_connection_from_server(initial_connection_id)
+
+      assert_equal [[1]], intent.cast_result.rows
+      assert_not_equal initial_connection_id, connection_id_from_server(@connection)
+    end
+
+    def test_synced_pipeline_respects_zero_connection_retries
+      @connection.stub(:connection_retries, 0) do
+        @connection.enter_pipeline_mode
+        intent = build_intent("SELECT 1 AS n", allow_retry: true)
+        intent.execute!
+        @connection.pipeline_sync
+        close_client_socket(@connection)
+
+        assert_raises(ActiveRecord::ConnectionFailed) { intent.raw_result }
+      end
+    end
+
+    def test_expired_retry_deadline_blocks_pipeline_replay
+      intent = build_intent("SELECT 1", allow_retry: true)
+      intent.retry_budget = ConnectionAdapters::RetryBudget.new(
+        retries: 1,
+        deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) - 1,
+        reconnectable: true
+      )
+      sync = ConnectionAdapters::PostgreSQL::PipelineContext::SyncIntent.new
+      error = ActiveRecord::ConnectionFailed.new("connection closed")
+      @connection.instance_variable_set(:@pending_intents, [intent, sync])
+
+      replayable = @connection.send(
+        :abandon_pipelined_intents,
+        error,
+        allow_recovery: true
+      )
+
+      assert_nil replayable
+      assert_same error, intent.error
+    end
+
+    def test_pipeline_replay_consumes_budget_at_frontier_sync_group
+      frontier = build_intent("SELECT 1", allow_retry: true)
+      frontier_peer = build_intent("SELECT 2", allow_retry: true)
+      later = build_intent("SELECT 3", allow_retry: true)
+      [frontier, frontier_peer, later].each do |intent|
+        intent.retry_budget = ConnectionAdapters::RetryBudget.new(
+          retries: 2,
+          deadline: nil,
+          reconnectable: true
+        )
+      end
+      window = replay_window(groups: [
+        { uncertain: [frontier, frontier_peer], sync: true },
+        { uncertain: [later], sync: true },
+      ])
+      error = ActiveRecord::ConnectionFailed.new("connection closed")
+
+      assert @connection.send(:consume_pipeline_retry_budgets, error, window)
+
+      assert_equal 1, frontier.retry_budget.retries_remaining
+      assert_equal 1, frontier_peer.retry_budget.retries_remaining
+      assert_equal 2, later.retry_budget.retries_remaining
+      assert_not_predicate frontier.retry_budget, :reconnectable?
+      assert_not_predicate frontier_peer.retry_budget, :reconnectable?
+      assert_predicate later.retry_budget, :reconnectable?
+    end
+
+    def test_multiple_synced_queries_replay_together
+      initial_connection_id = connection_id_from_server(@connection)
+      @connection.enter_pipeline_mode
+      intents = [
+        build_intent(sleeping_query(1, initial_connection_id), allow_retry: true),
+        build_intent("SELECT 2 AS n", allow_retry: true),
+        build_intent("SELECT 3 AS n", allow_retry: true),
+      ]
+      intents.each(&:execute!)
+      @connection.pipeline_sync
+
+      kill_connection_from_server(initial_connection_id)
+
+      assert_equal [[[1]], [[2]], [[3]]], intents.map { |intent| intent.cast_result.rows }
+      assert_not_equal initial_connection_id, connection_id_from_server(@connection)
+    end
+
+    def test_replay_preserves_query_execution_order
+      initial_connection_id = connection_id_from_server(@connection)
+      @connection.enter_pipeline_mode
+      create = build_intent(
+        "CREATE TEMP TABLE pipeline_order_test ON COMMIT DROP AS " \
+          "SELECT 42 AS value FROM #{sleep_on_connection(initial_connection_id)}",
+        allow_retry: true
+      )
+      insert = build_intent(
+        "INSERT INTO pipeline_order_test VALUES (43)",
+        allow_retry: true
+      )
+      select = build_intent(
+        "SELECT value FROM pipeline_order_test ORDER BY value",
+        allow_retry: true
+      )
+      create.execute!
+      insert.execute!
+      select.execute!
+      @connection.pipeline_sync
+
+      kill_connection_from_server(initial_connection_id)
+
+      assert_equal 1, create.affected_rows
+      assert_equal 1, insert.affected_rows
+      assert_equal [[42], [43]], select.cast_result.rows
+    end
+
+    def test_replay_preserves_sync_group_boundaries
+      @connection.enter_pipeline_mode
+      create = build_intent(
+        "CREATE TEMP TABLE pipeline_replay_group_test (value integer)",
+        allow_retry: true
+      )
+      create.execute!
+      @connection.pipeline_sync
+      failing = build_intent(
+        "SELECT * FROM nonexistent_pipeline_replay_group_table",
+        allow_retry: true
+      )
+      failing.execute!
+      @connection.pipeline_sync
+
+      close_client_socket(@connection)
+      @connection.flush_pipeline
+
+      assert_equal 0, create.affected_rows
+      assert_raises(ActiveRecord::StatementInvalid) { failing.raw_result }
+      assert_equal "pipeline_replay_group_test",
+        @connection.select_value("SELECT to_regclass('pg_temp.pipeline_replay_group_test')::text")
+    end
+
+    def test_completed_sync_group_is_not_replayed
+      @connection.execute("DROP TABLE IF EXISTS pipeline_replay_write_test")
+      @connection.execute("CREATE TABLE pipeline_replay_write_test (value integer)")
+      initial_connection_id = connection_id_from_server(@connection)
+      @connection.enter_pipeline_mode
+      insert = build_intent(
+        "INSERT INTO pipeline_replay_write_test VALUES (1)",
+        allow_retry: true
+      )
+      insert.execute!
+      @connection.pipeline_sync
+      assert_equal 1, insert.affected_rows
+
+      pending = build_intent(
+        sleeping_query(1, initial_connection_id),
+        allow_retry: true
+      )
+      pending.execute!
+      @connection.pipeline_sync
+      kill_connection_from_server(initial_connection_id)
+
+      assert_equal [[1]], pending.cast_result.rows
+      assert_equal 1, @connection.select_value("SELECT COUNT(*) FROM pipeline_replay_write_test")
+    ensure
+      @connection.execute("DROP TABLE IF EXISTS pipeline_replay_write_test")
+    end
+
+    def test_synced_retryable_pipeline_replays_in_clean_transaction
+      initial_connection_id = connection_id_from_server(@connection)
+
+      @connection.transaction do
+        @connection.enter_pipeline_mode
+        first = build_intent("SELECT 1 AS n", allow_retry: true)
+        second = build_intent("SELECT 2 AS n", allow_retry: true)
+        first.execute!
+        second.execute!
+        @connection.pipeline_sync
+        close_client_socket(@connection)
+
+        assert_equal [[1]], first.cast_result.rows
+        assert_equal [[2]], second.cast_result.rows
+        assert_not_equal initial_connection_id, connection_id_from_server(@connection)
+        raise ActiveRecord::Rollback
+      end
+    end
+
+    def test_unsynced_pipeline_replays_in_clean_transaction
+      initial_connection_id = connection_id_from_server(@connection)
+
+      @connection.transaction do
+        @connection.enter_pipeline_mode
+        first = build_intent("SELECT 1 AS n")
+        second = build_intent("SELECT 2 AS n")
+        first.execute!
+        second.execute!
+        close_client_socket(@connection)
+
+        assert_equal [[1]], first.cast_result.rows
+        assert_equal [[2]], second.cast_result.rows
+        assert_not_equal initial_connection_id, connection_id_from_server(@connection)
+        raise ActiveRecord::Rollback
+      end
+    end
+
+    def test_dirty_transaction_blocks_pipeline_replay
+      initial_connection_id = connection_id_from_server(@connection)
+
+      assert_raises(ActiveRecord::ConnectionFailed) do
+        @connection.transaction do
+          @connection.select_value("SELECT 0")
+          @connection.enter_pipeline_mode
+          intent = build_intent(
+            sleeping_query(1, initial_connection_id),
+            allow_retry: true,
+            materialize_transactions: true
+          )
+          intent.execute!
+          @connection.pipeline_sync
+
+          kill_connection_from_server(initial_connection_id)
+          intent.raw_result
+        end
+      end
+    end
+
+    def test_synced_nonretryable_pipeline_delivers_connection_failure
+      @connection.enter_pipeline_mode
+      intent = build_intent("SELECT 1 AS n")
+      intent.execute!
+      @connection.pipeline_sync
+      close_client_socket(@connection)
+
+      assert_raises(ActiveRecord::ConnectionFailed) { intent.raw_result }
+    end
+
+    def test_replay_preserves_pending_intent_order
+      first = build_intent("SELECT 1", allow_retry: true)
+      second = build_intent("SELECT 2", allow_retry: true)
+      sync = ConnectionAdapters::PostgreSQL::PipelineContext::SyncIntent.new
+      error = ActiveRecord::ConnectionFailed.new("connection closed")
+      @connection.instance_variable_set(:@pending_intents, [first, second, sync])
+
+      replayable = @connection.send(
+        :abandon_pipelined_intents,
+        error,
+        allow_recovery: true
+      )
+
+      assert_equal [first, second], replayable.to_a
+      assert_not_predicate first, :raw_result_available?
+      assert_not_predicate second, :raw_result_available?
+    end
+
+    def test_replay_stops_when_the_leading_intent_makes_no_progress
+      first = build_intent("SELECT 1", allow_retry: true)
+      second = build_intent("SELECT 2", allow_retry: true)
+      sync = ConnectionAdapters::PostgreSQL::PipelineContext::SyncIntent.new
+      error = ActiveRecord::ConnectionFailed.new("connection closed")
+      @connection.instance_variable_set(:@pending_intents, [first, second, sync])
+
+      replayable = @connection.send(
+        :abandon_pipelined_intents,
+        error,
+        allow_recovery: true,
+        last_replayed_head: first
+      )
+
+      assert_nil replayable
+      assert_same error, first.error
+      assert_same error, second.error
+    end
+
+    def test_replay_no_progress_makes_replay_safe_intents_terminal
+      first = build_intent("SELECT 1", allow_retry: true)
+      second = build_intent("SELECT 2", allow_retry: true)
+      error = ActiveRecord::ConnectionFailed.new("connection closed")
+      @connection.instance_variable_set(:@pending_intents, [first, second])
+
+      replayable = @connection.send(
+        :abandon_pipelined_intents,
+        error,
+        allow_recovery: true,
+        last_replayed_head: first
+      )
+
+      assert_nil replayable
+      assert_same error, first.error
+      assert_same error, second.error
+      assert_predicate first, :raw_result_available?
+      assert_predicate second, :raw_result_available?
+    end
+
+    def test_failed_reconnect_settles_replay_intents
+      uncertain = build_intent("SELECT 1", allow_retry: true)
+      not_run = build_intent("SELECT 2", allow_retry: true)
+      error = ActiveRecord::ConnectionFailed.new("reconnect failed")
+      window = replay_window(uncertain: [uncertain], not_run: [not_run])
+
+      replayed = @connection.stub(:reconnect!, ->(**) { raise error }) do
+        @connection.send(:replay_pipeline_intents, window)
+      end
+
+      assert_not replayed
+      assert_same error, uncertain.error
+      assert_equal :unsynced, not_run.not_run_reason
+      assert_predicate uncertain, :raw_result_available?
+      assert_predicate not_run, :raw_result_available?
+    end
+
+    def test_replay_send_failure_settles_the_unsent_tail
+      first = build_intent("SELECT 1", allow_retry: true)
+      second = build_intent("SELECT 2", allow_retry: true)
+      third = build_intent("SELECT 3", allow_retry: true)
+      raw_connection = @connection.instance_variable_get(:@raw_connection)
+      original_send = raw_connection.method(:send_query_params)
+      target_sql = [first, second, third].map(&:processed_sql)
+      send_attempts = 0
+      failing_send = lambda do |*args|
+        if target_sql.include?(args.first)
+          send_attempts += 1
+          raise PG::ConnectionBad, "closed" if send_attempts == 2
+        end
+
+        original_send.call(*args)
+      end
+
+      window = replay_window(uncertain: [first], not_run: [second, third])
+      replayed = @connection.stub(:connection_retries, 1) do
+        raw_connection.stub(:send_query_params, failing_send) do
+          @connection.send(:replay_pipeline_intents, window)
+        end
+      end
+
+      assert_not replayed
+      assert_equal 2, send_attempts
+      assert_not_predicate @connection, :pipeline_pending?
+      assert_instance_of ActiveRecord::ConnectionNotEstablished, first.error
+      assert_nil first.not_run_reason
+      assert_equal :unsynced, second.not_run_reason
+      assert_equal :unsynced, third.not_run_reason
+    end
+
+    def test_replay_send_failure_preserves_completed_group_boundary
+      first = build_intent("SELECT 1", allow_retry: true)
+      second = build_intent("SELECT 2", allow_retry: true)
+      window = replay_window(groups: [
+        { uncertain: [first], sync: true },
+        { not_run: [second], sync: false },
+      ])
+      raw_connection = @connection.instance_variable_get(:@raw_connection)
+      original_send = raw_connection.method(:send_query_params)
+      target_sql = [first, second].map(&:processed_sql)
+      send_attempts = 0
+      failing_send = lambda do |*args|
+        if target_sql.include?(args.first)
+          send_attempts += 1
+          raise PG::ConnectionBad, "closed" if send_attempts == 2
+        end
+
+        original_send.call(*args)
+      end
+
+      replayed = raw_connection.stub(:send_query_params, failing_send) do
+        @connection.send(:replay_pipeline_intents, window)
+      end
+
+      assert_not replayed
+      assert_equal 2, send_attempts
+      assert_instance_of ActiveRecord::ConnectionNotEstablished, first.error
+      assert_equal :unsynced, second.not_run_reason
+      assert_not_predicate @connection, :pipeline_pending?
+    end
+
+    def test_unexpected_replay_send_failure_settles_the_unsent_tail
+      first = build_intent("SELECT 1", allow_retry: true)
+      second = build_intent("SELECT 2", allow_retry: true)
+      raw_connection = @connection.instance_variable_get(:@raw_connection)
+      original_send = raw_connection.method(:send_query_params)
+      target_sql = [first, second].map(&:processed_sql)
+      send_attempts = 0
+      failing_send = lambda do |*args|
+        if target_sql.include?(args.first)
+          send_attempts += 1
+          raise "unexpected send failure" if send_attempts == 2
+        end
+
+        original_send.call(*args)
+      end
+      window = replay_window(not_run: [first, second])
+
+      error = raw_connection.stub(:send_query_params, failing_send) do
+        assert_raises(RuntimeError) { @connection.send(:replay_pipeline_intents, window) }
+      end
+
+      assert_equal "unexpected send failure", error.message
       assert_not_predicate @connection, :pipeline_pending?
       assert_equal :unsynced, first.not_run_reason
       assert_equal :unsynced, second.not_run_reason
@@ -759,6 +1189,55 @@ module ActiveRecord
       assert_equal :unsynced, third.not_run_reason
     end
 
+    def test_server_fatal_result_uses_the_failing_intents_retry_permission
+      initial_connection_id = connection_id_from_server(@connection)
+      @connection.enter_pipeline_mode
+      first = build_intent("SELECT 1 AS n", allow_retry: true)
+      fatal = build_intent(terminate_original_connection(initial_connection_id))
+      third = build_intent("SELECT 3 AS n")
+      first.execute!
+      fatal.execute!
+      third.execute!
+
+      @connection.flush_pipeline
+
+      assert_instance_of ActiveRecord::ConnectionFailed, first.error
+      assert_instance_of ActiveRecord::ConnectionFailed, fatal.error
+      assert_equal :unsynced, third.not_run_reason
+    end
+
+    def test_server_fatal_result_replays_safe_suffix_without_retry_permission
+      initial_connection_id = connection_id_from_server(@connection)
+      @connection.enter_pipeline_mode
+      first = build_intent("SELECT 1 AS n", allow_retry: true)
+      fatal = build_intent(terminate_original_connection(initial_connection_id), allow_retry: true)
+      third = build_intent("SELECT 3 AS n")
+      first.execute!
+      fatal.execute!
+      third.execute!
+
+      @connection.flush_pipeline
+
+      assert_equal [[1]], first.cast_result.rows
+      assert_equal [[true, nil]], fatal.cast_result.rows
+      assert_equal [[3]], third.cast_result.rows
+      assert_not_equal initial_connection_id, connection_id_from_server(@connection)
+    end
+
+    def test_server_fatal_replay_stops_when_no_progress
+      @connection.enter_pipeline_mode
+      fatal = build_intent(
+        "SELECT pg_terminate_backend(pg_backend_pid()), pg_sleep(5)",
+        allow_retry: true
+      )
+      fatal.execute!
+
+      @connection.flush_pipeline
+
+      assert_raises(ActiveRecord::ConnectionFailed) { fatal.raw_result }
+      assert_predicate fatal, :raw_result_available?
+    end
+
     def test_connection_error_translation_prefers_captured_fatal_notice
       notice_error = PG::AdminShutdown.new("terminating connection")
       @connection.instance_variable_set(:@notice_receiver_fatal_error, notice_error)
@@ -787,13 +1266,66 @@ module ActiveRecord
     end
 
     private
-      def build_intent(sql, binds: [], prepare: false, materialize_transactions: false)
+      def capture_sql_payloads(&block)
+        events = []
+        callback = ->(_name, _start, _finish, _id, payload) { events << payload.dup }
+
+        ActiveSupport::Notifications.subscribed(callback, "sql.active_record", &block)
+
+        events
+      end
+
+      def find_sql_payload(events, sql)
+        events.find { |payload| payload[:sql] == sql } ||
+          flunk("Expected sql.active_record event for #{sql.inspect}")
+      end
+
+      def sleeping_query(value, connection_id)
+        "SELECT #{value} AS n FROM #{sleep_on_connection(connection_id)}"
+      end
+
+      def sleep_on_connection(connection_id)
+        "pg_sleep(CASE WHEN pg_backend_pid() = #{connection_id} THEN 2 ELSE 0 END)"
+      end
+
+      def terminate_original_connection(connection_id)
+        "SELECT" \
+          " CASE WHEN pg_backend_pid() = #{connection_id}" \
+          " THEN pg_terminate_backend(pg_backend_pid()) ELSE true END," \
+          " CASE WHEN pg_backend_pid() = #{connection_id}" \
+          " THEN pg_sleep(5)::text END"
+      end
+
+      def replay_window(uncertain: [], not_run: [], groups: nil)
+        replay_window_class = ConnectionAdapters::PostgreSQL::PipelineContext.const_get(:ReplayWindow, false)
+        groups ||= [{ uncertain: uncertain, not_run: not_run, sync: false }]
+        retry_required_through = nil
+        operations = groups.flat_map do |group|
+          uncertain = group.fetch(:uncertain, [])
+          retry_required_through = uncertain.last if uncertain.any?
+          operations = uncertain + group.fetch(:not_run, [])
+          operations << ConnectionAdapters::PostgreSQL::PipelineContext::SyncIntent.new if group.fetch(:sync)
+          operations
+        end
+        if retry_required_through
+          retry_required_index = operations.index(retry_required_through)
+          replay_window_class.new(
+            retry_required: operations[0..retry_required_index],
+            replay_safe: operations[(retry_required_index + 1)..] || []
+          )
+        else
+          replay_window_class.new(replay_safe: operations)
+        end
+      end
+
+      def build_intent(sql, binds: [], prepare: false, allow_retry: false, materialize_transactions: false)
         ConnectionAdapters::QueryIntent.new(
           adapter: @connection,
           raw_sql: sql,
           name: "PIPELINE",
           binds: binds,
           prepare: prepare,
+          allow_retry: allow_retry,
           materialize_transactions: materialize_transactions
         )
       end

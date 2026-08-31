@@ -18,6 +18,68 @@ module ActiveRecord
         class SyncIntent # :nodoc:
         end
 
+        class ReplayWindow # :nodoc:
+          def initialize(retry_required: [], replay_safe: [])
+            @retry_required = retry_required
+            @replay_safe = replay_safe
+          end
+
+          def each(&block)
+            return enum_for(__method__) unless block
+
+            operations.each { |operation| block.call(operation) unless operation.is_a?(SyncIntent) }
+          end
+
+          def first
+            each.first
+          end
+
+          def next_operation
+            @retry_required.first || @replay_safe.first
+          end
+
+          def next_operation_retry_required?
+            @retry_required.any?
+          end
+
+          def shift_operation
+            (@retry_required.empty? ? @replay_safe : @retry_required).shift
+          end
+
+          def intents_requiring_retry
+            @retry_required.reject { |operation| operation.is_a?(SyncIntent) }
+          end
+
+          def frontier_group_intents
+            return [] if @retry_required.empty?
+
+            group = []
+            operations.each do |operation|
+              if operation.is_a?(SyncIntent)
+                return group if group.any?
+              else
+                group << operation
+              end
+            end
+            group
+          end
+
+          def advance_retry_required_through(intent)
+            index = @replay_safe.index(intent)
+            @retry_required.concat(@replay_safe.shift(index + 1)) if index
+          end
+
+          def to_a
+            each.to_a
+          end
+
+          protected
+            def operations
+              @retry_required + @replay_safe
+            end
+        end
+        private_constant :ReplayWindow
+
         class ConnectionProbeIntent # :nodoc:
           attr_reader :error
 
@@ -186,20 +248,56 @@ module ActiveRecord
           intent
         end
 
+        # Flush pending queries and collect results.
+        #
+        # Connection errors during sync/drain are handled with transparent
+        # replay when all outstanding intents are eligible, otherwise intents
+        # are abandoned with appropriate terminal states.
         def flush_pipeline(waiting_on: nil)
           @lock.synchronize do
             return unless pipeline_active?
             return unless pipeline_pending?
 
-            begin
-              pipeline_sync
-              drain_pipeline
-            rescue PG::Error, IOError, SystemCallError => error
-              failure_intent = take_pipeline_connection_error_intent(error)
-              translated = translate_pipeline_connection_error(error)
-              cause = translated.cause
-              server_fatal_intent = failure_intent if cause.respond_to?(:result) && connection_terminating_severity?(cause.result)
-              abandon_pipelined_intents(translated, server_fatal_intent: server_fatal_intent)
+            # Track which intent was at the head of the last replay
+            # attempt. If we come back around and the same intent is
+            # still leading, we're not making progress - give up.
+            # If the head has advanced (some intents succeeded), that's
+            # genuine progress and worth another attempt.
+            last_replayed_head = nil
+
+            loop do
+              sync_error = nil
+              begin
+                pipeline_sync
+              rescue PG::Error, IOError, SystemCallError => error
+                sync_error = error
+              end
+
+              if sync_error
+                begin
+                  consume_pipeline
+                rescue PG::Error, IOError, SystemCallError => error
+                  sync_error = error
+                end
+
+                if replayable = recover_pipeline_window(sync_error, last_replayed_head)
+                  last_replayed_head = replayable.first
+                  next if replay_pipeline_intents(replayable)
+                end
+
+                return
+              end
+
+              begin
+                drain_pipeline
+              rescue PG::Error, IOError, SystemCallError => error
+                if replayable = recover_pipeline_window(error, last_replayed_head)
+                  last_replayed_head = replayable.first
+                  next if replay_pipeline_intents(replayable)
+                end
+              end
+
+              return
             end
           end
         ensure
@@ -233,7 +331,7 @@ module ActiveRecord
             # Results are tentative until the server confirms the sync point.
             # Keep pending intents in place while buffering so a connection
             # failure before PGRES_PIPELINE_SYNC leaves the whole group
-            # available for unknown-fate classification.
+            # available for replay / unknown-fate classification.
             begin
               while intent = @pending_intents[pipeline_buffer.length]
                 if intent.is_a?(SyncIntent)
@@ -245,7 +343,10 @@ module ActiveRecord
                     raise "BUG: expected pipeline sync result, got #{sync_result.result_status}"
                   end
 
-                  @pending_intents.shift(pipeline_buffer.length + 1)
+                  confirmed_intents = @pending_intents.shift(pipeline_buffer.length + 1)
+                  if confirmed_intents.include?(@pipeline_replay_retry_required_through)
+                    @pipeline_replay_retry_required_through = nil
+                  end
                   sync_result.clear
                   deliver_pipeline_buffer
                   next
@@ -312,6 +413,70 @@ module ActiveRecord
                 intent.deliver_result(raw_result)
               end
             end
+          end
+
+          def replay_pipeline_intents(window)
+            reconnect!(restore_transactions: true)
+            enter_pipeline_mode
+            submit_pipeline_replay(window)
+            true
+          rescue Exception => error
+            failure_intent = take_pipeline_connection_error_intent(error)
+            translated = if error.is_a?(PG::Error) || error.is_a?(IOError) || error.is_a?(SystemCallError)
+              translate_pipeline_connection_error(error)
+            else
+              error
+            end
+            cause = translated.cause
+            server_fatal_intent = failure_intent if cause.respond_to?(:result) && connection_terminating_severity?(cause.result)
+
+            @raw_connection&.close
+            abandon_pipelined_intents(translated, server_fatal_intent: server_fatal_intent)
+            settle_pipeline_replay_window(window, translated)
+            raise error unless translated.is_a?(ActiveRecord::ConnectionNotEstablished) || translated.is_a?(ActiveRecord::ConnectionFailed)
+
+            false
+          end
+
+          def submit_pipeline_replay(window)
+            while operation = window.next_operation
+              retry_required = window.next_operation_retry_required?
+              if operation.is_a?(SyncIntent)
+                window.shift_operation
+                pipeline_sync
+              else
+                pipeline_add_query(operation)
+                @pipeline_replay_retry_required_through = operation if retry_required
+                window.shift_operation
+              end
+            end
+          end
+
+          def settle_pipeline_replay_window(window, error, no_progress: false)
+            retry_required = window.intents_requiring_retry
+            window.each do |intent|
+              if no_progress || retry_required.include?(intent)
+                intent.retry_budget&.reconnect_consumed! if no_progress
+                intent.deliver_failure(error)
+              else
+                intent.deliver_not_run(reason: :unsynced)
+              end
+            end
+          end
+
+          def recover_pipeline_window(error, last_replayed_head)
+            failure_intent = take_pipeline_connection_error_intent(error)
+            translated = translate_pipeline_connection_error(error)
+            cause = translated.cause
+            server_fatal_intent = failure_intent if cause.respond_to?(:result) && connection_terminating_severity?(cause.result)
+            allow_recovery = retryable_connection_error?(translated) && reconnect_can_restore_state?
+
+            abandon_pipelined_intents(
+              translated,
+              server_fatal_intent: server_fatal_intent,
+              allow_recovery: allow_recovery,
+              last_replayed_head: last_replayed_head
+            )
           end
 
           def take_pipeline_connection_error_intent(error)
@@ -474,30 +639,91 @@ module ActiveRecord
             end
           end
 
-          def abandon_pipelined_intents(connection_error = nil, server_fatal_intent: nil)
+          # Replaying the full window requires permission from every uncertain
+          # intent, but retry budget advances only when a sync confirms progress.
+          # Charging later groups now would let one connection loss exhaust the
+          # whole buffer, preventing recovery from a later loss after earlier
+          # groups had been confirmed. Later groups therefore retain their budget
+          # until they reach the frontier.
+          def consume_pipeline_retry_budgets(error, window)
+            intents_requiring_retry = window.intents_requiring_retry
+            return true if intents_requiring_retry.empty?
+            return false unless intents_requiring_retry.all?(&:allow_retry)
+            return false unless retryable_connection_error?(error)
+
+            frontier_group = window.frontier_group_intents
+            frontier_budgets = frontier_group.filter_map do |intent|
+              next unless intents_requiring_retry.include?(intent)
+
+              intent.retry_budget ||= build_retry_budget(
+                allow_retry: intent.allow_retry,
+                reconnectable: reconnect_can_restore_state?
+              )
+            end
+            retry_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            return false unless frontier_budgets.all? { |budget| budget.reconnectable? && budget.available?(retry_at) }
+
+            frontier_budgets.each { |budget| budget.consume(retry_at) }
+            frontier_group.each do |intent|
+              intent.retry_budget ||= build_retry_budget(
+                allow_retry: intent.allow_retry,
+                reconnectable: reconnect_can_restore_state?
+              )
+              intent.retry_budget.reconnect_consumed!
+            end
+            true
+          end
+
+          # Classify and deliver terminal states to all pending intents after
+          # a connection failure, based on sync boundaries.
+          #
+          # When +allow_recovery+ is true, intents whose execution might have
+          # committed require retry budget. Work from an unsynced group, and
+          # work skipped after a server FATAL, can replay without permission.
+          # Returns the ordered unresolved window for replay when every
+          # permission-requiring intent is eligible; otherwise delivers
+          # terminal states.
+          #
+          # +last_replayed_head+ gates progress: if the first intent in the
+          # replay list is the same as the last attempt, we're not making
+          # progress and fall through to deliver terminal states instead.
+          def abandon_pipelined_intents(connection_error = nil, server_fatal_intent: nil,
+            allow_recovery: false, last_replayed_head: nil)
             discard_pipeline_buffer
 
             intents = @pending_intents
             @pending_intents = []
             return unless intents&.any?
 
-            uncertain_index = if server_fatal_intent
+            replayable = build_replay_window(intents, server_fatal_intent)
+            replayable.advance_retry_required_through(@pipeline_replay_retry_required_through)
+            @pipeline_replay_retry_required_through = nil
+            no_progress = last_replayed_head && replayable.first.equal?(last_replayed_head)
+            if allow_recovery && !no_progress && consume_pipeline_retry_budgets(connection_error, replayable)
+              replayable.each(&:reset_for_retry)
+              return replayable
+            end
+
+            error = connection_error || ActiveRecord::ConnectionFailed.new("Connection lost during pipeline execution")
+            settle_pipeline_replay_window(replayable, error, no_progress: no_progress)
+            nil
+          end
+
+          def build_replay_window(intents, server_fatal_intent = nil)
+            retry_required_index = if server_fatal_intent
               intents.index(server_fatal_intent)
             elsif (last_sync_index = intents.rindex { |intent| intent.is_a?(SyncIntent) })
               (last_sync_index - 1).downto(0).find { |index| !intents[index].is_a?(SyncIntent) }
             end
 
-            if uncertain_index
-              uncertain = intents[0..uncertain_index].reject { |intent| intent.is_a?(SyncIntent) }
-              not_run = (intents[(uncertain_index + 1)..] || []).reject { |intent| intent.is_a?(SyncIntent) }
+            if retry_required_index
+              ReplayWindow.new(
+                retry_required: intents[0..retry_required_index],
+                replay_safe: intents[(retry_required_index + 1)..] || []
+              )
             else
-              uncertain = []
-              not_run = intents.reject { |intent| intent.is_a?(SyncIntent) }
+              ReplayWindow.new(replay_safe: intents.dup)
             end
-
-            error = connection_error || ActiveRecord::ConnectionFailed.new("Connection lost during pipeline execution")
-            uncertain.each { |intent| intent.deliver_failure(error) }
-            not_run.each { |intent| intent.deliver_not_run(reason: :unsynced) }
           end
       end
     end

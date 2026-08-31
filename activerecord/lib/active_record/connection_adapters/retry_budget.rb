@@ -28,16 +28,16 @@ module ActiveRecord
         @reconnectable = false
       end
 
-      def expired?
-        @deadline ? @deadline < Process.clock_gettime(Process::CLOCK_MONOTONIC) : false
+      def expired?(now = Process.clock_gettime(Process::CLOCK_MONOTONIC))
+        @deadline ? @deadline < now : false
       end
 
-      def available?
-        @retries_remaining > 0 && !expired?
+      def available?(now = Process.clock_gettime(Process::CLOCK_MONOTONIC))
+        @retries_remaining > 0 && !expired?(now)
       end
 
-      def consume
-        return false unless available?
+      def consume(now = Process.clock_gettime(Process::CLOCK_MONOTONIC))
+        return false unless available?(now)
 
         @retries_remaining -= 1
         true
