@@ -680,6 +680,97 @@ module ActiveRecord
       @connection&.instance_variable_set(:@pending_intents, [])
     end
 
+    def test_sync_marker_is_recorded_only_after_connection_probe
+      @connection.enter_pipeline_mode
+      add_query("SELECT 1 AS n")
+      raw_connection = @connection.instance_variable_get(:@raw_connection)
+
+      raw_connection.stub(:pipeline_sync, -> { raise PG::ConnectionBad, "closed" }) do
+        assert_raises(PG::ConnectionBad) { @connection.pipeline_sync }
+      end
+
+      pending = @connection.instance_variable_get(:@pending_intents)
+      assert_instance_of ConnectionAdapters::PostgreSQL::PipelineContext::SyncIntent, pending.last
+      pending.pop
+    end
+
+    def test_connection_failure_before_sync_marks_queries_not_run
+      @connection.enter_pipeline_mode
+      first = add_query("SELECT 1 AS n")
+      second = add_query("SELECT 2 AS n")
+      raw_connection = @connection.instance_variable_get(:@raw_connection)
+
+      raw_connection.stub(:flush, -> { raise PG::ConnectionBad, "closed" }) do
+        @connection.flush_pipeline
+      end
+
+      assert_not_predicate @connection, :pipeline_pending?
+      assert_equal :unsynced, first.not_run_reason
+      assert_equal :unsynced, second.not_run_reason
+    end
+
+    def test_connection_failure_distinguishes_synced_and_unsynced_intents
+      synced = build_intent("SELECT 1")
+      unsynced = build_intent("SELECT 2")
+      sync = ConnectionAdapters::PostgreSQL::PipelineContext::SyncIntent.new
+      error = ActiveRecord::ConnectionFailed.new("connection closed")
+      @connection.instance_variable_set(:@pending_intents, [synced, sync, unsynced])
+
+      @connection.send(:abandon_pipelined_intents, error)
+
+      assert_same error, synced.error
+      assert_nil synced.not_run_reason
+      assert_nil unsynced.error
+      assert_equal :unsynced, unsynced.not_run_reason
+    end
+
+    def test_connection_failure_uses_the_last_sync_boundary
+      first = build_intent("SELECT 1")
+      second = build_intent("SELECT 2")
+      third = build_intent("SELECT 3")
+      sync_class = ConnectionAdapters::PostgreSQL::PipelineContext::SyncIntent
+      error = ActiveRecord::ConnectionFailed.new("connection closed")
+      @connection.instance_variable_set(:@pending_intents, [first, sync_class.new, second, sync_class.new, third])
+
+      @connection.send(:abandon_pipelined_intents, error)
+
+      assert_same error, first.error
+      assert_same error, second.error
+      assert_equal :unsynced, third.not_run_reason
+    end
+
+    def test_server_fatal_result_requires_retry_through_the_failing_intent
+      synced = build_intent("SELECT 0")
+      first = build_intent("SELECT 1")
+      fatal = build_intent("SELECT 2")
+      third = build_intent("SELECT 3")
+      sync_class = ConnectionAdapters::PostgreSQL::PipelineContext::SyncIntent
+      error = ActiveRecord::ConnectionFailed.new("connection closed")
+      @connection.instance_variable_set(
+        :@pending_intents,
+        [synced, sync_class.new, first, fatal, third, sync_class.new]
+      )
+
+      @connection.send(:abandon_pipelined_intents, error, server_fatal_intent: fatal)
+
+      assert_same error, synced.error
+      assert_same error, first.error
+      assert_same error, fatal.error
+      assert_equal :unsynced, third.not_run_reason
+    end
+
+    def test_connection_error_translation_prefers_captured_fatal_notice
+      notice_error = PG::AdminShutdown.new("terminating connection")
+      @connection.instance_variable_set(:@notice_receiver_fatal_error, notice_error)
+
+      translated = @connection.send(
+        :translate_pipeline_connection_error,
+        PG::Error.new("server closed the connection")
+      )
+
+      assert_same notice_error, translated.cause
+    end
+
     def test_connection_errors_are_delivered_to_pending_intents
       @connection.enter_pipeline_mode
       first = add_query("SELECT 1 AS n")
