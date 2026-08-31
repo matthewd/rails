@@ -347,6 +347,9 @@ module ActiveRecord
 
     # Connect to the database
     ARTest.connect
+    if ENV["AR_POSTGRESQL_PIPELINE"] == "1" && ActiveRecord::Base.adapter_class <= ConnectionAdapters::PostgreSQLAdapter
+      ActiveRecord::Base.adapter_class.prepend(AdapterHelper::ForcePostgreSQLPipelines)
+    end
     # Load database schema
     load_schema
   end

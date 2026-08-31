@@ -26,7 +26,9 @@ module ActiveRecord
 
       def test_async_fallback
         result = @connection.select_all("SELECT 1", async: true)
-        assert_instance_of FutureResult::Complete, result
+        unless @connection.adapter_name == "PostgreSQL" && ENV["AR_POSTGRESQL_PIPELINE"] == "1"
+          assert_instance_of FutureResult::Complete, result
+        end
         assert_equal [[1]], result.result.rows
       end
 

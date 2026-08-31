@@ -1,6 +1,13 @@
 # frozen_string_literal: true
 
 module AdapterHelper
+  module ForcePostgreSQLPipelines
+    private
+      def pipeline_queries_by_default?
+        true
+      end
+  end
+
   def current_adapter?(*types)
     types.any? do |type|
       ActiveRecord::ConnectionAdapters.const_defined?(type) &&
@@ -107,6 +114,7 @@ module AdapterHelper
   # know how to detect this.
   def raw_transaction_open?(connection)
     if current_adapter?(:PostgreSQLAdapter)
+      connection.exit_pipeline_mode if connection.pipeline_active?
       connection.instance_variable_get(:@raw_connection).transaction_status == ::PG::PQTRANS_INTRANS
     elsif current_adapter?(:Mysql2Adapter, :TrilogyAdapter)
       begin
@@ -136,6 +144,7 @@ module AdapterHelper
     if current_adapter?(:PostgreSQLAdapter)
       # Connection was left in a bad state, need to reconnect to simulate fresh disconnect
       connection.verify! if connection.instance_variable_get(:@raw_connection).status == ::PG::CONNECTION_BAD
+      connection.exit_pipeline_mode if connection.pipeline_active?
       unless connection.instance_variable_get(:@raw_connection).transaction_status == ::PG::PQTRANS_INTRANS
         connection.instance_variable_get(:@raw_connection).async_exec("begin")
       end

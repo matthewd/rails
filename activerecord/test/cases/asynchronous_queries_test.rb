@@ -198,7 +198,29 @@ class AsynchronousQueriesTest < ActiveRecord::TestCase
       elsif adapter_class.instance_methods(false).include?(:perform_query)
         :public
       end
+      pipeline_visibility = if adapter_class.private_instance_methods.include?(:should_pipeline?)
+        :private
+      elsif adapter_class.protected_instance_methods.include?(:should_pipeline?)
+        :protected
+      elsif adapter_class.instance_methods.include?(:should_pipeline?)
+        :public
+      end
+      original_should_pipeline = adapter_class.instance_method(:should_pipeline?) if pipeline_visibility
+      should_pipeline_defined_on_class =
+        adapter_class.instance_methods(false).include?(:should_pipeline?) ||
+        adapter_class.protected_instance_methods(false).include?(:should_pipeline?) ||
+        adapter_class.private_instance_methods(false).include?(:should_pipeline?)
       attempts = Concurrent::AtomicFixnum.new
+
+      if original_should_pipeline
+        # Failure injection replaces perform_query, so matching intents must stay
+        # on that boundary even when the PostgreSQL suite forces pipeline routing.
+        adapter_class.send(:remove_method, :should_pipeline?) if should_pipeline_defined_on_class
+        adapter_class.send(:define_method, :should_pipeline?) do |intent|
+          !matching.call(intent) && original_should_pipeline.bind_call(self, intent)
+        end
+        adapter_class.send(pipeline_visibility, :should_pipeline?)
+      end
 
       adapter_class.send(:define_method, :perform_query) do |raw_connection, intent|
         if matching.call(intent)
@@ -219,6 +241,14 @@ class AsynchronousQueriesTest < ActiveRecord::TestCase
         adapter_class.send(visibility, :perform_query)
       else
         adapter_class.send(:remove_method, :perform_query)
+      end
+
+      if original_should_pipeline
+        adapter_class.send(:remove_method, :should_pipeline?)
+        if should_pipeline_defined_on_class
+          adapter_class.send(:define_method, :should_pipeline?, original_should_pipeline)
+          adapter_class.send(pipeline_visibility, :should_pipeline?)
+        end
       end
     end
 end

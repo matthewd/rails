@@ -219,7 +219,11 @@ module ActiveRecord
             # If pipelining is locked, maintain current state (don't change mode)
             return pipeline_active? if @pipelining_locked
 
-            pipeline_active? || intent.prefer_pipeline
+            pipeline_active? || intent.prefer_pipeline || pipeline_queries_by_default?
+          end
+
+          def pipeline_queries_by_default?
+            false
           end
 
           def cancel_any_running_query

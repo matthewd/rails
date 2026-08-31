@@ -11,6 +11,7 @@ module ActiveRecord
       super
       @connection = ActiveRecord::Base.lease_connection
       @connection.connect!
+      @connection.exit_pipeline_mode if @connection.pipeline_active?
       @original_db_warnings_action = :ignore
     end
 
@@ -406,6 +407,8 @@ module ActiveRecord
     end
 
     def test_queries_outside_pipeline_execute_immediately
+      skip "requires the normal routing policy" if ENV["AR_POSTGRESQL_PIPELINE"] == "1"
+
       intent = build_intent("SELECT 1 AS n")
 
       intent.execute!

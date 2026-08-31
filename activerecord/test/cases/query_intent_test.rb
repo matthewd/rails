@@ -144,15 +144,17 @@ module ActiveRecord
       connection = @connection
       collect_warnings = ->(_result) { raise ActiveRecord::StatementInvalid, "warning collection failed" }
 
-      connection.stub(:collect_warnings, collect_warnings) do
-        intent = build_intent(connection)
-        intent.execute!
+      without_pipeline_routing(connection) do
+        connection.stub(:collect_warnings, collect_warnings) do
+          intent = build_intent(connection)
+          intent.execute!
 
-        assert_predicate intent, :raw_result_available?
-        error = assert_raises(ActiveRecord::StatementInvalid) do
-          intent.cast_result
+          assert_predicate intent, :raw_result_available?
+          error = assert_raises(ActiveRecord::StatementInvalid) do
+            intent.cast_result
+          end
+          assert_equal "warning collection failed", error.message
         end
-        assert_equal "warning collection failed", error.message
       end
     end
 
@@ -237,10 +239,12 @@ module ActiveRecord
         end
       end
 
-      events = connection.stub(:perform_query, perform_query) do
-        connection.stub(:dirty_current_transaction, -> { dirty_count += 1 }) do
-          capture_notifications("sql.active_record") do
-            assert_raises(interruption) { intent.execute! }
+      events = without_pipeline_routing(connection) do
+        connection.stub(:perform_query, perform_query) do
+          connection.stub(:dirty_current_transaction, -> { dirty_count += 1 }) do
+            capture_notifications("sql.active_record") do
+              assert_raises(interruption) { intent.execute! }
+            end
           end
         end
       end
@@ -406,6 +410,14 @@ module ActiveRecord
           allow_retry: allow_retry,
           materialize_transactions: materialize_transactions
         )
+      end
+
+      def without_pipeline_routing(connection, &block)
+        if connection.supports_pipeline?
+          connection.stub(:should_pipeline?, false, &block)
+        else
+          yield
+        end
       end
 
       def with_retryable_statement_invalid(connection, sql)
