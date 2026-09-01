@@ -5,8 +5,7 @@ module ActiveRecord
     # = Active Record Belongs To Polymorphic Association
     class BelongsToPolymorphicAssociation < BelongsToAssociation # :nodoc:
       def klass
-        type = owner.read_attribute(foreign_type)
-        type.presence && owner.class.polymorphic_class_for(type)
+        reflection.association_router.resolve_reference(owner)&.referenced_class
       end
 
       def target_changed?
@@ -23,12 +22,16 @@ module ActiveRecord
 
       private
         def replace_keys(record, force: false)
+          route = reflection.association_router.route_for_referenced(record) if record
           super
 
-          target_type = record ? record.class.polymorphic_name : nil
-
-          if force || owner.read_attribute(foreign_type) != target_type
-            owner.write_attribute(foreign_type, target_type)
+          fixed_values = route&.fixed_reference_values || {}
+          columns = [foreign_type, *fixed_values.keys].uniq
+          columns.each do |column|
+            value = record ? fixed_values[column] : nil
+            if force || owner.read_attribute(column) != value
+              owner.write_attribute(column, value)
+            end
           end
         end
 

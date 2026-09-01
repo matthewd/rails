@@ -43,6 +43,7 @@ module ActiveRecord
 
   autoload :AssociationLink, "active_record/association_route"
   autoload :AssociationRoute
+  autoload :AssociationRouter, "active_record/association_route"
   autoload :Base
   autoload :Callbacks
   autoload :ConnectionHandling

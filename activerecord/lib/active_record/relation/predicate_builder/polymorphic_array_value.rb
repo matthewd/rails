@@ -11,41 +11,42 @@ module ActiveRecord
       def queries
         return [ reflection.join_foreign_key => values ] if values.empty?
 
-        type_to_ids_mapping.map do |type, ids|
-          query = {}
-          query[reflection.join_foreign_type] = type if type
-          query[reflection.join_foreign_key] = ids
-          query
+        route_groups.map do |_key, (fixed_values, owner_key, ids)|
+          fixed_values.merge(owner_key => ids)
         end
       end
 
       private
         attr_reader :reflection, :values
 
-        def type_to_ids_mapping
-          default_hash = Hash.new { |hsh, key| hsh[key] = [] }
-          values.each_with_object(default_hash) do |value, hash|
-            hash[klass(value)&.polymorphic_name] << convert_to_id(value)
+        def route_groups
+          values.each_with_object({}) do |value, groups|
+            if route = route_for(value)
+              fixed_values = route.fixed_reference_values
+              owner_key = route.owner_key.name
+              key = [fixed_values, owner_key]
+            else
+              fixed_values = {}
+              owner_key = reflection.join_foreign_key
+              key = [fixed_values, owner_key]
+            end
+
+            group = groups[key] ||= [fixed_values, owner_key, []]
+            group.last << convert_to_id(value, route)
           end
         end
 
-        def primary_key(value)
-          reflection.association_route(klass(value)).target_key.name
-        end
-
-        def klass(value)
-          if value.is_a?(Base)
-            value.class
-          elsif value.is_a?(Relation)
-            value.model
+        def route_for(value)
+          if value.is_a?(Base) || value.is_a?(Relation)
+            reflection.association_router.route_for_referenced(value)
           end
         end
 
-        def convert_to_id(value)
+        def convert_to_id(value, route)
           if value.is_a?(Base)
-            ActiveRecord::Key.for(primary_key(value)).value_of(value)
+            route.target_key.value_of(value)
           elsif value.is_a?(Relation)
-            value.select(primary_key(value))
+            value.select(route.target_key.name)
           else
             value
           end

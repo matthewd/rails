@@ -57,17 +57,23 @@ module ActiveRecord
         def construct_join_attributes(*records)
           ensure_mutable
 
-          association_primary_key = source_reflection.association_primary_key(reflection.klass)
+          route = source_reflection.association_router.route_for_referenced(records.first)
+          reference = route.link.reference
 
-          if Array(association_primary_key) == reflection.klass.composite_query_constraints_list && !options[:source_type]
+          if reference.referenced_key.to_a == reflection.klass.composite_query_constraints_list && !options[:source_type]
             join_attributes = { source_reflection.name => records }
           else
-            assoc_pk_values = records.map { |record| record.read_attribute(association_primary_key) }
-            join_attributes = { source_reflection.foreign_key => assoc_pk_values }
+            referenced_values = records.map { |record| reference.referenced_key.value_of(record) }
+            join_attributes = { reference.referencing_key.name => referenced_values }
           end
 
-          if options[:source_type]
-            join_attributes[source_reflection.foreign_type] = [ options[:source_type] ]
+          fixed_values = if options[:source_type]
+            { source_reflection.foreign_type => options[:source_type] }
+          else
+            route.fixed_reference_values
+          end
+          fixed_values.each do |column, value|
+            join_attributes[column] = [value] * records.count
           end
 
           if records.count == 1

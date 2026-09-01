@@ -216,7 +216,8 @@ module ActiveRecord
 
       def initialize_attributes(record, except_from_scope_attributes = nil) # :nodoc:
         except_from_scope_attributes ||= {}
-        skip_assign = [reflection.foreign_key, reflection.type].compact
+        route = reflection.association_route(klass)
+        skip_assign = [reflection.foreign_key, *route.target_fixed_values.keys].compact
         assigned_keys = record.changed_attribute_names_to_save
         assigned_keys += except_from_scope_attributes.keys.map(&:to_s)
         attributes = scope_for_create.except!(*(assigned_keys - skip_assign))

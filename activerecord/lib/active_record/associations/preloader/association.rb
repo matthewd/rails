@@ -159,7 +159,7 @@ module ActiveRecord
 
         # The name of the key on the associated records
         def association_key_name
-          reflection.association_route(klass).target_key.name
+          association_route.target_key.name
         end
 
         def loader_query
@@ -239,7 +239,15 @@ module ActiveRecord
 
           # The name of the key on the model which declares the association
           def owner_key_name
-            reflection.association_route(klass).owner_key.name
+            association_route.owner_key.name
+          end
+
+          def association_route
+            @association_route ||= if reflection.belongs_to?
+              reflection.association_router.resolve_reference(owners.first) || reflection.association_route(klass)
+            else
+              reflection.association_router.route_for_referenced(owners.first)
+            end
           end
 
           def associate_records_to_owner(owner, records)
@@ -294,8 +302,9 @@ module ActiveRecord
           def build_scope
             scope = klass.scope_for_association
 
-            if reflection.type && !reflection.through_reflection?
-              scope.where!(reflection.type => model.polymorphic_name)
+            unless reflection.through_reflection?
+              fixed_values = association_route.target_fixed_values
+              scope.where!(fixed_values) unless fixed_values.empty?
             end
 
             scope.merge!(reflection_scope) unless reflection_scope.empty_scope?

@@ -202,13 +202,14 @@ module ActiveRecord
         scope_chain_items = join_scopes(table, predicate_builder)
         klass_scope       = klass_join_scope(table, predicate_builder)
 
-        if type
-          klass_scope.where!(type => foreign_klass.polymorphic_name)
+        route = association_route_for_join(foreign_klass)
+        route.target_fixed_values.each do |column, value|
+          klass_scope.where!(column => value)
         end
 
         scope_chain_items.inject(klass_scope, &:merge!)
 
-        association_route.each do |owner_column, target_column|
+        route.each do |owner_column, target_column|
           target_attribute = predicate_builder.predicate_attribute(table[target_column])
           owner_attribute = predicate_builder.predicate_attribute(foreign_table[owner_column])
 
@@ -220,6 +221,10 @@ module ActiveRecord
         end
 
         klass_scope
+      end
+
+      def association_route_for_join(_foreign_klass)
+        association_route
       end
 
       def join_scopes(table, predicate_builder = nil, klass = self.klass, record = nil) # :nodoc:
@@ -550,9 +555,9 @@ module ActiveRecord
       end
 
       def association_scope_cache(klass, owner, &block)
-        key = self
+        key = [self, association_route(klass)]
         if polymorphic?
-          key = [key, owner.read_attribute(@foreign_type)]
+          key << owner.read_attribute(@foreign_type)
         end
         klass.with_connection do |connection|
           klass.cached_find_by_statement(connection, key, &block)
@@ -565,12 +570,16 @@ module ActiveRecord
 
       # The resolved physical association link and its orientation from this
       # reflection's declaring model.
-      def association_route(associated_class = nil)
-        if polymorphic?
-          build_association_route(associated_class || raise(ArgumentError, "a target class is required for a polymorphic association route"))
-        else
-          @association_route ||= build_association_route(klass)
-        end
+      def association_router
+        @association_router ||= AssociationRouter.new(self)
+      end
+
+      def association_route(associated = nil)
+        association_router.route_for(associated)
+      end
+
+      def association_route_for_join(foreign_klass)
+        association_router.relation_route(referenced: foreign_klass) || association_route(foreign_klass)
       end
 
       def foreign_key(infer_from_inverse_of: true)
@@ -750,7 +759,7 @@ module ActiveRecord
       end
 
       private
-        def build_association_route(associated_class)
+        def build_association_route(associated_class, fixed_reference_values: nil)
           if belongs_to?
             referencing_class = active_record
             referenced_class = associated_class
@@ -771,7 +780,7 @@ module ActiveRecord
             type_column = type
           end
 
-          fixed_reference_values = if type_column
+          fixed_reference_values ||= if type_column
             { type_column => referenced_class.polymorphic_name }
           else
             {}
@@ -1112,6 +1121,17 @@ module ActiveRecord
         collect_join_reflections [self]
       end
 
+      def association_scope_cache(klass, owner, &block)
+        routes = chain.each_with_index.map do |reflection, index|
+          index.zero? ? reflection.association_route(klass) : reflection.association_route
+        end
+        key = [self, *routes]
+        key << owner.read_attribute(foreign_type) if polymorphic?
+        klass.with_connection do |connection|
+          klass.cached_find_by_statement(connection, key, &block)
+        end
+      end
+
       # This is for clearing cache on the reflection. Useful for tests that need to compare
       # SQL queries on associations.
       def clear_association_scope_cache # :nodoc:
@@ -1156,8 +1176,12 @@ module ActiveRecord
         source_reflection.join_primary_key(klass)
       end
 
+      def association_router
+        source_reflection.association_router
+      end
+
       def association_route(klass = self.klass)
-        source_reflection.association_route(klass)
+        association_router.route_for(klass)
       end
 
       # Gets an array of possible <tt>:through</tt> source reflection names in both singular and plural form.
@@ -1308,8 +1332,12 @@ module ActiveRecord
       delegate :klass, :scope, :plural_name, :type, :join_primary_key, :join_foreign_key,
                :name, :scope_for, to: :@reflection
 
+      def association_router
+        @reflection.association_router
+      end
+
       def association_route(klass = self.klass)
-        @reflection.association_route(klass)
+        association_router.route_for(klass)
       end
 
       def initialize(reflection, previous_reflection)
@@ -1359,8 +1387,18 @@ module ActiveRecord
         @reflection.join_primary_key(klass)
       end
 
+      def association_router
+        @reflection.association_router
+      end
+
       def association_route(klass = self.klass)
-        @reflection.association_route(klass)
+        if @reflection.through_reflection?
+          @reflection.association_route(klass)
+        elsif @reflection.belongs_to?
+          association_router.resolve_reference(@association.owner) || association_router.route_for(klass)
+        else
+          association_router.route_for_referenced(@association.owner)
+        end
       end
 
       def all_includes; yield; end

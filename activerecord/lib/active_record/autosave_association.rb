@@ -492,10 +492,7 @@ module ActiveRecord
           return unless (autosave && record.changed_for_autosave?) || _record_changed?(reflection, record, primary_key_value)
 
           unless reflection.through_reflection
-            reflection.association_route.link.reference.each do |foreign_key, primary_key|
-              association_id = read_attribute(primary_key)
-              record.write_attribute(foreign_key, association_id) unless record.read_attribute(foreign_key) == association_id
-            end
+            reflection.association_router.route_for_referenced(self).write(self, record)
             association.set_inverse_instance(record)
           end
 

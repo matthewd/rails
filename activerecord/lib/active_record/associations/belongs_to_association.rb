@@ -4,7 +4,7 @@ module ActiveRecord
   module Associations
     # = Active Record Belongs To Association
     class BelongsToAssociation < SingularAssociation # :nodoc:
-      attr_reader :foreign_key, :foreign_type
+      attr_reader :foreign_type
 
       def initialize(owner, reflection)
         super
@@ -15,6 +15,14 @@ module ActiveRecord
         if reflection.polymorphic?
           ft = reflection.foreign_type
           @foreign_type = aliases[ft] || ft
+        end
+      end
+
+      def foreign_key
+        if reflection.polymorphic?
+          @foreign_key
+        else
+          resolved_foreign_key(association_route)
         end
       end
 
@@ -141,9 +149,11 @@ module ActiveRecord
         end
 
         def replace_keys(record, force: false)
-          target_key = record ? reflection.association_route(record.class).link.reference.referenced_key : ActiveRecord::Key.for(nil)
-          target_key_values = target_key.map { |key| record.read_attribute(key) }
-          owner_key_values = foreign_key.map { |fk| owner.read_attribute(fk) }
+          route = association_route(record)
+          referencing_key = route ? resolved_foreign_key(route) : foreign_key
+          referenced_key = route&.link&.reference&.referenced_key || ActiveRecord::Key.for(nil)
+          target_key_values = record ? referenced_key.map { |key| record.read_attribute(key) } : []
+          owner_key_values = referencing_key.map { |key| owner.read_attribute(key) }
 
           return if !force && owner_key_values == target_key_values
 
@@ -151,12 +161,26 @@ module ActiveRecord
 
           # Preserve shared primary key columns only if another foreign key
           # column can be cleared to disassociate the record.
-          preserve_owner_pk = record.nil? && foreign_key.any? { |key| !owner_pk.include?(key) }
+          preserve_owner_pk = record.nil? && referencing_key.any? { |key| !owner_pk.include?(key) }
 
-          foreign_key.each_with_index do |key, index|
+          referencing_key.each_with_index do |key, index|
             next if preserve_owner_pk && owner_pk.include?(key)
             owner.write_attribute(key, target_key_values[index])
           end
+        end
+
+        def association_route(record = nil)
+          if record
+            reflection.association_router.route_for_referenced(record)
+          else
+            reflection.association_router.resolve_reference(owner)
+          end
+        end
+
+        def resolved_foreign_key(route)
+          aliases = owner.class.attribute_aliases
+          columns = route.link.reference.referencing_key.map { |key| aliases[key] || key }
+          ActiveRecord::Key.for(columns.one? ? columns.first : columns)
         end
 
         def primary_key(klass)

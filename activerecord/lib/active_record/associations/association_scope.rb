@@ -38,15 +38,12 @@ module ActiveRecord
         binds = []
         last_reflection = chain.last
 
-        binds.push(*last_reflection.association_route(associated_class).values_from_owner(owner))
-        if last_reflection.type
-          binds << owner.class.polymorphic_name
-        end
+        last_route = last_reflection.association_route(associated_class)
+        binds.push(*last_route.values_from_owner(owner))
+        binds.push(*last_route.target_fixed_values.values)
 
-        chain.each_cons(2).each do |reflection, next_reflection|
-          if reflection.type
-            binds << next_reflection.klass.polymorphic_name
-          end
+        chain.each_cons(2).each do |reflection, _next_reflection|
+          binds.push(*reflection.association_route.target_fixed_values.values)
         end
         binds
       end
@@ -60,14 +57,21 @@ module ActiveRecord
 
         def last_chain_scope(scope, reflection, owner)
           table = reflection.aliased_table
-          reflection.association_route.each do |owner_column, target_column|
+          route = reflection.association_route
+
+          route.each_constraint do |owner_column, target_column|
+            value = transform_value(owner.read_attribute(owner_column))
+            scope = apply_scope(scope, reflection, table, target_column, value, create_default: false)
+          end
+
+          route.each_reference do |owner_column, target_column|
             value = transform_value(owner.read_attribute(owner_column))
             scope = apply_scope(scope, reflection, table, target_column, value)
           end
 
-          if reflection.type
-            polymorphic_type = transform_value(owner.class.polymorphic_name)
-            scope = apply_scope(scope, reflection, table, reflection.type, polymorphic_type)
+          route.target_fixed_values.each do |column, fixed_value|
+            value = transform_value(fixed_value)
+            scope = apply_scope(scope, reflection, table, column, value)
           end
 
           scope
@@ -82,16 +86,17 @@ module ActiveRecord
           foreign_table = next_reflection.aliased_table
 
           predicate_builder = scope.predicate_builder
-          constraints = reflection.association_route.map do |owner_column, target_column|
+          route = reflection.association_route
+          constraints = route.map do |owner_column, target_column|
             target_attribute = predicate_builder.predicate_attribute(table[target_column])
             owner_attribute = predicate_builder.predicate_attribute(foreign_table[owner_column])
 
             target_attribute.eq(owner_attribute)
           end.inject(&:and)
 
-          if reflection.type
-            value = transform_value(next_reflection.klass.polymorphic_name)
-            scope = apply_scope(scope, reflection, table, reflection.type, value)
+          route.target_fixed_values.each do |column, fixed_value|
+            value = transform_value(fixed_value)
+            scope = apply_scope(scope, reflection, table, column, value)
           end
 
           scope.joins!(join(foreign_table, constraints))
@@ -159,13 +164,20 @@ module ActiveRecord
           scope
         end
 
-        def apply_scope(scope, reflection, table, key, value)
-          if scope.table == table
+        def apply_scope(scope, reflection, table, key, value, create_default: true)
+          if scope.table == table && create_default
             scope.where!(key => value)
           else
-            scope.references_values |= [Arel.sql(table.name, retryable: true)]
-            predicate_builder = reflection.klass.predicate_builder.with(TableMetadata.new(reflection.klass, table))
-            scope.where!(predicate_builder[key, value])
+            if scope.table != table
+              scope.references_values |= [Arel.sql(table.name, retryable: true)]
+              predicate_builder = reflection.klass.predicate_builder.with(TableMetadata.new(reflection.klass, table))
+            else
+              predicate_builder = scope.predicate_builder
+            end
+
+            predicate = predicate_builder[key, value]
+            predicate = Arel::Nodes::Grouping.new(predicate) unless create_default
+            scope.where!(predicate)
           end
         end
 
