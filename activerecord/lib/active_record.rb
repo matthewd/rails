@@ -41,6 +41,8 @@ require "active_record/errors"
 module ActiveRecord
   extend ActiveSupport::Autoload
 
+  autoload :AssociationLink, "active_record/association_route"
+  autoload :AssociationRoute
   autoload :Base
   autoload :Callbacks
   autoload :ConnectionHandling
@@ -58,6 +60,7 @@ module ActiveRecord
   autoload :Integration
   autoload :InternalMetadata
   autoload :Key
+  autoload :KeyMapping, "active_record/association_route"
   autoload :LogSubscriber
   autoload :Marshalling
   autoload :Migration

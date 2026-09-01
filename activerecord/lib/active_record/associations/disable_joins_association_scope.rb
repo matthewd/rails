@@ -11,19 +11,20 @@ module ActiveRecord
 
         last_reflection, last_ordered, last_join_ids = last_scope_chain(reverse_chain, owner)
 
-        add_constraints(last_reflection, last_reflection.join_primary_key, last_join_ids, owner, last_ordered)
+        add_constraints(last_reflection, last_reflection.association_route.target_key.name, last_join_ids, owner, last_ordered)
       end
 
       private
         def last_scope_chain(reverse_chain, owner)
           first_item = reverse_chain.shift
-          first_scope = [first_item, false, [owner.read_attribute(first_item.join_foreign_key)]]
+          first_route = first_item.association_route
+          first_scope = [first_item, false, [first_route.owner_key.value_of(owner)]]
 
           reverse_chain.inject(first_scope) do |(reflection, ordered, join_ids), next_reflection|
-            key = reflection.join_primary_key
+            key = reflection.association_route.target_key.name
             records = add_constraints(reflection, key, join_ids, owner, ordered)
-            foreign_key = next_reflection.join_foreign_key
-            record_ids = records.pluck(foreign_key)
+            owner_key = next_reflection.association_route.owner_key.name
+            record_ids = records.pluck(owner_key)
             records_ordered = records && records.order_values.any?
 
             [next_reflection, records_ordered, record_ids]

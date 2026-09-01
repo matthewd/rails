@@ -30,7 +30,7 @@ module ActiveRecord
         end
 
         def primary_key(value)
-          reflection.join_primary_key(klass(value))
+          reflection.association_route(klass(value)).target_key.name
         end
 
         def klass(value)

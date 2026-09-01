@@ -208,16 +208,11 @@ module ActiveRecord
 
         scope_chain_items.inject(klass_scope, &:merge!)
 
-        primary_key_column_names = Array(join_primary_key)
-        foreign_key_column_names = Array(join_foreign_key)
+        association_route.each do |owner_column, target_column|
+          target_attribute = predicate_builder.predicate_attribute(table[target_column])
+          owner_attribute = predicate_builder.predicate_attribute(foreign_table[owner_column])
 
-        primary_foreign_key_pairs = primary_key_column_names.zip(foreign_key_column_names)
-
-        primary_foreign_key_pairs.each do |primary_key_column_name, foreign_key_column_name|
-          primary_key_attribute = predicate_builder.predicate_attribute(table[primary_key_column_name])
-          foreign_key_attribute = predicate_builder.predicate_attribute(foreign_table[foreign_key_column_name])
-
-          klass_scope.where!(primary_key_attribute.eq(foreign_key_attribute))
+          klass_scope.where!(target_attribute.eq(owner_attribute))
         end
 
         if klass.finder_needs_type_condition?
@@ -568,6 +563,16 @@ module ActiveRecord
         @join_table ||= -(options[:join_table]&.to_s || derive_join_table)
       end
 
+      # The resolved physical association link and its orientation from this
+      # reflection's declaring model.
+      def association_route(associated_class = nil)
+        if polymorphic?
+          build_association_route(associated_class || raise(ArgumentError, "a target class is required for a polymorphic association route"))
+        else
+          @association_route ||= build_association_route(klass)
+        end
+      end
+
       def foreign_key(infer_from_inverse_of: true)
         @foreign_key ||= if options[:foreign_key]
           ActiveRecord::Key.for(options[:foreign_key]).name
@@ -745,6 +750,42 @@ module ActiveRecord
       end
 
       private
+        def build_association_route(associated_class)
+          if belongs_to?
+            referencing_class = active_record
+            referenced_class = associated_class
+            owner_side = :referencing
+            reference = KeyMapping.new(
+              referencing_key: foreign_key,
+              referenced_key: association_primary_key(associated_class)
+            )
+            type_column = foreign_type
+          else
+            referencing_class = associated_class
+            referenced_class = active_record
+            owner_side = :referenced
+            reference = KeyMapping.new(
+              referencing_key: foreign_key,
+              referenced_key: active_record_primary_key
+            )
+            type_column = type
+          end
+
+          fixed_reference_values = if type_column
+            { type_column => referenced_class.polymorphic_name }
+          else
+            {}
+          end
+
+          AssociationRoute.new(
+            referencing_class: referencing_class,
+            referenced_class: referenced_class,
+            link: AssociationLink.new(reference: reference),
+            owner_side: owner_side,
+            fixed_reference_values: fixed_reference_values
+          )
+        end
+
         # Attempts to find the inverse association name automatically.
         # If it cannot find a suitable inverse association name, it returns
         # +nil+.
@@ -1115,6 +1156,10 @@ module ActiveRecord
         source_reflection.join_primary_key(klass)
       end
 
+      def association_route(klass = self.klass)
+        source_reflection.association_route(klass)
+      end
+
       # Gets an array of possible <tt>:through</tt> source reflection names in both singular and plural form.
       #
       #   class Post < ActiveRecord::Base
@@ -1263,6 +1308,10 @@ module ActiveRecord
       delegate :klass, :scope, :plural_name, :type, :join_primary_key, :join_foreign_key,
                :name, :scope_for, to: :@reflection
 
+      def association_route(klass = self.klass)
+        @reflection.association_route(klass)
+      end
+
       def initialize(reflection, previous_reflection)
         super()
         @reflection = reflection
@@ -1308,6 +1357,10 @@ module ActiveRecord
 
       def join_primary_key(klass = self.klass)
         @reflection.join_primary_key(klass)
+      end
+
+      def association_route(klass = self.klass)
+        @reflection.association_route(klass)
       end
 
       def all_includes; yield; end

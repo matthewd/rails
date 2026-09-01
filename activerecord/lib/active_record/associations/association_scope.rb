@@ -34,11 +34,11 @@ module ActiveRecord
         scope
       end
 
-      def self.get_bind_values(owner, chain)
+      def self.get_bind_values(owner, chain, associated_class = nil)
         binds = []
         last_reflection = chain.last
 
-        binds.push(*last_reflection.join_id_for(owner))
+        binds.push(*last_reflection.association_route(associated_class).values_from_owner(owner))
         if last_reflection.type
           binds << owner.class.polymorphic_name
         end
@@ -59,14 +59,10 @@ module ActiveRecord
         end
 
         def last_chain_scope(scope, reflection, owner)
-          primary_key = ActiveRecord::Key.for(reflection.join_primary_key)
-          foreign_key = ActiveRecord::Key.for(reflection.join_foreign_key)
-
           table = reflection.aliased_table
-          primary_key_foreign_key_pairs = primary_key.zip(foreign_key)
-          primary_key_foreign_key_pairs.each do |join_key, foreign_key|
-            value = transform_value(owner.read_attribute(foreign_key))
-            scope = apply_scope(scope, reflection, table, join_key, value)
+          reflection.association_route.each do |owner_column, target_column|
+            value = transform_value(owner.read_attribute(owner_column))
+            scope = apply_scope(scope, reflection, table, target_column, value)
           end
 
           if reflection.type
@@ -82,19 +78,15 @@ module ActiveRecord
         end
 
         def next_chain_scope(scope, reflection, next_reflection)
-          primary_key = ActiveRecord::Key.for(reflection.join_primary_key)
-          foreign_key = ActiveRecord::Key.for(reflection.join_foreign_key)
-
           table = reflection.aliased_table
           foreign_table = next_reflection.aliased_table
 
           predicate_builder = scope.predicate_builder
-          primary_key_foreign_key_pairs = primary_key.zip(foreign_key)
-          constraints = primary_key_foreign_key_pairs.map do |join_primary_key, foreign_key|
-            join_primary_key_attribute = predicate_builder.predicate_attribute(table[join_primary_key])
-            foreign_key_attribute = predicate_builder.predicate_attribute(foreign_table[foreign_key])
+          constraints = reflection.association_route.map do |owner_column, target_column|
+            target_attribute = predicate_builder.predicate_attribute(table[target_column])
+            owner_attribute = predicate_builder.predicate_attribute(foreign_table[owner_column])
 
-            join_primary_key_attribute.eq(foreign_key_attribute)
+            target_attribute.eq(owner_attribute)
           end.inject(&:and)
 
           if reflection.type

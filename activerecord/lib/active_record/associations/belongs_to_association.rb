@@ -141,7 +141,8 @@ module ActiveRecord
         end
 
         def replace_keys(record, force: false)
-          target_key_values = record ? ActiveRecord::Key.for(primary_key(record.class)).map { |col| record.read_attribute(col) } : []
+          target_key = record ? reflection.association_route(record.class).link.reference.referenced_key : ActiveRecord::Key.for(nil)
+          target_key_values = target_key.map { |key| record.read_attribute(key) }
           owner_key_values = foreign_key.map { |fk| owner.read_attribute(fk) }
 
           return if !force && owner_key_values == target_key_values

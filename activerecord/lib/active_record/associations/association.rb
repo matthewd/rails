@@ -276,7 +276,7 @@ module ActiveRecord
             target_scope.merge!(as.scope(self))
           end
 
-          binds = AssociationScope.get_bind_values(owner, reflection.chain)
+          binds = AssociationScope.get_bind_values(owner, reflection.chain, klass)
           klass.with_connection do |c|
             sc.execute(binds, c, async: async) do |record|
               set_inverse_instance(record)
