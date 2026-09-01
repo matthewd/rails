@@ -26,6 +26,10 @@ module ActiveRecord
         end
       end
 
+      def route
+        association_route
+      end
+
       def handle_dependency
         return unless load_target
 
@@ -33,7 +37,8 @@ module ActiveRecord
         when :destroy
           raise ActiveRecord::Rollback unless target.destroy
         when :destroy_async
-          primary_key_column = reflection.active_record_primary_key
+          route = association_route
+          primary_key_column = route.link.reference.referenced_key.name
           ids = foreign_key.map { |col| owner.public_send(col) }
 
           association_class = if reflection.polymorphic?
@@ -83,18 +88,20 @@ module ActiveRecord
       end
 
       def decrement_counters_before_last_save
-        if reflection.polymorphic?
-          model_type_was = owner.attribute_before_last_save(foreign_type)
-          model_was = owner.class.polymorphic_class_for(model_type_was) if model_type_was
-        else
-          model_was = klass
+        old_route = reflection.association_router.resolve_reference(owner) do |column|
+          owner.attribute_before_last_save(column)
         end
+        return unless old_route
 
-        values = foreign_key.map { |fk| owner.attribute_before_last_save(fk) }
+        foreign_key = old_route.link.reference.referencing_key
+        aliases = owner.class.attribute_aliases
+        values = foreign_key.map do |key|
+          owner.attribute_before_last_save(aliases[key] || key)
+        end
         foreign_key_was = foreign_key.composite? ? (values if values.all?) : values.first
 
-        if foreign_key_was && model_was < ActiveRecord::Base
-          update_counters_via_scope(model_was, foreign_key_was, -1)
+        if foreign_key_was && old_route.referenced_class < ActiveRecord::Base
+          update_counters_via_scope(old_route.referenced_class, foreign_key_was, -1, old_route)
         end
       end
 
@@ -135,8 +142,8 @@ module ActiveRecord
           end
         end
 
-        def update_counters_via_scope(klass, values, by)
-          primary_key = ActiveRecord::Key.for(primary_key(klass))
+        def update_counters_via_scope(klass, values, by, route = association_route)
+          primary_key = route.link.reference.referenced_key
           scope = klass.all_queries_scope.where!(primary_key.where_hash(values))
           scope.update_counters(reflection.counter_cache_column => by, touch: reflection.options[:touch])
         end
@@ -150,8 +157,8 @@ module ActiveRecord
         end
 
         def replace_keys(record, force: false)
-          route = association_route(record)
-          referencing_key = route ? resolved_foreign_key(route) : foreign_key
+          route = record ? association_route(record) : association_route_for_clearing
+          referencing_key = route ? resolved_foreign_key(route) : @foreign_key
           referenced_key = route&.link&.reference&.referenced_key || ActiveRecord::Key.for(nil)
           target_key_values = record ? referenced_key.map { |key| record.read_attribute(key) } : []
           owner_key_values = referencing_key.map { |key| owner.read_attribute(key) }
@@ -178,14 +185,16 @@ module ActiveRecord
           end
         end
 
+        def association_route_for_clearing
+          association_route
+        rescue NameError
+          nil
+        end
+
         def resolved_foreign_key(route)
           aliases = owner.class.attribute_aliases
           columns = route.link.reference.referencing_key.map { |key| aliases[key] || key }
           ActiveRecord::Key.for(columns.one? ? columns.first : columns)
-        end
-
-        def primary_key(klass)
-          reflection.association_router.route_for(klass).link.reference.referenced_key.name
         end
 
         def foreign_key_present?

@@ -31,7 +31,7 @@ module ActiveRecord
 
       private
         def replace_keys(record, force: false)
-          route = association_route(record)
+          route = record ? association_route(record) : association_route_for_clearing
           super
 
           fixed_values = route&.fixed_reference_values || {}

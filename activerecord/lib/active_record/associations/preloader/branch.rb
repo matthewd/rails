@@ -89,33 +89,46 @@ module ActiveRecord
         end
 
         def preloaders_for_reflection(reflection, reflection_records)
-          reflection_records.map do |record|
-            klass = record.association(association).klass
-            route = reflection.association_route_for_owner(record, klass)
-
-            reflection_scope = if reflection.scope && reflection.scope.arity != 0
-              reflection.join_scopes(klass.arel_table, klass.predicate_builder, klass, record).inject(&:merge!)
+          router = reflection.association_router
+          if router.respond_to?(:static?) && router.static? && !(reflection.scope && reflection.scope.arity != 0)
+            reflection_records.group_by do |record|
+              record.association(association).klass
+            end.map do |rhs_klass, records|
+              preloader_for(reflection).new(rhs_klass, records, reflection, scope, nil, associate_by_default)
             end
-            route_scope = route.apply_target_scope(klass.unscoped, record) if route.target_scope&.arity != 0
+          else
+            reflection_records.map do |record|
+              klass = record.association(association).klass
+              route = reflection.association_route_for_owner(record, klass)
 
-            [klass, route, reflection_scope, route_scope, record]
-          end.group_by do |klass, route, reflection_scope, route_scope, _|
-            scopes = [reflection_scope, route_scope].compact
-            [
-              klass,
-              route,
-              *scopes.flat_map do |resolved_scope|
-                [
-                  resolved_scope.table_name,
-                  resolved_scope.model.connection_specification_name,
-                  resolved_scope.values_for_queries,
-                ]
-              end,
-            ]
-          end.map do |_preloader_key, values|
-            rhs_klass, _route, reflection_scope = values.first
-            records = values.map(&:last)
-            preloader_for(reflection).new(rhs_klass, records, reflection, scope, reflection_scope, associate_by_default)
+              reflection_scope = if reflection.scope && reflection.scope.arity != 0
+                reflection.join_scopes(klass.arel_table, klass.predicate_builder, klass, record).inject(&:merge!)
+              end
+              if route.target_scope && route.target_scope.arity != 0
+                route_scope = route.apply_target_scope(klass.unscoped, record)
+              end
+
+              [klass, route, reflection_scope, route_scope, record]
+            end.group_by do |klass, route, reflection_scope, route_scope, _|
+              scopes = [reflection_scope, route_scope].compact
+              [
+                klass,
+                route,
+                *scopes.flat_map do |resolved_scope|
+                  [
+                    resolved_scope.table_name,
+                    resolved_scope.model.connection_specification_name,
+                    resolved_scope.values_for_queries,
+                  ]
+                end,
+              ]
+            end.map do |_preloader_key, values|
+              rhs_klass, route, reflection_scope, route_scope = values.first
+              records = values.map(&:last)
+              preloader_for(reflection).new(
+                rhs_klass, records, reflection, scope, reflection_scope, associate_by_default, route_scope, route
+              )
+            end
           end
         end
 

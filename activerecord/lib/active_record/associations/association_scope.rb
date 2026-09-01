@@ -3,8 +3,8 @@
 module ActiveRecord
   module Associations
     class AssociationScope # :nodoc:
-      def self.scope(association)
-        INSTANCE.scope(association)
+      def self.scope(association, routes = nil)
+        INSTANCE.scope(association, routes)
       end
 
       def self.create(&block)
@@ -18,12 +18,13 @@ module ActiveRecord
 
       INSTANCE = create
 
-      def scope(association)
+      def scope(association, routes = nil)
         klass = association.klass
         reflection = association.reflection
         scope = klass.unscoped
         owner = association.owner
-        chain = get_chain(reflection, association, scope.alias_tracker)
+        routes ||= reflection.association_scope_routes(klass, owner)
+        chain = get_chain(reflection, association, scope.alias_tracker, routes)
 
         extensions = reflection.extensions
         scope.extending!(extensions) unless extensions.empty?
@@ -34,16 +35,14 @@ module ActiveRecord
         scope
       end
 
-      def self.get_bind_values(owner, chain, associated_class = nil)
+      def self.get_bind_values(owner, routes)
         binds = []
-        last_reflection = chain.last
+        last_route = routes.last
 
-        last_route = last_reflection.association_route(associated_class)
         binds.push(*last_route.values_from_owner(owner))
         binds.push(*last_route.target_fixed_values.values)
-
-        chain.each_cons(2).each do |reflection, _next_reflection|
-          binds.push(*reflection.association_route.target_fixed_values.values)
+        routes[0...-1].each do |route|
+          binds.push(*route.target_fixed_values.values)
         end
         binds
       end
@@ -105,22 +104,27 @@ module ActiveRecord
         class ReflectionProxy < SimpleDelegator # :nodoc:
           attr_reader :aliased_table
 
-          def initialize(reflection, aliased_table)
+          def initialize(reflection, aliased_table, route)
             super(reflection)
             @aliased_table = aliased_table
+            @route = route
+          end
+
+          def association_route(*)
+            @route
           end
 
           def all_includes(&); nil; end
         end
 
-        def get_chain(reflection, association, tracker)
+        def get_chain(reflection, association, tracker, routes)
           name = reflection.name
-          chain = [Reflection::RuntimeReflection.new(reflection, association)]
-          reflection.chain.drop(1).each do |refl|
+          chain = [Reflection::RuntimeReflection.new(reflection, association, routes.first)]
+          reflection.chain.drop(1).each_with_index do |refl, index|
             aliased_table = tracker.aliased_table_for(refl.klass.arel_table) do
               refl.alias_candidate(name)
             end
-            chain << ReflectionProxy.new(refl, aliased_table)
+            chain << ReflectionProxy.new(refl, aliased_table, routes[index + 1])
           end
           chain
         end

@@ -71,8 +71,9 @@ module ActiveRecord
         def through_scope_attributes
           scope = through_scope || self.scope
           attributes = scope.where_values_hash(through_association.reflection.klass.table_name)
+          route = through_association.reflection.association_route_for_owner(owner, through_association.reflection.klass)
           except_keys = [
-            *Array(through_association.reflection.foreign_key),
+            *route.link.reference.referencing_key,
             through_association.reflection.klass.inheritance_column
           ]
           attributes.except!(*except_keys)
@@ -119,7 +120,10 @@ module ActiveRecord
         end
 
         def target_reflection_has_associated_record?
-          !(through_reflection.belongs_to? && Array(through_reflection.foreign_key).all? { |foreign_key_column| owner.read_attribute(foreign_key_column).blank? })
+          return true unless through_reflection.belongs_to?
+
+          route = through_reflection.association_route_for_owner(owner, through_reflection.klass)
+          !route.reference_owner_key.all? { |foreign_key_column| owner.read_attribute(foreign_key_column).blank? }
         end
 
         def update_through_counter?(method)
@@ -153,7 +157,8 @@ module ActiveRecord
               count = scope.delete_all
             end
           when :nullify
-            count = scope.update_all(Array(source_reflection.foreign_key).index_with(nil))
+            route = source_reflection.association_router.route_for_referenced(records.first)
+            count = scope.update_all(route.link.reference.referencing_key.index_with(nil))
           else
             count = scope.delete_all
           end

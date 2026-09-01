@@ -561,11 +561,12 @@ module ActiveRecord
         ensure_option_not_given_as_class!(:class_name)
       end
 
-      def association_scope_cache(klass, owner, &block)
-        key = [self, association_route(klass)]
-        if polymorphic?
-          key << owner.read_attribute(@foreign_type)
-        end
+      def association_scope_routes(klass, owner)
+        [association_route_for_owner(owner, klass)]
+      end
+
+      def association_scope_cache(klass, owner, routes = association_scope_routes(klass, owner), &block)
+        key = [self, *routes]
         klass.with_connection do |connection|
           klass.cached_find_by_statement(connection, key, &block)
         end
@@ -775,42 +776,6 @@ module ActiveRecord
       end
 
       private
-        def build_association_route(associated_class, fixed_reference_values: nil)
-          if belongs_to?
-            referencing_class = active_record
-            referenced_class = associated_class
-            owner_side = :referencing
-            reference = KeyMapping.new(
-              referencing_key: foreign_key,
-              referenced_key: association_primary_key(associated_class)
-            )
-            type_column = foreign_type
-          else
-            referencing_class = associated_class
-            referenced_class = active_record
-            owner_side = :referenced
-            reference = KeyMapping.new(
-              referencing_key: foreign_key,
-              referenced_key: active_record_primary_key
-            )
-            type_column = type
-          end
-
-          fixed_reference_values ||= if type_column
-            { type_column => referenced_class.polymorphic_name }
-          else
-            {}
-          end
-
-          AssociationRoute.new(
-            referencing_class: referencing_class,
-            referenced_class: referenced_class,
-            link: AssociationLink.new(reference: reference),
-            owner_side: owner_side,
-            fixed_reference_values: fixed_reference_values
-          )
-        end
-
         # Attempts to find the inverse association name automatically.
         # If it cannot find a suitable inverse association name, it returns
         # +nil+.
@@ -1137,12 +1102,21 @@ module ActiveRecord
         collect_join_reflections [self]
       end
 
-      def association_scope_cache(klass, owner, &block)
-        routes = chain.each_with_index.map do |reflection, index|
-          index.zero? ? reflection.association_route(klass) : reflection.association_route
+      def association_scope_routes(klass, owner)
+        reflections = chain
+        reflections.each_with_index.map do |reflection, index|
+          if index.zero?
+            reflection.association_route(klass)
+          elsif index == reflections.length - 1
+            reflection.association_route_for_owner(owner, reflection.klass)
+          else
+            reflection.association_route
+          end
         end
+      end
+
+      def association_scope_cache(klass, owner, routes = association_scope_routes(klass, owner), &block)
         key = [self, *routes]
-        key << owner.read_attribute(foreign_type) if polymorphic?
         klass.with_connection do |connection|
           klass.cached_find_by_statement(connection, key, &block)
         end
@@ -1360,6 +1334,10 @@ module ActiveRecord
         association_router.route_for(klass)
       end
 
+      def association_route_for_owner(_owner, klass = self.klass)
+        association_route(klass)
+      end
+
       def initialize(reflection, previous_reflection)
         super()
         @reflection = reflection
@@ -1389,10 +1367,11 @@ module ActiveRecord
     class RuntimeReflection < AbstractReflection # :nodoc:
       delegate :scope, :type, :constraints, :join_foreign_key, to: :@reflection
 
-      def initialize(reflection, association)
+      def initialize(reflection, association, route = nil)
         super()
         @reflection = reflection
         @association = association
+        @route = route
       end
 
       def klass
@@ -1412,7 +1391,7 @@ module ActiveRecord
       end
 
       def association_route(klass = self.klass)
-        @reflection.association_route_for_owner(@association.owner, klass)
+        @route || @reflection.association_route_for_owner(@association.owner, klass)
       end
 
       def all_includes; yield; end

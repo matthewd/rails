@@ -216,8 +216,12 @@ module ActiveRecord
 
       def initialize_attributes(record, except_from_scope_attributes = nil) # :nodoc:
         except_from_scope_attributes ||= {}
-        route = reflection.association_route(klass)
-        skip_assign = [reflection.foreign_key, *route.target_fixed_values.keys].compact
+        route = reflection.association_route_for_owner(owner, klass)
+        skip_assign = if route.owner_side == :referenced
+          [*route.reference_target_key, *route.target_fixed_values.keys]
+        else
+          []
+        end
         assigned_keys = record.changed_attribute_names_to_save
         assigned_keys += except_from_scope_attributes.keys.map(&:to_s)
         attributes = scope_for_create.except!(*(assigned_keys - skip_assign))
@@ -272,12 +276,13 @@ module ActiveRecord
             end
           end
 
-          sc = reflection.association_scope_cache(klass, owner) do |params|
+          routes = reflection.association_scope_routes(klass, owner)
+          sc = reflection.association_scope_cache(klass, owner, routes) do |params|
             as = AssociationScope.create { params.bind }
-            target_scope.merge!(as.scope(self))
+            target_scope.merge!(as.scope(self, routes))
           end
 
-          binds = AssociationScope.get_bind_values(owner, reflection.chain, klass)
+          binds = AssociationScope.get_bind_values(owner, routes)
           klass.with_connection do |c|
             sc.execute(binds, c, async: async) do |record|
               set_inverse_instance(record)
@@ -369,9 +374,10 @@ module ActiveRecord
           foreign_key_for?(record) && inverse_reflection_for(record)
         end
 
-        # Returns true if record contains the foreign_key
+        # Returns true if record contains the target side of the writable reference.
         def foreign_key_for?(record)
-          ActiveRecord::Key.for(reflection.foreign_key).all? { |key| record.has_attribute?(key) }
+          route = reflection.association_route_for_owner(owner, record.class)
+          route.reference_target_key.all? { |key| record.has_attribute?(key) }
         end
 
         # This should be implemented to return the values of the relevant key(s) on the owner,
@@ -391,7 +397,7 @@ module ActiveRecord
 
         # Returns true if statement cache should be skipped on the association reader.
         def skip_statement_cache?(scope)
-          reflection.association_route_for_owner(owner, klass).target_scope ||
+          reflection.association_scope_routes(klass, owner).any?(&:target_scope) ||
             reflection.has_scope? ||
             scope.eager_loading? ||
             klass.scope_attributes? ||
@@ -412,28 +418,11 @@ module ActiveRecord
         end
 
         def matches_foreign_key?(record)
-          (foreign_key_for?(record) && record_foreign_key_matches_owner?(record)) ||
-            (foreign_key_for?(owner) && owner_foreign_key_matches_record?(record))
-        end
+          route = reflection.association_route_for_owner(owner, record.class)
+          return false unless route.owner_key.all? { |key| owner.has_attribute?(key) }
+          return false unless route.target_key.all? { |key| record.has_attribute?(key) }
 
-        def record_foreign_key_matches_owner?(record)
-          foreign_key_values(record) == active_record_primary_key_values(owner)
-        end
-
-        def owner_foreign_key_matches_record?(record)
-          foreign_key_values(owner) == association_primary_key_values(record)
-        end
-
-        def foreign_key_values(record)
-          ActiveRecord::Key.for(reflection.foreign_key).map { |key| record.read_attribute(key) }
-        end
-
-        def active_record_primary_key_values(record)
-          ActiveRecord::Key.for(reflection.active_record_primary_key).map { |key| record.read_attribute(key) }
-        end
-
-        def association_primary_key_values(record)
-          ActiveRecord::Key.for(reflection.association_primary_key(record.class)).map { |key| record.read_attribute(key) }
+          route.owner_key.value_of(owner) == route.target_key.value_of(record)
         end
     end
   end

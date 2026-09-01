@@ -19,6 +19,7 @@ module ActiveRecord
         raise ArgumentError, "association key mappings must have the same number of columns"
       end
       @pairs = @referencing_key.zip(@referenced_key).map!(&:freeze).freeze
+      @hash = [@referencing_key, @referenced_key].hash
       freeze
     end
 
@@ -44,11 +45,6 @@ module ActiveRecord
       Traversal.new(self, side)
     end
 
-    def values_from(record, side, &reader)
-      reader ||= ->(column) { record.read_attribute(column) }
-      key(side).map { |column| reader.call(column) }
-    end
-
     def write(referencing_record, referenced_record)
       each do |referencing_column, referenced_column|
         value = referenced_record.read_attribute(referenced_column)
@@ -65,19 +61,7 @@ module ActiveRecord
     end
     alias_method :eql?, :==
 
-    def hash
-      [@referencing_key, @referenced_key].hash
-    end
-
-    protected
-      def key(side)
-        case side
-        when :referencing then @referencing_key
-        when :referenced then @referenced_key
-        else
-          raise ArgumentError, "unknown association endpoint: #{side.inspect}"
-        end
-      end
+    attr_reader :hash
 
     private
       def key_for(key)
@@ -110,8 +94,11 @@ module ActiveRecord
         end
 
         def values_from_owner(owner, &reader)
-          reader ||= ->(column) { owner.read_attribute(column) }
-          @owner_key.map { |column| reader.call(column) }
+          if reader
+            @owner_key.map { |column| reader.call(column) }
+          else
+            @owner_key.map { |column| owner.read_attribute(column) }
+          end
         end
       end
   end
@@ -124,6 +111,7 @@ module ActiveRecord
       @reference = reference
       @constraints = constraints
       @match = constraints + reference
+      @hash = [@reference, @constraints].hash
       freeze
     end
 
@@ -134,9 +122,7 @@ module ActiveRecord
     end
     alias_method :eql?, :==
 
-    def hash
-      [@reference, @constraints].hash
-    end
+    attr_reader :hash
   end
 
   # Resolves the physical route used by an association reflection.
@@ -159,7 +145,7 @@ module ActiveRecord
         fixed_values = { @reflection.type => @reflection.active_record.polymorphic_name }
         cached_route(@reflection.klass, fixed_values)
       else
-        cached_route(@reflection.klass, {})
+        @static_route ||= cached_route(@reflection.klass, {})
       end
     end
 
@@ -196,17 +182,50 @@ module ActiveRecord
       end
     end
 
+    def static?
+      !@reflection.polymorphic? && !@reflection.type
+    end
+
     def clear
       @routes.clear
+      @static_route = nil
     end
 
     private
       def cached_route(associated_class, fixed_values)
-        fixed_values = fixed_values.transform_keys { |column| -column.to_s }.freeze
+        fixed_values = AssociationRoute.normalize_fixed_values(fixed_values)
         key = [associated_class, fixed_values].freeze
         @routes.compute_if_absent(key) do
-          @reflection.send(:build_association_route, associated_class, fixed_reference_values: fixed_values)
+          build_route(associated_class, fixed_values)
         end
+      end
+
+      def build_route(associated_class, fixed_values)
+        if @reflection.belongs_to?
+          referencing_class = @reflection.active_record
+          referenced_class = associated_class
+          owner_side = :referencing
+          reference = KeyMapping.new(
+            referencing_key: @reflection.foreign_key,
+            referenced_key: @reflection.association_primary_key(associated_class)
+          )
+        else
+          referencing_class = associated_class
+          referenced_class = @reflection.active_record
+          owner_side = :referenced
+          reference = KeyMapping.new(
+            referencing_key: @reflection.foreign_key,
+            referenced_key: @reflection.active_record_primary_key
+          )
+        end
+
+        AssociationRoute.new(
+          referencing_class: referencing_class,
+          referenced_class: referenced_class,
+          link: AssociationLink.new(reference: reference),
+          owner_side: owner_side,
+          fixed_reference_values: fixed_values
+        )
       end
 
       def class_for(associated)
@@ -227,6 +246,28 @@ module ActiveRecord
   class AssociationRoute # :nodoc:
     include Enumerable
 
+    class << self
+      def normalize_fixed_values(values)
+        values.sort_by { |column, _| column.to_s }.to_h do |column, value|
+          [-column.to_s, immutable_value(value)]
+        end.freeze
+      end
+
+      private
+        def immutable_value(value)
+          case value
+          when Array
+            value.map { |item| immutable_value(item) }.freeze
+          when Hash
+            value.to_h { |key, item| [immutable_value(key), immutable_value(item)] }.freeze
+          when String
+            -value
+          else
+            value
+          end
+        end
+    end
+
     attr_reader :referencing_class, :referenced_class, :link, :owner_side,
       :fixed_reference_values, :referencing_scope, :referenced_scope
 
@@ -236,12 +277,14 @@ module ActiveRecord
       @referenced_class = referenced_class
       @link = link
       @owner_side = owner_side
-      @fixed_reference_values = fixed_reference_values.transform_keys { |column| -column.to_s }.freeze
+      @fixed_reference_values = self.class.normalize_fixed_values(fixed_reference_values)
       @referencing_scope = referencing_scope
       @referenced_scope = referenced_scope
       @key_mapping = link.match.from(owner_side)
       @reference_mapping = link.reference.from(owner_side)
       @constraint_mapping = link.constraints.from(owner_side)
+      @hash = [@referencing_class, @referenced_class, @link, @owner_side,
+        @fixed_reference_values, @referencing_scope, @referenced_scope].hash
       freeze
     end
 
@@ -277,18 +320,6 @@ module ActiveRecord
       @reference_mapping.target_key
     end
 
-    def constraint_owner_key
-      @constraint_mapping.owner_key
-    end
-
-    def constraint_target_key
-      @constraint_mapping.target_key
-    end
-
-    def owner_fixed_values
-      @owner_side == :referencing ? @fixed_reference_values : {}
-    end
-
     def target_fixed_values
       @owner_side == :referenced ? @fixed_reference_values : {}
     end
@@ -321,10 +352,7 @@ module ActiveRecord
     end
     alias_method :eql?, :==
 
-    def hash
-      [@referencing_class, @referenced_class, @link, @owner_side,
-        @fixed_reference_values, @referencing_scope, @referenced_scope].hash
-    end
+    attr_reader :hash
 
     def write(owner, target)
       if @owner_side == :referencing

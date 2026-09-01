@@ -286,6 +286,14 @@ class AssociationRouteTest < ActiveRecord::TestCase
     end
   end
 
+  def test_polymorphic_reference_can_be_cleared_when_stored_class_is_missing
+    sponsor = Sponsor.new(sponsorable_id: 42, sponsorable_type: "MissingRoutedClass")
+
+    assert_nothing_raised { sponsor.sponsorable = nil }
+    assert_nil sponsor.sponsorable_id
+    assert_nil sponsor.sponsorable_type
+  end
+
   def test_internal_polymorphic_route_can_select_an_alternate_reference_key
     reference_class = Class.new(ActiveRecord::Base) do
       self.table_name = "sponsors"
@@ -408,6 +416,47 @@ class AssociationRouteTest < ActiveRecord::TestCase
     end
   end
 
+  def test_owner_resolved_routes_drive_statement_shape_binds_and_preload_groups
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "comments"
+      self.inheritance_column = nil
+
+      def self.name = "OwnerRoutedComment"
+
+      belongs_to :routed_post, class_name: "Post", foreign_key: :post_id, optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_post)
+    id_route = build_belongs_to_route(
+      reflection,
+      reference: { referencing_key: :post_id, referenced_key: :id }
+    )
+    author_route = build_belongs_to_route(
+      reflection,
+      reference: { referencing_key: :author_id, referenced_key: :author_id }
+    )
+    router = Object.new
+    router.define_singleton_method(:route_for) { |*| id_route }
+    router.define_singleton_method(:route_for_referenced) { |*| id_route }
+    router.define_singleton_method(:relation_route) { |**| id_route }
+    router.define_singleton_method(:resolve_reference) do |record, &|
+      record.label.zero? ? id_route : author_route
+    end
+
+    id_post = Post.create!(author_id: 9_000_010, title: "ID routed post", body: "ID routed")
+    author_post = Post.create!(author_id: 9_000_011, title: "Author routed post", body: "Author routed")
+    id_reference = reference_class.create!(post_id: id_post.id, author_id: -1, label: 0, body: "ID reference")
+    author_reference = reference_class.create!(post_id: -1, author_id: author_post.author_id, label: 1, body: "Author reference")
+
+    reflection.stub(:association_router, router) do
+      assert_equal id_post, id_reference.routed_post
+      assert_equal author_post, author_reference.routed_post
+
+      preloaded = reference_class.where(id: [id_reference.id, author_reference.id]).preload(:routed_post).index_by(&:id)
+      assert_equal id_post, preloaded[id_reference.id].routed_post
+      assert_equal author_post, preloaded[author_reference.id].routed_post
+    end
+  end
+
   def test_internal_belongs_to_route_writes_and_clears_its_selected_key
     reference_class = Class.new(ActiveRecord::Base) do
       self.table_name = "comments"
@@ -492,7 +541,7 @@ class AssociationRouteTest < ActiveRecord::TestCase
       post = post_class.find(post.id)
 
       assert_equal [author_comment], post.routed_comments.where(id: [id_comment.id, author_comment.id]).to_a
-      built = post.routed_comments.build
+      built = post.routed_comments.build(author_id: -1)
       assert_equal post.author_id, built.author_id
       assert_nil built.post_id
 

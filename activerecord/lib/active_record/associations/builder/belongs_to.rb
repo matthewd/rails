@@ -44,27 +44,24 @@ module ActiveRecord::Associations::Builder # :nodoc:
 
     def self.touch_record(o, change_method, name, touch) # :nodoc:
       association = o.association(name)
-      foreign_key = association.foreign_key
+      reflection = association.reflection
+      aliases = o.class.attribute_aliases
+      read_old = lambda do |column|
+        column = aliases[column] || column
+        change = o.public_send(change_method, column)
+        change ? change.first : o.read_attribute(column)
+      end
+      old_route = reflection.association_router.resolve_reference(o, &read_old) || association.route
+      foreign_key = old_route ? old_route.link.reference.referencing_key : association.foreign_key
 
-      old_foreign_id = if foreign_key.any? { |fk| o.public_send(change_method, fk) }
-        values = foreign_key.map do |fk|
-          change = o.public_send(change_method, fk)
-          change ? change.first : o.read_attribute(fk)
-        end
+      old_foreign_id = if foreign_key.any? { |key| o.public_send(change_method, aliases[key] || key) }
+        values = foreign_key.map { |key| read_old.call(key) }
         foreign_key.composite? ? values : values.first
       end
 
-      if old_foreign_id
-        reflection = association.reflection
-        if reflection.polymorphic?
-          foreign_type = association.foreign_type
-          change = o.public_send(change_method, foreign_type)
-          klass = (change && change.first) || o.public_send(foreign_type)
-          klass = o.class.polymorphic_class_for(klass)
-        else
-          klass = association.klass
-        end
-        primary_key = reflection.association_primary_key(klass)
+      if old_foreign_id && old_route
+        klass = old_route.referenced_class
+        primary_key = old_route.link.reference.referenced_key.name
         old_record = klass.find_by(primary_key => [old_foreign_id])
 
         if old_record

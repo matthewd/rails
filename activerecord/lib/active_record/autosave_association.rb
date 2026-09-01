@@ -487,8 +487,8 @@ module ActiveRecord
         if autosave && record.marked_for_destruction?
           record.destroy
         elsif autosave != false
-          primary_key = ActiveRecord::Key.for(reflection.active_record_primary_key)
-          primary_key_value = primary_key.map { |key| read_attribute(key) }
+          route = reflection.association_router.route_for_referenced(self)
+          primary_key_value = route.link.reference.referenced_key.map { |key| read_attribute(key) }
           return unless (autosave && record.changed_for_autosave?) || _record_changed?(reflection, record, primary_key_value)
 
           unless reflection.through_reflection
@@ -507,16 +507,21 @@ module ActiveRecord
 
       # If the record is new or it has changed, returns true.
       def _record_changed?(reflection, record, key)
-        record.new_record? ||
-          (association_foreign_key_changed?(reflection, record, key) ||
-          inverse_polymorphic_association_changed?(reflection, record)) ||
-          ActiveRecord::Key.for(reflection.foreign_key).any? { |fk| record.will_save_change_to_attribute?(record.class.attribute_aliases[fk] || fk) }
+        return true if record.new_record?
+        return true if association_foreign_key_changed?(reflection, record, key)
+        return true if inverse_polymorphic_association_changed?(reflection, record)
+
+        route = reflection.association_router.route_for_referenced(self)
+        route.link.reference.referencing_key.any? do |foreign_key|
+          record.will_save_change_to_attribute?(record.class.attribute_aliases[foreign_key] || foreign_key)
+        end
       end
 
       def association_foreign_key_changed?(reflection, record, key)
         return false if reflection.through_reflection?
 
-        foreign_key = ActiveRecord::Key.for(reflection.foreign_key)
+        route = reflection.association_router.route_for_referenced(self)
+        foreign_key = route.link.reference.referencing_key
         return false unless foreign_key.all? { |key| record.has_attribute?(key) }
 
         foreign_key.map { |key| record.read_attribute(key) } != Array(key)
@@ -525,8 +530,10 @@ module ActiveRecord
       def inverse_polymorphic_association_changed?(reflection, record)
         return false unless reflection.inverse_of&.polymorphic?
 
-        class_name = record.read_attribute(reflection.inverse_of.foreign_type)
-        reflection.active_record.polymorphic_name != class_name
+        route = reflection.association_router.route_for_referenced(self)
+        route.fixed_reference_values.any? do |column, value|
+          record.read_attribute(column) != value
+        end
       end
 
       def autosave_belongs_to_association(reflection) # :nodoc:
@@ -545,8 +552,9 @@ module ActiveRecord
           autosave = reflection.options[:autosave]
 
           if autosave && record.marked_for_destruction?
-            foreign_key = ActiveRecord::Key.for(reflection.foreign_key)
-            foreign_key.each { |key| write_attribute(key, nil) }
+            route = association.route
+            route.link.reference.referencing_key.each { |key| write_attribute(key, nil) }
+            route.fixed_reference_values.each_key { |key| write_attribute(key, nil) }
             record.destroy
           elsif autosave != false
             saved = if record.new_record? || (autosave && record.changed_for_autosave?)
@@ -560,9 +568,10 @@ module ActiveRecord
             end
 
             if association.updated?
-              reflection.association_route(record.class).link.reference.each do |foreign_key, primary_key|
-                association_id = record.read_attribute(primary_key)
-                write_attribute(foreign_key, association_id) unless read_attribute(foreign_key) == association_id
+              route = association.route
+              route.link.reference.write(self, record)
+              route.fixed_reference_values.each do |column, value|
+                write_attribute(column, value) unless read_attribute(column) == value
               end
               association.loaded!
             end

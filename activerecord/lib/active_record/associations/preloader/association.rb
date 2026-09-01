@@ -101,12 +101,15 @@ module ActiveRecord
 
         attr_reader :klass
 
-        def initialize(klass, owners, reflection, preload_scope, reflection_scope, associate_by_default)
+        def initialize(klass, owners, reflection, preload_scope, reflection_scope, associate_by_default,
+          route_scope = nil, association_route = nil)
           @klass         = klass
           @owners        = owners.uniq(&:__id__)
           @reflection    = reflection
           @preload_scope = preload_scope
           @reflection_scope = reflection_scope
+          @route_scope = route_scope
+          @association_route = association_route
           @associate     = associate_by_default || !preload_scope || preload_scope.empty_scope?
           @model         = owners.first && owners.first.class
           @run = false
@@ -168,8 +171,11 @@ module ActiveRecord
 
         def owners_by_key
           @owners_by_key ||= owners.each_with_object({}) do |owner, result|
+            reference = derive_key(owner, association_route.reference_owner_key.name)
+            next unless reference.is_a?(Array) ? reference.all? : reference
+
             key = derive_key(owner, owner_key_name)
-            (result[key] ||= []) << owner if key.is_a?(Array) ? key.all? : key
+            (result[key] ||= []) << owner
           end
         end
 
@@ -298,7 +304,11 @@ module ActiveRecord
 
           def build_scope
             scope = klass.scope_for_association
-            scope = association_route.apply_target_scope(scope, owners.first)
+            if @route_scope
+              scope.merge!(@route_scope)
+            else
+              scope = association_route.apply_target_scope(scope, owners.first)
+            end
 
             unless reflection.through_reflection?
               fixed_values = association_route.target_fixed_values
