@@ -143,6 +143,7 @@ module ActiveRecord
   class AssociationRouter # :nodoc:
     def initialize(reflection)
       @reflection = reflection
+      @routes = Concurrent::Map.new
     end
 
     def route_for(associated = nil)
@@ -152,16 +153,20 @@ module ActiveRecord
           raise ArgumentError, "a target is required for a polymorphic association route"
         end
 
-        @reflection.send(:build_association_route, associated_class)
+        fixed_values = { @reflection.foreign_type => associated_class.polymorphic_name }
+        cached_route(associated_class, fixed_values)
+      elsif @reflection.type
+        fixed_values = { @reflection.type => @reflection.active_record.polymorphic_name }
+        cached_route(@reflection.klass, fixed_values)
       else
-        @static_route ||= @reflection.send(:build_association_route, @reflection.klass)
+        cached_route(@reflection.klass, {})
       end
     end
 
     def route_for_referenced(record)
       if @reflection.type
         fixed_values = { @reflection.type => record.class.polymorphic_name }
-        @reflection.send(:build_association_route, @reflection.klass, fixed_reference_values: fixed_values)
+        cached_route(@reflection.klass, fixed_values)
       else
         route_for(record)
       end
@@ -176,7 +181,7 @@ module ActiveRecord
 
       associated_class = record.class.polymorphic_class_for(stored_type)
       fixed_values = { @reflection.foreign_type => stored_type }
-      @reflection.send(:build_association_route, associated_class, fixed_reference_values: fixed_values)
+      cached_route(associated_class, fixed_values)
     end
 
     def relation_route(referenced: nil)
@@ -185,13 +190,25 @@ module ActiveRecord
       if @reflection.type && referenced
         referenced_class = class_for(referenced)
         fixed_values = { @reflection.type => referenced_class.polymorphic_name }
-        @reflection.send(:build_association_route, @reflection.klass, fixed_reference_values: fixed_values)
+        cached_route(@reflection.klass, fixed_values)
       else
         route_for
       end
     end
 
+    def clear
+      @routes.clear
+    end
+
     private
+      def cached_route(associated_class, fixed_values)
+        fixed_values = fixed_values.transform_keys { |column| -column.to_s }.freeze
+        key = [associated_class, fixed_values].freeze
+        @routes.compute_if_absent(key) do
+          @reflection.send(:build_association_route, associated_class, fixed_reference_values: fixed_values)
+        end
+      end
+
       def class_for(associated)
         case associated
         when Class
@@ -211,14 +228,17 @@ module ActiveRecord
     include Enumerable
 
     attr_reader :referencing_class, :referenced_class, :link, :owner_side,
-      :fixed_reference_values
+      :fixed_reference_values, :referencing_scope, :referenced_scope
 
-    def initialize(referencing_class:, referenced_class:, link:, owner_side:, fixed_reference_values: {})
+    def initialize(referencing_class:, referenced_class:, link:, owner_side:, fixed_reference_values: {},
+      referencing_scope: nil, referenced_scope: nil)
       @referencing_class = referencing_class
       @referenced_class = referenced_class
       @link = link
       @owner_side = owner_side
       @fixed_reference_values = fixed_reference_values.transform_keys { |column| -column.to_s }.freeze
+      @referencing_scope = referencing_scope
+      @referenced_scope = referenced_scope
       @key_mapping = link.match.from(owner_side)
       @reference_mapping = link.reference.from(owner_side)
       @constraint_mapping = link.constraints.from(owner_side)
@@ -273,18 +293,37 @@ module ActiveRecord
       @owner_side == :referenced ? @fixed_reference_values : {}
     end
 
+    def target_scope
+      @owner_side == :referencing ? @referenced_scope : @referencing_scope
+    end
+
+    def apply_target_scope(relation, owner = nil)
+      if target_scope
+        if target_scope.arity == 0
+          relation.instance_exec(&target_scope) || relation
+        else
+          relation.instance_exec(owner, &target_scope) || relation
+        end
+      else
+        relation
+      end
+    end
+
     def ==(other)
       other.is_a?(AssociationRoute) &&
         referencing_class == other.referencing_class &&
         referenced_class == other.referenced_class &&
         link == other.link &&
         owner_side == other.owner_side &&
-        fixed_reference_values == other.fixed_reference_values
+        fixed_reference_values == other.fixed_reference_values &&
+        referencing_scope == other.referencing_scope &&
+        referenced_scope == other.referenced_scope
     end
     alias_method :eql?, :==
 
     def hash
-      [@referencing_class, @referenced_class, @link, @owner_side, @fixed_reference_values].hash
+      [@referencing_class, @referenced_class, @link, @owner_side,
+        @fixed_reference_values, @referencing_scope, @referenced_scope].hash
     end
 
     def write(owner, target)

@@ -19,10 +19,10 @@ module ActiveRecord
       end
 
       def foreign_key
-        if reflection.polymorphic?
-          @foreign_key
+        if route = association_route
+          resolved_foreign_key(route)
         else
-          resolved_foreign_key(association_route)
+          @foreign_key
         end
       end
 
@@ -66,6 +66,7 @@ module ActiveRecord
 
       def reset
         super
+        @association_route = nil
         @updated = false
       end
 
@@ -171,9 +172,9 @@ module ActiveRecord
 
         def association_route(record = nil)
           if record
-            reflection.association_router.route_for_referenced(record)
+            @association_route = reflection.association_router.route_for_referenced(record)
           else
-            reflection.association_router.resolve_reference(owner)
+            @association_route ||= reflection.association_router.resolve_reference(owner)
           end
         end
 
@@ -184,7 +185,7 @@ module ActiveRecord
         end
 
         def primary_key(klass)
-          reflection.association_primary_key(klass)
+          reflection.association_router.route_for(klass).link.reference.referenced_key.name
         end
 
         def foreign_key_present?

@@ -206,6 +206,13 @@ module ActiveRecord
         route.target_fixed_values.each do |column, value|
           klass_scope.where!(column => value)
         end
+        if route.target_scope
+          if route.target_scope.arity != 0
+            raise ArgumentError, "An instance-dependent association route cannot be joined."
+          end
+          route_scope = route.apply_target_scope(build_scope(table, predicate_builder, klass))
+          scope_chain_items << route_scope
+        end
 
         scope_chain_items.inject(klass_scope, &:merge!)
 
@@ -582,6 +589,14 @@ module ActiveRecord
         association_router.relation_route(referenced: foreign_klass) || association_route(foreign_klass)
       end
 
+      def association_route_for_owner(owner, associated_class = nil)
+        if belongs_to?
+          association_router.resolve_reference(owner) || association_router.route_for(associated_class)
+        else
+          association_router.route_for_referenced(owner)
+        end
+      end
+
       def foreign_key(infer_from_inverse_of: true)
         @foreign_key ||= if options[:foreign_key]
           ActiveRecord::Key.for(options[:foreign_key]).name
@@ -676,6 +691,7 @@ module ActiveRecord
       # This is for clearing cache on the reflection. Useful for tests that need to compare
       # SQL queries on associations.
       def clear_association_scope_cache # :nodoc:
+        association_router.clear
         klass.initialize_find_by_cache
       end
 
@@ -1184,6 +1200,10 @@ module ActiveRecord
         association_router.route_for(klass)
       end
 
+      def association_route_for_owner(_owner, klass = self.klass)
+        association_route(klass)
+      end
+
       # Gets an array of possible <tt>:through</tt> source reflection names in both singular and plural form.
       #
       #   class Post < ActiveRecord::Base
@@ -1392,13 +1412,7 @@ module ActiveRecord
       end
 
       def association_route(klass = self.klass)
-        if @reflection.through_reflection?
-          @reflection.association_route(klass)
-        elsif @reflection.belongs_to?
-          association_router.resolve_reference(@association.owner) || association_router.route_for(klass)
-        else
-          association_router.route_for_referenced(@association.owner)
-        end
+        @reflection.association_route_for_owner(@association.owner, klass)
       end
 
       def all_includes; yield; end

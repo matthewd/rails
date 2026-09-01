@@ -391,7 +391,8 @@ module ActiveRecord
 
         # Returns true if statement cache should be skipped on the association reader.
         def skip_statement_cache?(scope)
-          reflection.has_scope? ||
+          reflection.association_route_for_owner(owner, klass).target_scope ||
+            reflection.has_scope? ||
             scope.eager_loading? ||
             klass.scope_attributes? ||
             reflection.source_reflection.active_record.default_scopes.any?

@@ -141,6 +141,93 @@ class AssociationRouteTest < ActiveRecord::TestCase
     assert Item.joins(:tagging).where(items: { id: item.id }, taggings: { id: tagging.id }).exists?
   end
 
+  def test_internal_route_can_scope_the_referencing_endpoint
+    reflection = Post.reflect_on_association(:comments)
+    route = build_route(
+      reflection,
+      reference: { referencing_key: :post_id, referenced_key: :id },
+      referencing_scope: -> { where(body: "Routed body") }
+    )
+    post = posts(:welcome)
+    matching = Comment.create!(post_id: post.id, body: "Routed body")
+    mismatching = Comment.create!(post_id: post.id, body: "Other body")
+
+    reflection.stub(:association_router, fixed_router(route)) do
+      assert_equal [matching], post.comments.where(id: [matching.id, mismatching.id]).to_a
+      assert_equal "Routed body", post.comments.build.body
+
+      preloaded = Post.where(id: post.id).preload(:comments).first
+      assert_includes preloaded.comments, matching
+      assert_not_includes preloaded.comments, mismatching
+
+      assert Post.joins(:comments).where(posts: { id: post.id }, comments: { id: matching.id }).exists?
+      assert_not Post.joins(:comments).where(posts: { id: post.id }, comments: { id: mismatching.id }).exists?
+    end
+  end
+
+  def test_internal_instance_dependent_route_scope_groups_preloads_and_cannot_join
+    reflection = Post.reflect_on_association(:comments)
+    route = build_route(
+      reflection,
+      reference: { referencing_key: :post_id, referenced_key: :id },
+      referencing_scope: ->(owner) { where(body: owner.title) }
+    )
+    first_post = Post.create!(title: "First routed body", body: "First post")
+    second_post = Post.create!(title: "Second routed body", body: "Second post")
+    first_comment = Comment.create!(post_id: first_post.id, body: first_post.title)
+    second_comment = Comment.create!(post_id: second_post.id, body: second_post.title)
+    Comment.create!(post_id: first_post.id, body: second_post.title)
+    Comment.create!(post_id: second_post.id, body: first_post.title)
+
+    reflection.stub(:association_router, fixed_router(route)) do
+      assert_equal [first_comment], first_post.comments.to_a
+      assert_equal [second_comment], second_post.comments.to_a
+
+      preloaded = Post.where(id: [first_post.id, second_post.id]).preload(:comments).index_by(&:id)
+      assert_equal [first_comment], preloaded[first_post.id].comments
+      assert_equal [second_comment], preloaded[second_post.id].comments
+
+      assert_raises(ArgumentError, match: /instance-dependent association route/) do
+        Post.joins(:comments).load
+      end
+    end
+  end
+
+  def test_internal_route_can_scope_the_referenced_endpoint
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "comments"
+      self.inheritance_column = nil
+
+      def self.name = "ScopedRoutedComment"
+
+      belongs_to :routed_post, class_name: "Post", foreign_key: :post_id, optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_post)
+    route = build_belongs_to_route(
+      reflection,
+      reference: { referencing_key: :post_id, referenced_key: :id },
+      referenced_scope: -> { where(title: "Routed title") }
+    )
+    matching = Post.create!(title: "Routed title", body: "Matching")
+    mismatching = Post.create!(title: "Other title", body: "Mismatching")
+    matching_reference = reference_class.create!(post_id: matching.id, body: "Matching reference")
+    mismatching_reference = reference_class.create!(post_id: mismatching.id, body: "Mismatching reference")
+
+    reflection.stub(:association_router, fixed_router(route)) do
+      assert_equal matching, matching_reference.routed_post
+      assert_nil mismatching_reference.routed_post
+
+      preloaded = reference_class.where(id: [matching_reference.id, mismatching_reference.id]).preload(:routed_post).index_by(&:id)
+      assert_equal matching, preloaded[matching_reference.id].routed_post
+      assert_nil preloaded[mismatching_reference.id].routed_post
+
+      matching_join = reference_class.joins(:routed_post).where(id: matching_reference.id)
+      mismatching_join = reference_class.joins(:routed_post).where(id: mismatching_reference.id)
+      assert_predicate matching_join, :exists?, matching_join.to_sql
+      assert_not_predicate mismatching_join, :exists?, mismatching_join.to_sql
+    end
+  end
+
   def test_internal_query_constraints_apply_to_reads_but_not_writes
     reflection = Post.reflect_on_association(:comments)
     route = build_route(
@@ -199,6 +286,40 @@ class AssociationRouteTest < ActiveRecord::TestCase
     end
   end
 
+  def test_internal_polymorphic_route_can_select_an_alternate_reference_key
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "sponsors"
+
+      def self.name = "AlternateKeyReference"
+
+      belongs_to :routed_target,
+        polymorphic: true,
+        foreign_key: :sponsorable_id,
+        foreign_type: :sponsorable_type,
+        optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_target)
+    route = build_polymorphic_route(
+      reflection,
+      Member,
+      stored_type: "routed",
+      referencing_key: :club_id
+    )
+    member = Member.create!(name: "Alternate key member")
+    replacement = Member.create!(name: "Replacement alternate key member")
+    reference = reference_class.create!(club_id: member.id, sponsorable_type: "routed")
+
+    reflection.stub(:association_router, fixed_router(route)) do
+      assert_equal member, reference.routed_target
+
+      reference.routed_target = replacement
+
+      assert_equal replacement.id, reference.club_id
+      assert_nil reference.sponsorable_id
+      assert_predicate reference.association(:routed_target), :target_changed?
+    end
+  end
+
   def test_internal_router_can_reinterpret_a_discriminator_as_another_class
     first_target_class = Class.new(ActiveRecord::Base) do
       self.table_name = "companies"
@@ -252,6 +373,38 @@ class AssociationRouteTest < ActiveRecord::TestCase
       reference.routed_target = replacement
       assert_equal replacement.id, reference.sponsorable_id
       assert_equal "routed", reference.sponsorable_type
+    end
+  end
+
+  def test_internal_route_changes_are_part_of_through_statement_cache_shape
+    author = Author.create!(name: "Routed author")
+    post = Post.create!(author_id: author.id, title: "Routed through post", body: "Routed through post")
+    id_comment = Comment.create!(post_id: post.id, author_id: -1, body: "Matched by post id")
+    author_comment = Comment.create!(post_id: -1, author_id: author.id, body: "Matched by author id")
+    source_reflection = Post.reflect_on_association(:comments)
+    id_route = build_route(
+      source_reflection,
+      reference: { referencing_key: :post_id, referenced_key: :id }
+    )
+    author_route = build_route(
+      source_reflection,
+      reference: { referencing_key: :author_id, referenced_key: :author_id }
+    )
+    selected_route = id_route
+    router = Object.new
+    router.define_singleton_method(:route_for) { |*| selected_route }
+    router.define_singleton_method(:route_for_referenced) { |*| selected_route }
+    router.define_singleton_method(:relation_route) { |**| selected_route }
+
+    source_reflection.stub(:association_router, router) do
+      assert_includes author.comments, id_comment
+      assert_not_includes author.comments, author_comment
+
+      selected_route = author_route
+      author = Author.find(author.id)
+
+      assert_includes author.comments, author_comment
+      assert_not_includes author.comments, id_comment
     end
   end
 
@@ -362,7 +515,7 @@ class AssociationRouteTest < ActiveRecord::TestCase
       end
     end
 
-    def build_belongs_to_route(reflection, reference:, constraints: nil)
+    def build_belongs_to_route(reflection, reference:, constraints: nil, referencing_scope: nil, referenced_scope: nil)
       reference = ActiveRecord::KeyMapping.new(**reference)
       constraints = ActiveRecord::KeyMapping.new(**constraints) if constraints
 
@@ -370,17 +523,19 @@ class AssociationRouteTest < ActiveRecord::TestCase
         referencing_class: reflection.active_record,
         referenced_class: reflection.klass,
         link: ActiveRecord::AssociationLink.new(reference: reference, constraints: constraints || ActiveRecord::KeyMapping.empty),
-        owner_side: :referencing
+        owner_side: :referencing,
+        referencing_scope: referencing_scope,
+        referenced_scope: referenced_scope
       )
     end
 
-    def build_polymorphic_route(reflection, target_class, stored_type:)
+    def build_polymorphic_route(reflection, target_class, stored_type:, referencing_key: reflection.foreign_key)
       ActiveRecord::AssociationRoute.new(
         referencing_class: reflection.active_record,
         referenced_class: target_class,
         link: ActiveRecord::AssociationLink.new(
           reference: ActiveRecord::KeyMapping.new(
-            referencing_key: reflection.foreign_key,
+            referencing_key: referencing_key,
             referenced_key: target_class.primary_key
           )
         ),
@@ -389,7 +544,7 @@ class AssociationRouteTest < ActiveRecord::TestCase
       )
     end
 
-    def build_route(reflection, reference:, constraints: nil)
+    def build_route(reflection, reference:, constraints: nil, referencing_scope: nil, referenced_scope: nil)
       reference = ActiveRecord::KeyMapping.new(**reference)
       constraints = ActiveRecord::KeyMapping.new(**constraints) if constraints
 
@@ -397,7 +552,9 @@ class AssociationRouteTest < ActiveRecord::TestCase
         referencing_class: reflection.klass,
         referenced_class: reflection.active_record,
         link: ActiveRecord::AssociationLink.new(reference: reference, constraints: constraints || ActiveRecord::KeyMapping.empty),
-        owner_side: :referenced
+        owner_side: :referenced,
+        referencing_scope: referencing_scope,
+        referenced_scope: referenced_scope
       )
     end
 end

@@ -218,6 +218,7 @@ module ActiveRecord
         def associate_records_from_unscoped(unscoped_records)
           return if unscoped_records.nil? || unscoped_records.empty?
           return if !reflection_scope.empty_scope?
+          return if association_route.target_scope || !association_route.target_fixed_values.empty?
           return if preload_scope && !preload_scope.empty_scope?
           return if reflection.collection?
 
@@ -243,11 +244,7 @@ module ActiveRecord
           end
 
           def association_route
-            @association_route ||= if reflection.belongs_to?
-              reflection.association_router.resolve_reference(owners.first) || reflection.association_route(klass)
-            else
-              reflection.association_router.route_for_referenced(owners.first)
-            end
+            @association_route ||= reflection.association_route_for_owner(owners.first, klass)
           end
 
           def associate_records_to_owner(owner, records)
@@ -301,6 +298,7 @@ module ActiveRecord
 
           def build_scope
             scope = klass.scope_for_association
+            scope = association_route.apply_target_scope(scope, owners.first)
 
             unless reflection.through_reflection?
               fixed_values = association_route.target_fixed_values
