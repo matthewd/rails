@@ -171,7 +171,16 @@ module ActiveRecord
         def owners_by_key
           @owners_by_key ||= owners.each_with_object({}) do |owner, result|
             key = derive_key(owner, origin_key_name)
-            (result[key] ||= []) << owner if key.is_a?(Array) ? key.all? : key
+            reference = if association_route.origin_key.equal?(association_route.reference_origin_key)
+              key
+            else
+              derive_key(owner, association_route.reference_origin_key.name)
+            end
+            # Only the maintained reference determines whether this origin can
+            # have a destination.
+            next unless reference.is_a?(Array) ? reference.all? : reference
+
+            (result[key] ||= []) << owner
           end
         end
 

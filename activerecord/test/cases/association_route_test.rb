@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "cases/helper"
+require "support/association_route_resolver"
 require "models/company"
 require "models/member"
 require "models/sponsor"
@@ -34,6 +35,25 @@ class AssociationRouteTest < ActiveRecord::TestCase
     equivalent_link = ActiveRecord::AssociationLink.new(reference: reference)
     assert_equal link, equivalent_link
     assert_equal link.hash, equivalent_link.hash
+  end
+
+  def test_association_link_combines_constraints_with_the_reference
+    reference = ActiveRecord::Key::Mapping.new(
+      reference_key: :post_id,
+      target_key: :id
+    )
+    constraints = ActiveRecord::Key::Mapping.new(
+      reference_key: :account_id,
+      target_key: :account_id
+    )
+    link = ActiveRecord::AssociationLink.new(reference: reference, constraints: constraints)
+
+    assert_equal [["post_id", "id"]], link.reference.to_a
+    assert_equal [["account_id", "account_id"]], link.constraints.to_a
+    assert_equal [
+      ["account_id", "account_id"],
+      ["post_id", "id"],
+    ], link.match.to_a
   end
 
   def test_belongs_to_route_is_physically_oriented_from_foreign_key
@@ -255,6 +275,155 @@ class AssociationRouteTest < ActiveRecord::TestCase
     assert_nothing_raised { reference.save! }
   end
 
+  def test_internal_query_constraints_apply_to_reads_but_not_writes
+    reflection = Post.reflect_on_association(:comments)
+    route = build_route(
+      reflection,
+      reference: { reference_key: :post_id, target_key: :id },
+      constraints: { reference_key: :body, target_key: :title }
+    )
+    post = posts(:welcome)
+    matching = Comment.create!(post_id: post.id, body: post.title)
+    mismatching = Comment.create!(post_id: post.id, body: "Not the post title")
+
+    reflection.stub(:association_route_resolver, fixed_resolver(route)) do
+      assert_equal [matching], post.comments.where(id: [matching.id, mismatching.id]).to_a
+
+      built = post.comments.build
+      assert_equal post.id, built.post_id
+      assert_nil built.body
+      assert_equal "Manual", post.comments.where(body: "Manual").build.body
+      assert_equal "Explicit", post.comments.create_with(body: "Explicit").build.body
+
+      preloaded = Post.where(id: post.id).preload(:comments).first
+      assert_includes preloaded.comments, matching
+      assert_not_includes preloaded.comments, mismatching
+
+      assert Post.joins(:comments).where(posts: { id: post.id }, comments: { id: matching.id }).exists?
+      assert_not Post.joins(:comments).where(posts: { id: post.id }, comments: { id: mismatching.id }).exists?
+    end
+  end
+
+  def test_query_constraints_identify_counter_cache_destinations
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "comments"
+      self.inheritance_column = nil
+
+      def self.name = "ConstrainedCounterReference"
+
+      belongs_to :routed_post,
+        class_name: "Post",
+        foreign_key: :post_id,
+        counter_cache: :legacy_comments_count,
+        optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_post)
+    route = build_belongs_to_route(
+      reflection,
+      reference: { reference_key: :author_id, target_key: :author_id },
+      constraints: { reference_key: :body, target_key: :title }
+    )
+    old_post = Post.create!(author_id: 9_000_101, title: "Old constrained post", body: "Old")
+    decoy = Post.create!(author_id: old_post.author_id, title: "Decoy constrained post", body: "Decoy")
+    new_post = Post.create!(author_id: 9_000_102, title: "New constrained post", body: "New")
+    old_post.update_column(:legacy_comments_count, 1)
+    decoy.update_column(:legacy_comments_count, 1)
+    reference_class.insert_all!([
+      {
+        post_id: -1,
+        author_id: old_post.author_id,
+        body: old_post.title,
+      }
+    ])
+    reference = reference_class.find_by!(body: old_post.title)
+
+    reflection.stub(:association_route_resolver, fixed_resolver(route)) do
+      reference.author_id = new_post.author_id
+      reference.body = new_post.title
+      reference.save!
+    end
+
+    assert_equal 0, old_post.reload.legacy_comments_count
+    assert_equal 1, decoy.reload.legacy_comments_count
+    assert_equal 1, new_post.reload.legacy_comments_count
+  end
+
+  def test_query_constraints_identify_touch_destinations
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "sponsors"
+
+      def self.name = "ConstrainedTouchReference"
+
+      belongs_to :routed_ship,
+        class_name: "Ship",
+        foreign_key: :sponsorable_id,
+        touch: true,
+        optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_ship)
+    route = build_belongs_to_route(
+      reflection,
+      reference: { reference_key: :club_id, target_key: :pirate_id },
+      constraints: { reference_key: :sponsorable_type, target_key: :name }
+    )
+    original_time = Time.utc(2000)
+    decoy = Ship.create!(name: "Decoy constrained ship", pirate_id: 9_000_111, updated_at: original_time)
+    old_ship = Ship.create!(name: "Old constrained ship", pirate_id: decoy.pirate_id, updated_at: original_time)
+    new_ship = Ship.create!(name: "New constrained ship", pirate_id: 9_000_112, updated_at: original_time)
+    reference_class.insert_all!([
+      {
+        club_id: old_ship.pirate_id,
+        sponsorable_id: -1,
+        sponsorable_type: old_ship.name,
+      }
+    ])
+    reference = reference_class.find_by!(sponsorable_type: old_ship.name)
+
+    reflection.stub(:association_route_resolver, fixed_resolver(route)) do
+      reference.club_id = new_ship.pirate_id
+      reference.sponsorable_type = new_ship.name
+      reference.save!
+    end
+
+    assert_operator old_ship.reload.updated_at, :>, original_time
+    assert_equal original_time, decoy.reload.updated_at
+  end
+
+  def test_query_constraints_identify_async_destruction_destinations
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "comments"
+      self.inheritance_column = nil
+
+      def self.name = "ConstrainedAsyncReference"
+
+      belongs_to :routed_post,
+        class_name: "Post",
+        foreign_key: :post_id,
+        optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_post)
+    reflection.options[:dependent] = :destroy_async
+    route = build_belongs_to_route(
+      reflection,
+      reference: { reference_key: :author_id, target_key: :author_id },
+      constraints: { reference_key: :body, target_key: :title }
+    )
+    post = Post.create!(author_id: 9_000_121, title: "Async constrained post", body: "Async")
+    reference = reference_class.create!(post_id: -1, author_id: post.author_id, body: post.title)
+    association = reference.association(:routed_post)
+    enqueued = nil
+
+    reflection.stub(:association_route_resolver, fixed_resolver(route)) do
+      association.stub(:enqueue_destroy_association, ->(**options) { enqueued = options }) do
+        association.handle_dependency
+      end
+    end
+
+    assert_equal Post.to_s, enqueued[:association_class]
+    assert_equal [[post.title, post.author_id]], enqueued[:association_ids]
+    assert_equal ["title", "author_id"], enqueued[:association_primary_key_column]
+  end
+
   def test_reference_metadata_does_not_resolve_a_missing_polymorphic_class
     reference_class = Class.new(ActiveRecord::Base) do
       self.table_name = "sponsors"
@@ -288,4 +457,31 @@ class AssociationRouteTest < ActiveRecord::TestCase
     assert_nil sponsor.sponsorable_id
     assert_nil sponsor.sponsorable_type
   end
+
+  private
+    def fixed_resolver(route)
+      TestAssociationRouteResolver.new(route)
+    end
+
+    def build_belongs_to_route(reflection, reference:, constraints:)
+      reference = ActiveRecord::Key::Mapping.new(**reference)
+      constraints = ActiveRecord::Key::Mapping.new(**constraints)
+
+      ActiveRecord::AssociationRoute.new(
+        destination_class: reflection.klass,
+        link: ActiveRecord::AssociationLink.new(reference: reference, constraints: constraints),
+        reference_on: :origin
+      )
+    end
+
+    def build_route(reflection, reference:, constraints:)
+      reference = ActiveRecord::Key::Mapping.new(**reference)
+      constraints = ActiveRecord::Key::Mapping.new(**constraints)
+
+      ActiveRecord::AssociationRoute.new(
+        destination_class: reflection.klass,
+        link: ActiveRecord::AssociationLink.new(reference: reference, constraints: constraints),
+        reference_on: :destination
+      )
+    end
 end

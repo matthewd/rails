@@ -123,7 +123,7 @@ module ActiveRecord
           return true unless through_reflection.belongs_to?
 
           route = through_reflection.association_route_for_origin(owner, through_reflection.klass)
-          !route.origin_key.all? { |foreign_key_column| owner.read_attribute(foreign_key_column).blank? }
+          !route.reference_origin_key.all? { |foreign_key_column| owner.read_attribute(foreign_key_column).blank? }
         end
 
         def update_through_counter?(method)

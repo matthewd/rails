@@ -96,7 +96,7 @@ module ActiveRecord
         def stale_state
           if through_reflection.belongs_to?
             route = through_reflection.association_route_for_origin(owner, through_reflection.klass)
-            route.origin_key.filter_map do |foreign_key_column|
+            route.reference_origin_key.filter_map do |foreign_key_column|
               owner.read_attribute(foreign_key_column)
             end.presence
           end
@@ -105,7 +105,7 @@ module ActiveRecord
         def foreign_key_present?
           if through_reflection.belongs_to?
             route = through_reflection.association_route_for_origin(owner, through_reflection.klass)
-            route.origin_key.all? do |foreign_key_column|
+            route.reference_origin_key.all? do |foreign_key_column|
               !owner.read_attribute(foreign_key_column).nil?
             end
           end

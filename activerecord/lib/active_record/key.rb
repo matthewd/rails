@@ -178,6 +178,10 @@ module ActiveRecord
 
       attr_reader :reference_key, :target_key
 
+      def self.empty
+        @empty ||= new(reference_key: nil, target_key: nil)
+      end
+
       def initialize(reference_key:, target_key:)
         @reference_key = key_for(reference_key)
         @target_key = key_for(target_key)
@@ -191,6 +195,20 @@ module ActiveRecord
 
       def each(&block)
         @pairs.each(&block)
+      end
+
+      def empty?
+        !@reference_key.present? && !@target_key.present?
+      end
+
+      def +(other)
+        return other if empty?
+        return self if other.empty?
+
+        self.class.new(
+          reference_key: [*@reference_key, *other.reference_key],
+          target_key: [*@target_key, *other.target_key]
+        )
       end
 
       def ==(other)

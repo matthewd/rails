@@ -1,18 +1,22 @@
 # frozen_string_literal: true
 
 module ActiveRecord
-  # The physical mapping that establishes and queries an association.
+  # The physical mappings that establish and query an association.
   class AssociationLink # :nodoc:
-    attr_reader :reference
+    attr_reader :reference, :constraints, :match
 
-    def initialize(reference:)
+    def initialize(reference:, constraints: Key::Mapping.empty)
       @reference = reference
-      @hash = @reference.hash
+      @constraints = constraints
+      @match = constraints + reference
+      @hash = [@reference, @constraints].hash
       freeze
     end
 
     def ==(other)
-      other.is_a?(AssociationLink) && reference == other.reference
+      other.is_a?(AssociationLink) &&
+        reference == other.reference &&
+        constraints == other.constraints
     end
     alias_method :eql?, :==
 
@@ -219,12 +223,14 @@ module ActiveRecord
         raise ArgumentError, "Unknown association reference endpoint: #{reference_on.inspect}"
       end
 
-      @origin_key, @destination_key, @key_pairs = orient(link.reference)
+      @origin_key, @destination_key, @key_pairs = orient(link.match)
+      @reference_origin_key, @reference_destination_key, @reference_pairs = orient(link.reference)
+      _, _, @constraint_pairs = orient(link.constraints)
       @hash = [@destination_class, @link, @reference_on, @fixed_reference_values].hash
       freeze
     end
 
-    attr_reader :origin_key, :destination_key
+    attr_reader :origin_key, :destination_key, :reference_origin_key, :reference_destination_key
 
     def each(&block)
       @key_pairs.each(&block)
@@ -232,6 +238,14 @@ module ActiveRecord
 
     def values_from_origin(origin)
       @origin_key.map { |column| origin.read_attribute(column) }
+    end
+
+    def each_reference(&block)
+      @reference_pairs.each(&block)
+    end
+
+    def each_constraint(&block)
+      @constraint_pairs.each(&block)
     end
 
     def reference_on_destination?

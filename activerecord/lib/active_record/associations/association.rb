@@ -218,7 +218,7 @@ module ActiveRecord
         except_from_scope_attributes ||= {}
         route = reflection.association_route_for_origin(owner, klass)
         skip_assign = if route.reference_on_destination?
-          [*route.destination_key, *route.destination_fixed_values.keys]
+          [*route.reference_destination_key, *route.destination_fixed_values.keys]
         else
           route.link.reference.reference_key.to_a
         end
@@ -377,7 +377,7 @@ module ActiveRecord
         # Returns true if record contains the destination side of the writable reference.
         def foreign_key_for?(record)
           route = reflection.association_route_for_origin(owner, record.class)
-          route.destination_key.all? { |key| record.has_attribute?(key) }
+          route.reference_destination_key.all? { |key| record.has_attribute?(key) }
         end
 
         # This should be implemented to return the values of the relevant key(s) on the owner,

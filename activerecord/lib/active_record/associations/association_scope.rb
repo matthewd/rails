@@ -58,7 +58,12 @@ module ActiveRecord
           table = reflection.aliased_table
           route = reflection.association_route
 
-          route.each do |origin_column, destination_column|
+          route.each_constraint do |origin_column, destination_column|
+            value = transform_value(owner.read_attribute(origin_column))
+            scope = apply_scope(scope, reflection, table, destination_column, value, create_default: false)
+          end
+
+          route.each_reference do |origin_column, destination_column|
             value = transform_value(owner.read_attribute(origin_column))
             scope = apply_scope(scope, reflection, table, destination_column, value)
           end
@@ -163,13 +168,21 @@ module ActiveRecord
           scope
         end
 
-        def apply_scope(scope, reflection, table, key, value)
-          if scope.table == table
+        def apply_scope(scope, reflection, table, key, value, create_default: true)
+          if scope.table == table && create_default
             scope.where!(key => value)
           else
-            scope.references_values |= [Arel.sql(table.name, retryable: true)]
-            predicate_builder = reflection.klass.predicate_builder.with(TableMetadata.new(reflection.klass, table))
-            scope.where!(predicate_builder[key, value])
+            if scope.table != table
+              scope.references_values |= [Arel.sql(table.name, retryable: true)]
+              predicate_builder = reflection.klass.predicate_builder.with(TableMetadata.new(reflection.klass, table))
+            else
+              predicate_builder = scope.predicate_builder
+            end
+
+            predicate = predicate_builder[key, value]
+            # Query-only constraints must not become scope-for-create defaults.
+            predicate = Arel::Nodes::Grouping.new(predicate) unless create_default
+            scope.where!(predicate)
           end
         end
 
