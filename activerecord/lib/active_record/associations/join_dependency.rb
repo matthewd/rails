@@ -257,7 +257,8 @@ module ActiveRecord
               keys = Array(node.primary_key).map { |column| aliases.column_alias(node, column) }
               id = keys.map { |key| row[key] }
             else
-              keys = Array(node.reflection.join_primary_key).map { |column| aliases.column_alias(node, column.to_s) }
+              route = node.reflection.association_route_for_join(ar_parent.class)
+              keys = route.destination_key.map { |column| aliases.column_alias(node, column) }
               id = keys.map { nil } # Avoid id-based model caching.
             end
 
