@@ -52,6 +52,31 @@ class KeyTest < ActiveRecord::TestCase
     assert(pk.columns.all?(&:frozen?))
   end
 
+  def test_mapping_preserves_column_pairs
+    mapping = Key::Mapping.new(
+      reference_key: [:account_id, :post_id],
+      target_key: [:account_id, :id]
+    )
+
+    assert_equal [
+      ["account_id", "account_id"],
+      ["post_id", "id"],
+    ], mapping.to_a
+    assert_equal ["account_id", "post_id"], mapping.reference_key.name
+    assert_equal ["account_id", "id"], mapping.target_key.name
+  end
+
+  def test_mapping_requires_equal_arity
+    error = assert_raises(ArgumentError) do
+      Key::Mapping.new(
+        reference_key: [:account_id, :post_id],
+        target_key: :id
+      )
+    end
+
+    assert_equal "Key mappings must have the same number of columns", error.message
+  end
+
   def test_where_hash_for_simple_key
     assert_equal({ "id" => 5 }, Key.for("id").where_hash(5))
     assert_equal({ "id" => [1, 2, 3] }, Key.for("id").where_hash([1, 2, 3]))

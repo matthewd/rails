@@ -147,6 +147,52 @@ module ActiveRecord
         end
     end
 
+    module AssociationRouteMethods # :nodoc:
+      def association_scope_cache(klass, routes, &block)
+        key = [self, *routes]
+        klass.with_connection do |connection|
+          klass.cached_find_by_statement(connection, key, &block)
+        end
+      end
+
+      def association_route(destination_class = default_association_route_destination)
+        association_route_resolver.route_for(destination_class)
+      end
+
+      def association_route_for_join(target_class)
+        association_route_resolver.relation_route(target: target_class) ||
+          association_route(destination_for_join_route(target_class))
+      end
+
+      def association_route_for_target(target)
+        association_route_resolver.route_for_target(target)
+      end
+
+      def association_route_from_reference(reference_record, &block)
+        association_route_resolver.resolve_reference(reference_record, &block)
+      end
+
+      def association_route_if_resolvable(reference_record, &block)
+        association_route_resolver.resolve_reference_if_possible(reference_record, &block)
+      end
+
+      def static_association_route?
+        association_route_resolver.static?
+      end
+
+      def association_route_for_origin(_origin, destination_class = default_association_route_destination)
+        association_route(destination_class)
+      end
+
+      private
+        def default_association_route_destination
+        end
+
+        def destination_for_join_route(target_class)
+          target_class
+        end
+    end
+
     # Holds all the methods that are shared between MacroReflection and ThroughReflection.
     #
     #   AbstractReflection
@@ -202,22 +248,17 @@ module ActiveRecord
         scope_chain_items = join_scopes(table, predicate_builder)
         klass_scope       = klass_join_scope(table, predicate_builder)
 
-        if type
-          klass_scope.where!(type => foreign_klass.polymorphic_name)
+        route = association_route_for_join(foreign_klass)
+        route.destination_fixed_values.each do |column, value|
+          klass_scope.where!(column => value)
         end
-
         scope_chain_items.inject(klass_scope, &:merge!)
 
-        primary_key_column_names = Array(join_primary_key)
-        foreign_key_column_names = Array(join_foreign_key)
+        route.each do |origin_column, destination_column|
+          destination_attribute = predicate_builder.predicate_attribute(table[destination_column])
+          origin_attribute = predicate_builder.predicate_attribute(foreign_table[origin_column])
 
-        primary_foreign_key_pairs = primary_key_column_names.zip(foreign_key_column_names)
-
-        primary_foreign_key_pairs.each do |primary_key_column_name, foreign_key_column_name|
-          primary_key_attribute = predicate_builder.predicate_attribute(table[primary_key_column_name])
-          foreign_key_attribute = predicate_builder.predicate_attribute(foreign_table[foreign_key_column_name])
-
-          klass_scope.where!(primary_key_attribute.eq(foreign_key_attribute))
+          klass_scope.where!(destination_attribute.eq(origin_attribute))
         end
 
         if klass.finder_needs_type_condition?
@@ -225,6 +266,10 @@ module ActiveRecord
         end
 
         klass_scope
+      end
+
+      def association_route_for_join(_foreign_klass)
+        association_route
       end
 
       def join_scopes(table, predicate_builder = nil, klass = self.klass, record = nil) # :nodoc:
@@ -494,6 +539,8 @@ module ActiveRecord
     # Holds all the metadata about an association as it was specified in the
     # Active Record class.
     class AssociationReflection < MacroReflection # :nodoc:
+      include AssociationRouteMethods
+
       def compute_class(name)
         if polymorphic?
           raise ArgumentError, "Polymorphic associations do not support computing the class."
@@ -554,18 +601,24 @@ module ActiveRecord
         ensure_option_not_given_as_class!(:class_name)
       end
 
-      def association_scope_cache(klass, owner, &block)
-        key = self
-        if polymorphic?
-          key = [key, owner.read_attribute(@foreign_type)]
-        end
-        klass.with_connection do |connection|
-          klass.cached_find_by_statement(connection, key, &block)
-        end
+      def association_scope_routes(klass, origin)
+        [association_route_for_origin(origin, klass)]
       end
 
       def join_table
         @join_table ||= -(options[:join_table]&.to_s || derive_join_table)
+      end
+
+      def association_route_resolver
+        @association_route_resolver ||= AssociationRouteResolver.new(self)
+      end
+
+      def association_route_for_origin(origin, destination_class = nil)
+        if belongs_to?
+          association_route_resolver.resolve_reference(origin) || association_route_resolver.route_for(destination_class)
+        else
+          association_route_resolver.route_for_target(origin)
+        end
       end
 
       def foreign_key(infer_from_inverse_of: true)
@@ -641,10 +694,6 @@ module ActiveRecord
         end
       end
 
-      def join_id_for(owner) # :nodoc:
-        Array(join_foreign_key).map { |key| owner.read_attribute(key) }
-      end
-
       def through_reflection
         nil
       end
@@ -662,6 +711,7 @@ module ActiveRecord
       # This is for clearing cache on the reflection. Useful for tests that need to compare
       # SQL queries on associations.
       def clear_association_scope_cache # :nodoc:
+        association_route_resolver.clear
         klass.initialize_find_by_cache
       end
 
@@ -989,7 +1039,9 @@ module ActiveRecord
     # Holds all the metadata about a :through association as it was specified
     # in the Active Record class.
     class ThroughReflection < AbstractReflection # :nodoc:
-      delegate :foreign_key, :foreign_type, :association_foreign_key, :join_id_for, :type,
+      include AssociationRouteMethods
+
+      delegate :foreign_key, :foreign_type, :association_foreign_key, :type,
                :active_record_primary_key, :join_foreign_key, to: :source_reflection
 
       def initialize(delegate_reflection)
@@ -1071,6 +1123,17 @@ module ActiveRecord
         collect_join_reflections [self]
       end
 
+      def association_scope_routes(_klass, origin)
+        reflections = chain
+        reflections.each_with_index.map do |reflection, index|
+          if index == reflections.length - 1
+            reflection.association_route_for_origin(origin, reflection.klass)
+          else
+            reflection.association_route_for_join(reflections[index + 1].klass)
+          end
+        end
+      end
+
       # This is for clearing cache on the reflection. Useful for tests that need to compare
       # SQL queries on associations.
       def clear_association_scope_cache # :nodoc:
@@ -1113,6 +1176,10 @@ module ActiveRecord
 
       def join_primary_key(klass = self.klass)
         source_reflection.join_primary_key(klass)
+      end
+
+      def association_route_resolver
+        source_reflection.association_route_resolver
       end
 
       # Gets an array of possible <tt>:through</tt> source reflection names in both singular and plural form.
@@ -1224,6 +1291,14 @@ module ActiveRecord
       private
         attr_reader :delegate_reflection
 
+        def default_association_route_destination
+          klass
+        end
+
+        def destination_for_join_route(_target_class)
+          klass
+        end
+
         def collect_join_reflections(seed)
           a = source_reflection.add_as_source seed
           if options[:source_type]
@@ -1260,8 +1335,14 @@ module ActiveRecord
     end
 
     class PolymorphicReflection < AbstractReflection # :nodoc:
+      include AssociationRouteMethods
+
       delegate :klass, :scope, :plural_name, :type, :join_primary_key, :join_foreign_key,
                :name, :scope_for, to: :@reflection
+
+      def association_route_resolver
+        @reflection.association_route_resolver
+      end
 
       def initialize(reflection, previous_reflection)
         super()
@@ -1282,6 +1363,14 @@ module ActiveRecord
       end
 
       private
+        def default_association_route_destination
+          klass
+        end
+
+        def destination_for_join_route(_target_class)
+          klass
+        end
+
         def source_type_scope
           type = @previous_reflection.foreign_type
           source_type = @previous_reflection.options[:source_type]
@@ -1292,10 +1381,11 @@ module ActiveRecord
     class RuntimeReflection < AbstractReflection # :nodoc:
       delegate :scope, :type, :constraints, :join_foreign_key, to: :@reflection
 
-      def initialize(reflection, association)
+      def initialize(reflection, association, route)
         super()
         @reflection = reflection
         @association = association
+        @route = route
       end
 
       def klass
@@ -1308,6 +1398,14 @@ module ActiveRecord
 
       def join_primary_key(klass = self.klass)
         @reflection.join_primary_key(klass)
+      end
+
+      def association_route_resolver
+        @reflection.association_route_resolver
+      end
+
+      def association_route(*)
+        @route
       end
 
       def all_includes; yield; end

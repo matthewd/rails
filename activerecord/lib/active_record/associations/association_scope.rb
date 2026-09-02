@@ -3,8 +3,8 @@
 module ActiveRecord
   module Associations
     class AssociationScope # :nodoc:
-      def self.scope(association)
-        INSTANCE.scope(association)
+      def self.scope(association, routes = nil)
+        INSTANCE.scope(association, routes)
       end
 
       def self.create(&block)
@@ -18,12 +18,13 @@ module ActiveRecord
 
       INSTANCE = create
 
-      def scope(association)
+      def scope(association, routes = nil)
         klass = association.klass
         reflection = association.reflection
         scope = klass.unscoped
         owner = association.owner
-        chain = get_chain(reflection, association, scope.alias_tracker)
+        routes ||= reflection.association_scope_routes(klass, owner)
+        chain = get_chain(reflection, association, scope.alias_tracker, routes)
 
         extensions = reflection.extensions
         scope.extending!(extensions) unless extensions.empty?
@@ -34,19 +35,14 @@ module ActiveRecord
         scope
       end
 
-      def self.get_bind_values(owner, chain)
+      def self.get_bind_values(origin, routes)
         binds = []
-        last_reflection = chain.last
+        last_route = routes.last
 
-        binds.push(*last_reflection.join_id_for(owner))
-        if last_reflection.type
-          binds << owner.class.polymorphic_name
-        end
-
-        chain.each_cons(2).each do |reflection, next_reflection|
-          if reflection.type
-            binds << next_reflection.klass.polymorphic_name
-          end
+        binds.push(*last_route.values_from_origin(origin))
+        binds.push(*last_route.destination_fixed_values.values)
+        routes[0...-1].each do |route|
+          binds.push(*route.destination_fixed_values.values)
         end
         binds
       end
@@ -59,19 +55,17 @@ module ActiveRecord
         end
 
         def last_chain_scope(scope, reflection, owner)
-          primary_key = ActiveRecord::Key.for(reflection.join_primary_key)
-          foreign_key = ActiveRecord::Key.for(reflection.join_foreign_key)
-
           table = reflection.aliased_table
-          primary_key_foreign_key_pairs = primary_key.zip(foreign_key)
-          primary_key_foreign_key_pairs.each do |join_key, foreign_key|
-            value = transform_value(owner.read_attribute(foreign_key))
-            scope = apply_scope(scope, reflection, table, join_key, value)
+          route = reflection.association_route
+
+          route.each do |origin_column, destination_column|
+            value = transform_value(owner.read_attribute(origin_column))
+            scope = apply_scope(scope, reflection, table, destination_column, value)
           end
 
-          if reflection.type
-            polymorphic_type = transform_value(owner.class.polymorphic_name)
-            scope = apply_scope(scope, reflection, table, reflection.type, polymorphic_type)
+          route.destination_fixed_values.each do |column, fixed_value|
+            value = transform_value(fixed_value)
+            scope = apply_scope(scope, reflection, table, column, value)
           end
 
           scope
@@ -82,24 +76,21 @@ module ActiveRecord
         end
 
         def next_chain_scope(scope, reflection, next_reflection)
-          primary_key = ActiveRecord::Key.for(reflection.join_primary_key)
-          foreign_key = ActiveRecord::Key.for(reflection.join_foreign_key)
-
           table = reflection.aliased_table
           foreign_table = next_reflection.aliased_table
 
           predicate_builder = scope.predicate_builder
-          primary_key_foreign_key_pairs = primary_key.zip(foreign_key)
-          constraints = primary_key_foreign_key_pairs.map do |join_primary_key, foreign_key|
-            join_primary_key_attribute = predicate_builder.predicate_attribute(table[join_primary_key])
-            foreign_key_attribute = predicate_builder.predicate_attribute(foreign_table[foreign_key])
+          route = reflection.association_route
+          constraints = route.map do |origin_column, destination_column|
+            destination_attribute = predicate_builder.predicate_attribute(table[destination_column])
+            origin_attribute = predicate_builder.predicate_attribute(foreign_table[origin_column])
 
-            join_primary_key_attribute.eq(foreign_key_attribute)
+            destination_attribute.eq(origin_attribute)
           end.inject(&:and)
 
-          if reflection.type
-            value = transform_value(next_reflection.klass.polymorphic_name)
-            scope = apply_scope(scope, reflection, table, reflection.type, value)
+          route.destination_fixed_values.each do |column, fixed_value|
+            value = transform_value(fixed_value)
+            scope = apply_scope(scope, reflection, table, column, value)
           end
 
           scope.joins!(join(foreign_table, constraints))
@@ -108,22 +99,27 @@ module ActiveRecord
         class ReflectionProxy < SimpleDelegator # :nodoc:
           attr_reader :aliased_table
 
-          def initialize(reflection, aliased_table)
+          def initialize(reflection, aliased_table, route)
             super(reflection)
             @aliased_table = aliased_table
+            @route = route
+          end
+
+          def association_route(*)
+            @route
           end
 
           def all_includes(&); nil; end
         end
 
-        def get_chain(reflection, association, tracker)
+        def get_chain(reflection, association, tracker, routes)
           name = reflection.name
-          chain = [Reflection::RuntimeReflection.new(reflection, association)]
-          reflection.chain.drop(1).each do |refl|
+          chain = [Reflection::RuntimeReflection.new(reflection, association, routes.first)]
+          reflection.chain.drop(1).each_with_index do |refl, index|
             aliased_table = tracker.aliased_table_for(refl.klass.arel_table) do
               refl.alias_candidate(name)
             end
-            chain << ReflectionProxy.new(refl, aliased_table)
+            chain << ReflectionProxy.new(refl, aliased_table, routes[index + 1])
           end
           chain
         end

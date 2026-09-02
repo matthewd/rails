@@ -9,7 +9,7 @@ module ActiveRecord
       end
 
       def queries
-        key = ActiveRecord::Key.for(reflection.join_foreign_key)
+        key = association_route.origin_key
         id_list = ids
         id_list = id_list.pluck(primary_key) if key.composite? && id_list.is_a?(Relation)
 
@@ -24,7 +24,10 @@ module ActiveRecord
           when Relation
             relation = value
             relation = relation.select(primary_key) if select_clause?
-            relation = relation.where(primary_type => polymorphic_name) if polymorphic_clause?
+            fixed_values = association_route.destination_fixed_values.reject do |column, _|
+              relation.where_values_hash.has_key?(column)
+            end
+            relation = relation.where(fixed_values) unless fixed_values.empty?
             relation
           when Array
             value.map { |v| convert_to_id(v) }
@@ -34,23 +37,15 @@ module ActiveRecord
         end
 
         def primary_key
-          reflection.join_primary_key
+          association_route.destination_key.name
         end
 
-        def primary_type
-          reflection.join_primary_type
-        end
-
-        def polymorphic_name
-          reflection.polymorphic_name
+        def association_route
+          @association_route ||= reflection.association_route
         end
 
         def select_clause?
           value.select_values.empty?
-        end
-
-        def polymorphic_clause?
-          primary_type && !value.where_values_hash.has_key?(primary_type)
         end
 
         def convert_to_id(value)

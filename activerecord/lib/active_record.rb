@@ -41,6 +41,9 @@ require "active_record/errors"
 module ActiveRecord
   extend ActiveSupport::Autoload
 
+  autoload :AssociationLink, "active_record/association_route"
+  autoload :AssociationRoute
+  autoload :AssociationRouteResolver, "active_record/association_route"
   autoload :Base
   autoload :Callbacks
   autoload :ConnectionHandling

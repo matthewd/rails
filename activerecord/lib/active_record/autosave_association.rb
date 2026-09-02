@@ -487,18 +487,13 @@ module ActiveRecord
         if autosave && record.marked_for_destruction?
           record.destroy
         elsif autosave != false
-          primary_key = ActiveRecord::Key.for(reflection.active_record_primary_key)
+          route = reflection.association_route_for_target(self) unless reflection.through_reflection
+          primary_key = route ? route.link.reference.target_key : ActiveRecord::Key.for(reflection.active_record_primary_key)
           primary_key_value = primary_key.map { |key| read_attribute(key) }
-          return unless (autosave && record.changed_for_autosave?) || _record_changed?(reflection, record, primary_key_value)
+          return unless (autosave && record.changed_for_autosave?) || _record_changed?(reflection, record, primary_key_value, route)
 
-          unless reflection.through_reflection
-            foreign_key = ActiveRecord::Key.for(reflection.foreign_key)
-            primary_key_foreign_key_pairs = primary_key.zip(foreign_key)
-
-            primary_key_foreign_key_pairs.each do |primary_key, foreign_key|
-              association_id = read_attribute(primary_key)
-              record.write_attribute(foreign_key, association_id) unless record.read_attribute(foreign_key) == association_id
-            end
+          if route
+            route.write(self, record)
             association.set_inverse_instance(record)
           end
 
@@ -512,27 +507,37 @@ module ActiveRecord
       end
 
       # If the record is new or it has changed, returns true.
-      def _record_changed?(reflection, record, key)
-        record.new_record? ||
-          (association_foreign_key_changed?(reflection, record, key) ||
-          inverse_polymorphic_association_changed?(reflection, record)) ||
-          ActiveRecord::Key.for(reflection.foreign_key).any? { |fk| record.will_save_change_to_attribute?(record.class.attribute_aliases[fk] || fk) }
+      def _record_changed?(reflection, record, key, route)
+        return true if record.new_record?
+        return true if association_foreign_key_changed?(reflection, record, key, route)
+        return true if inverse_polymorphic_association_changed?(reflection, record, route)
+
+        reference_key = route ? route.link.reference.reference_key : ActiveRecord::Key.for(reflection.foreign_key)
+        reference_key.any? do |foreign_key|
+          record.will_save_change_to_attribute?(record.class.attribute_aliases[foreign_key] || foreign_key)
+        end
       end
 
-      def association_foreign_key_changed?(reflection, record, key)
+      def association_foreign_key_changed?(reflection, record, key, route)
         return false if reflection.through_reflection?
 
-        foreign_key = ActiveRecord::Key.for(reflection.foreign_key)
+        foreign_key = route.link.reference.reference_key
         return false unless foreign_key.all? { |key| record.has_attribute?(key) }
 
         foreign_key.map { |key| record.read_attribute(key) } != Array(key)
       end
 
-      def inverse_polymorphic_association_changed?(reflection, record)
+      def inverse_polymorphic_association_changed?(reflection, record, route)
         return false unless reflection.inverse_of&.polymorphic?
 
-        class_name = record.read_attribute(reflection.inverse_of.foreign_type)
-        reflection.active_record.polymorphic_name != class_name
+        if route
+          route.fixed_reference_values.any? do |column, value|
+            record.read_attribute(column) != value
+          end
+        else
+          foreign_type = reflection.inverse_of.foreign_type
+          record.read_attribute(foreign_type) != reflection.active_record.polymorphic_name
+        end
       end
 
       def autosave_belongs_to_association(reflection) # :nodoc:
@@ -551,8 +556,9 @@ module ActiveRecord
           autosave = reflection.options[:autosave]
 
           if autosave && record.marked_for_destruction?
-            foreign_key = ActiveRecord::Key.for(reflection.foreign_key)
-            foreign_key.each { |key| write_attribute(key, nil) }
+            route = association.association_route
+            route.link.reference.reference_key.each { |key| write_attribute(key, nil) }
+            route.fixed_reference_values.each_key { |key| write_attribute(key, nil) }
             record.destroy
           elsif autosave != false
             saved = if record.new_record? || (autosave && record.changed_for_autosave?)
@@ -566,14 +572,7 @@ module ActiveRecord
             end
 
             if association.updated?
-              primary_key = ActiveRecord::Key.for(reflection.association_primary_key(record.class))
-              foreign_key = ActiveRecord::Key.for(reflection.foreign_key)
-
-              primary_key_foreign_key_pairs = primary_key.zip(foreign_key)
-              primary_key_foreign_key_pairs.each do |primary_key, foreign_key|
-                association_id = record.read_attribute(primary_key)
-                write_attribute(foreign_key, association_id) unless read_attribute(foreign_key) == association_id
-              end
+              association.association_route.write(self, record)
               association.loaded!
             end
 

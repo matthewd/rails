@@ -117,8 +117,9 @@ module ActiveRecord
         end
 
         def nullify_owner_attributes(record)
+          route = association_route
           primary_key = ActiveRecord::Key.for(record.class.primary_key)
-          foreign_key = ActiveRecord::Key.for(reflection.foreign_key)
+          foreign_key = route.link.reference.reference_key
 
           # Preserve shared primary key columns only if another foreign key
           # column can be cleared to disassociate the record.
@@ -128,7 +129,7 @@ module ActiveRecord
             next if preserve_primary_key && primary_key.include?(foreign_key_column)
             record.write_attribute(foreign_key_column, nil)
           end
-          record.write_attribute(reflection.type, nil) if reflection.type.present?
+          route.fixed_reference_values.each_key { |column| record.write_attribute(column, nil) }
         end
 
         def transaction_if(value, &block)

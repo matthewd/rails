@@ -89,33 +89,63 @@ module ActiveRecord
         end
 
         def preloaders_for_reflection(reflection, reflection_records)
-          if reflection.scope && reflection.scope.arity != 0
-            reflection_records.map do |record|
-              klass = record.association(association).klass
-
-              # For instance dependent scopes, the scope is potentially
-              # different for each record. To allow this we'll group each
-              # object separately unless the resulting scopes are equivalent.
-              reflection_scope = reflection.join_scopes(klass.arel_table, klass.predicate_builder, klass, record).inject(&:merge!)
-
-              [klass, reflection_scope, record]
-            end.group_by do |klass, reflection_scope, _|
-              [
-                klass,
-                reflection_scope.table_name,
-                reflection_scope.model.connection_specification_name,
-                reflection_scope.values_for_queries,
-              ]
-            end.map do |_preloader_key, values|
-              rhs_klass, reflection_scope = values.first
-              records = values.map { |_, _, record| record }
-              preloader_for(reflection).new(rhs_klass, records, reflection, scope, reflection_scope, associate_by_default)
-            end
-          else
+          static_route = if reflection.static_association_route?
+            reflection.association_route_for_origin(reflection_records.first)
+          end
+          if static_route && !(reflection.scope && reflection.scope.arity != 0)
             reflection_records.group_by do |record|
               record.association(association).klass
-            end.map do |rhs_klass, records|
-              preloader_for(reflection).new(rhs_klass, records, reflection, scope, nil, associate_by_default)
+            end.map do |destination_class, records|
+              preloader_for(reflection).new(
+                destination_class,
+                records,
+                reflection,
+                scope,
+                nil,
+                associate_by_default,
+                association_route: static_route
+              )
+            end
+          else
+            # An instance-dependent Reflection scope may differ for each origin,
+            # so group only routes whose evaluated scopes are equivalent.
+            groups = reflection_records.each_with_object({}) do |record, result|
+              route = reflection.association_route_for_origin(record)
+              destination_class = route.destination_class
+
+              reflection_scope = if reflection.scope && reflection.scope.arity != 0
+                reflection.join_scopes(
+                  destination_class.arel_table,
+                  destination_class.predicate_builder,
+                  destination_class,
+                  record
+                ).inject(&:merge!)
+              end
+              key = if reflection_scope
+                [
+                  route,
+                  reflection_scope.table_name,
+                  reflection_scope.model.connection_specification_name,
+                  reflection_scope.values_for_queries,
+                ]
+              else
+                route
+              end
+
+              group = result[key] ||= [destination_class, route, reflection_scope, []]
+              group.last << record
+            end
+
+            groups.values.map do |destination_class, route, reflection_scope, records|
+              preloader_for(reflection).new(
+                destination_class,
+                records,
+                reflection,
+                scope,
+                reflection_scope,
+                associate_by_default,
+                association_route: route
+              )
             end
           end
         end

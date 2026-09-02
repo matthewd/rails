@@ -57,17 +57,23 @@ module ActiveRecord
         def construct_join_attributes(*records)
           ensure_mutable
 
-          association_primary_key = source_reflection.association_primary_key(reflection.klass)
+          route = source_route(records.first)
+          reference = route.link.reference
 
-          if Array(association_primary_key) == reflection.klass.composite_query_constraints_list && !options[:source_type]
+          if reference.target_key.to_a == reflection.klass.composite_query_constraints_list && !options[:source_type]
             join_attributes = { source_reflection.name => records }
           else
-            assoc_pk_values = records.map { |record| record.read_attribute(association_primary_key) }
-            join_attributes = { source_reflection.foreign_key => assoc_pk_values }
+            target_values = records.map { |record| reference.target_key.value_of(record) }
+            join_attributes = { reference.reference_key.name => target_values }
           end
 
-          if options[:source_type]
-            join_attributes[source_reflection.foreign_type] = [ options[:source_type] ]
+          fixed_values = if options[:source_type]
+            { source_reflection.foreign_type => options[:source_type] }
+          else
+            route.fixed_reference_values
+          end
+          fixed_values.each do |column, value|
+            join_attributes[column] = [value]
           end
 
           if records.count == 1
@@ -77,19 +83,31 @@ module ActiveRecord
           end
         end
 
+        def source_route(record)
+          if record
+            source_reflection.association_route_for_target(record)
+          else
+            source_reflection.association_route(reflection.klass)
+          end
+        end
+
         # Note: this does not capture all cases, for example it would be impractical
         # to try to properly support stale-checking for nested associations.
         def stale_state
           if through_reflection.belongs_to?
-            Array(through_reflection.foreign_key).filter_map do |foreign_key_column|
+            route = through_reflection.association_route_for_origin(owner, through_reflection.klass)
+            route.origin_key.filter_map do |foreign_key_column|
               owner.read_attribute(foreign_key_column)
             end.presence
           end
         end
 
         def foreign_key_present?
-          through_reflection.belongs_to? && Array(through_reflection.foreign_key).all? do |foreign_key_column|
-            !owner.read_attribute(foreign_key_column).nil?
+          if through_reflection.belongs_to?
+            route = through_reflection.association_route_for_origin(owner, through_reflection.klass)
+            route.origin_key.all? do |foreign_key_column|
+              !owner.read_attribute(foreign_key_column).nil?
+            end
           end
         end
 
