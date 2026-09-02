@@ -35,6 +35,7 @@ module ActiveRecord
         def add_constraints(reflection, key, join_ids, owner, ordered)
           route = reflection.association_route
           scope = reflection.build_scope(reflection.aliased_table).where(key => join_ids)
+          scope = route.apply_destination_scope(scope, owner)
           scope.where!(route.destination_fixed_values) unless route.destination_fixed_values.empty?
 
           relation = reflection.klass.scope_for_association

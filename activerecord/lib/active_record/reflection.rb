@@ -252,6 +252,13 @@ module ActiveRecord
         route.destination_fixed_values.each do |column, value|
           klass_scope.where!(column => value)
         end
+        if route.destination_scope
+          if route.destination_scope.arity != 0
+            raise ArgumentError, "An instance-dependent association route cannot be joined."
+          end
+          route_scope = route.apply_destination_scope(build_scope(table, predicate_builder, klass))
+          scope_chain_items << route_scope
+        end
         scope_chain_items.inject(klass_scope, &:merge!)
 
         route.each do |origin_column, destination_column|

@@ -92,7 +92,8 @@ module ActiveRecord
           static_route = if reflection.static_association_route?
             reflection.association_route_for_origin(reflection_records.first)
           end
-          if static_route && !(reflection.scope && reflection.scope.arity != 0)
+          if static_route && !(reflection.scope && reflection.scope.arity != 0) &&
+              !(static_route.destination_scope && static_route.destination_scope.arity != 0)
             reflection_records.group_by do |record|
               record.association(association).klass
             end.map do |destination_class, records|
@@ -107,8 +108,8 @@ module ActiveRecord
               )
             end
           else
-            # An instance-dependent Reflection scope may differ for each origin,
-            # so group only routes whose evaluated scopes are equivalent.
+            # Instance-dependent Reflection and route scopes may differ for each
+            # origin, so group only routes whose evaluated scopes are equivalent.
             groups = reflection_records.each_with_object({}) do |record, result|
               route = reflection.association_route_for_origin(record)
               destination_class = route.destination_class
@@ -121,22 +122,33 @@ module ActiveRecord
                   record
                 ).inject(&:merge!)
               end
-              key = if reflection_scope
+              route_scope = if route.destination_scope && route.destination_scope.arity != 0
+                route.apply_destination_scope(destination_class.unscoped, record)
+              end
+
+              key = if reflection_scope || route_scope
+                resolved_scopes = []
+                resolved_scopes << reflection_scope if reflection_scope
+                resolved_scopes << route_scope if route_scope
                 [
                   route,
-                  reflection_scope.table_name,
-                  reflection_scope.model.connection_specification_name,
-                  reflection_scope.values_for_queries,
+                  *resolved_scopes.flat_map do |resolved_scope|
+                    [
+                      resolved_scope.table_name,
+                      resolved_scope.model.connection_specification_name,
+                      resolved_scope.values_for_queries,
+                    ]
+                  end,
                 ]
               else
                 route
               end
 
-              group = result[key] ||= [destination_class, route, reflection_scope, []]
+              group = result[key] ||= [destination_class, route, reflection_scope, route_scope, []]
               group.last << record
             end
 
-            groups.values.map do |destination_class, route, reflection_scope, records|
+            groups.values.map do |destination_class, route, reflection_scope, route_scope, records|
               preloader_for(reflection).new(
                 destination_class,
                 records,
@@ -144,6 +156,7 @@ module ActiveRecord
                 scope,
                 reflection_scope,
                 associate_by_default,
+                route_scope: route_scope,
                 association_route: route
               )
             end

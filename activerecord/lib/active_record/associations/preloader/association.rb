@@ -102,12 +102,13 @@ module ActiveRecord
         attr_reader :klass
 
         def initialize(klass, owners, reflection, preload_scope, reflection_scope, associate_by_default,
-          association_route: nil)
+          route_scope: nil, association_route: nil)
           @klass         = klass
           @owners        = owners.uniq(&:__id__)
           @reflection    = reflection
           @preload_scope = preload_scope
           @reflection_scope = reflection_scope
+          @route_scope = route_scope
           @association_route = association_route
           @associate     = associate_by_default || !preload_scope || preload_scope.empty_scope?
           @model         = owners.first && owners.first.class
@@ -229,7 +230,7 @@ module ActiveRecord
         def associate_records_from_unscoped(unscoped_records)
           return if unscoped_records.nil? || unscoped_records.empty?
           return if !reflection_scope.empty_scope?
-          return unless association_route.destination_fixed_values.empty?
+          return if association_route.destination_scope || !association_route.destination_fixed_values.empty?
           return if preload_scope && !preload_scope.empty_scope?
           return if reflection.collection?
 
@@ -309,6 +310,11 @@ module ActiveRecord
 
           def build_scope
             scope = klass.scope_for_association
+            if @route_scope
+              scope.merge!(@route_scope)
+            else
+              scope = association_route.apply_destination_scope(scope, owners.first)
+            end
 
             unless reflection.through_reflection?
               fixed_values = association_route.destination_fixed_values

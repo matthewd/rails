@@ -211,13 +211,14 @@ module ActiveRecord
         end
     end
 
-    attr_reader :destination_class, :link, :fixed_reference_values
+    attr_reader :destination_class, :link, :fixed_reference_values, :destination_scope
 
-    def initialize(destination_class:, link:, reference_on:, fixed_reference_values: {})
+    def initialize(destination_class:, link:, reference_on:, fixed_reference_values: {}, destination_scope: nil)
       @destination_class = destination_class
       @link = link
       @reference_on = reference_on
       @fixed_reference_values = self.class.normalize_fixed_values(fixed_reference_values)
+      @destination_scope = destination_scope
 
       unless reference_on == :origin || reference_on == :destination
         raise ArgumentError, "Unknown association reference endpoint: #{reference_on.inspect}"
@@ -226,7 +227,7 @@ module ActiveRecord
       @origin_key, @destination_key, @key_pairs = orient(link.match)
       @reference_origin_key, @reference_destination_key, @reference_pairs = orient(link.reference)
       _, _, @constraint_pairs = orient(link.constraints)
-      @hash = [@destination_class, @link, @reference_on, @fixed_reference_values].hash
+      @hash = [@destination_class, @link, @reference_on, @fixed_reference_values, @destination_scope].hash
       freeze
     end
 
@@ -256,12 +257,25 @@ module ActiveRecord
       reference_on_destination? ? @fixed_reference_values : {}
     end
 
+    def apply_destination_scope(relation, origin = nil)
+      if destination_scope
+        if destination_scope.arity == 0
+          relation.instance_exec(&destination_scope) || relation
+        else
+          relation.instance_exec(origin, &destination_scope) || relation
+        end
+      else
+        relation
+      end
+    end
+
     def ==(other)
       other.is_a?(AssociationRoute) &&
         destination_class == other.destination_class &&
         link == other.link &&
         reference_on_destination? == other.reference_on_destination? &&
-        fixed_reference_values == other.fixed_reference_values
+        fixed_reference_values == other.fixed_reference_values &&
+        destination_scope == other.destination_scope
     end
     alias_method :eql?, :==
 

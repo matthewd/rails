@@ -268,7 +268,8 @@ module ActiveRecord
           end
 
           scope = self.scope
-          if skip_statement_cache?(scope)
+          routes = reflection.association_scope_routes(klass, owner) unless skip_statement_cache?(scope)
+          if !routes || routes.any?(&:destination_scope)
             if async
               return scope.load_async.then(&:to_a)
             else
@@ -276,7 +277,6 @@ module ActiveRecord
             end
           end
 
-          routes = reflection.association_scope_routes(klass, owner)
           sc = reflection.association_scope_cache(klass, routes) do |params|
             as = AssociationScope.create { params.bind }
             target_scope.merge!(as.scope(self, routes))

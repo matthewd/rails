@@ -138,10 +138,20 @@ module ActiveRecord
 
           chain_head = chain.first
           chain.reverse_each do |reflection|
-            reflection.constraints.each do |scope_chain_item|
-              item = eval_scope(reflection, scope_chain_item, owner)
+            route = reflection.association_route
+            route_scope = route.destination_scope
+            scope_chain_items = route_scope ? [*reflection.constraints, route_scope] : reflection.constraints
 
-              if scope_chain_item == chain_head.scope
+            scope_chain_items.each do |scope_chain_item|
+              item = if scope_chain_item.equal?(route_scope)
+                relation = reflection.build_scope(reflection.aliased_table)
+                route.apply_destination_scope(relation, owner)
+              else
+                eval_scope(reflection, scope_chain_item, owner)
+              end
+
+              if scope_chain_item == chain_head.scope ||
+                  reflection.equal?(chain_head) && scope_chain_item.equal?(route_scope)
                 scope.merge! item.except(:where, :includes, :unscope, :order)
               elsif !item.references_values.empty?
                 item.joins_values = item.joins_values.reject { |join| redundant_join?(item, chain, join) }
