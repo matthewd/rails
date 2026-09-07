@@ -7,22 +7,22 @@ module ActiveRecord
     class Preloader
       class Association # :nodoc:
         class LoaderQuery
-          attr_reader :scope, :association_key_name
+          attr_reader :scope, :destination_key_name
 
-          def initialize(scope, association_key_name)
+          def initialize(scope, destination_key_name)
             @scope = scope
-            @association_key_name = association_key_name
+            @destination_key_name = destination_key_name
           end
 
           def eql?(other)
-            association_key_name == other.association_key_name &&
+            destination_key_name == other.destination_key_name &&
               scope.table_name == other.scope.table_name &&
               scope.model.connection_specification_name == other.scope.model.connection_specification_name &&
               scope.values_for_queries == other.scope.values_for_queries
           end
 
           def hash
-            [association_key_name, scope.model.table_name, scope.model.connection_specification_name, scope.values_for_queries].hash
+            [destination_key_name, scope.model.table_name, scope.model.connection_specification_name, scope.values_for_queries].hash
           end
 
           def records_for(loaders)
@@ -41,18 +41,18 @@ module ActiveRecord
           def load_records_for_keys(keys, &block)
             return [] if keys.empty?
 
-            if association_key_name.is_a?(Array)
+            if destination_key_name.is_a?(Array)
               query_constraints = Hash.new { |hsh, key| hsh[key] = Set.new }
 
               keys.each_with_object(query_constraints) do |values_set, constraints|
-                association_key_name.zip(values_set).each do |key_name, value|
+                destination_key_name.zip(values_set).each do |key_name, value|
                   constraints[key_name] << value
                 end
               end
 
               scope.where(query_constraints)
             else
-              scope.where(association_key_name => keys)
+              scope.where(destination_key_name => keys)
             end.load(&block)
           end
         end
@@ -158,17 +158,17 @@ module ActiveRecord
         end
 
         # The name of the key on the associated records
-        def association_key_name
+        def destination_key_name
           reflection.join_primary_key(klass)
         end
 
         def loader_query
-          LoaderQuery.new(scope, association_key_name)
+          LoaderQuery.new(scope, destination_key_name)
         end
 
         def owners_by_key
           @owners_by_key ||= owners.each_with_object({}) do |owner, result|
-            key = derive_key(owner, owner_key_name)
+            key = derive_key(owner, origin_key_name)
             (result[key] ||= []) << owner if key.is_a?(Array) ? key.all? : key
           end
         end
@@ -186,7 +186,7 @@ module ActiveRecord
         end
 
         def set_inverse(record)
-          if owners = owners_by_key[derive_key(record, association_key_name)]
+          if owners = owners_by_key[derive_key(record, destination_key_name)]
             # Processing only the first owner
             # because the record is modified but not an owner
             association = owners.first.association(reflection.name)
@@ -202,7 +202,7 @@ module ActiveRecord
           @preloaded_records = raw_records.select do |record|
             assignments = false
 
-            owners_by_key[derive_key(record, association_key_name)]&.each do |owner|
+            owners_by_key[derive_key(record, destination_key_name)]&.each do |owner|
               entries = (@records_by_owner[owner] ||= [])
 
               if reflection.collection? || entries.empty?
@@ -221,8 +221,8 @@ module ActiveRecord
           return if preload_scope && !preload_scope.empty_scope?
           return if reflection.collection?
 
-          unscoped_records.select { |r| r[association_key_name].present? }.each do |record|
-            owners = owners_by_key[derive_key(record, association_key_name)]
+          unscoped_records.select { |r| r[destination_key_name].present? }.each do |record|
+            owners = owners_by_key[derive_key(record, destination_key_name)]
             owners&.each_with_index do |owner, i|
               association = owner.association(reflection.name)
               association.target = record
@@ -238,7 +238,7 @@ module ActiveRecord
           attr_reader :owners, :reflection, :preload_scope, :model
 
           # The name of the key on the model which declares the association
-          def owner_key_name
+          def origin_key_name
             reflection.join_foreign_key
           end
 
@@ -257,7 +257,7 @@ module ActiveRecord
 
           def key_conversion_required?
             unless defined?(@key_conversion_required)
-              @key_conversion_required = (association_key_type != owner_key_type)
+              @key_conversion_required = (destination_key_type != origin_key_type)
             end
 
             @key_conversion_required
@@ -279,12 +279,12 @@ module ActiveRecord
             end
           end
 
-          def association_key_type
-            @klass.type_for_attribute(association_key_name).type
+          def destination_key_type
+            @klass.type_for_attribute(destination_key_name).type
           end
 
-          def owner_key_type
-            @model.type_for_attribute(owner_key_name).type
+          def origin_key_type
+            @model.type_for_attribute(origin_key_name).type
           end
 
           def reflection_scope
