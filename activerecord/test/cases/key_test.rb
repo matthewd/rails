@@ -77,6 +77,22 @@ class KeyTest < ActiveRecord::TestCase
     assert_equal "Key mappings must have the same number of columns", error.message
   end
 
+  def test_mapping_composes_corresponding_keys
+    constraints = Key::Mapping.new(
+      reference_key: :account_id,
+      target_key: :account_id
+    )
+    reference = Key::Mapping.new(
+      reference_key: :post_id,
+      target_key: :id
+    )
+
+    assert_equal [
+      ["account_id", "account_id"],
+      ["post_id", "id"],
+    ], (constraints + reference).to_a
+  end
+
   def test_where_hash_for_simple_key
     assert_equal({ "id" => 5 }, Key.for("id").where_hash(5))
     assert_equal({ "id" => [1, 2, 3] }, Key.for("id").where_hash([1, 2, 3]))

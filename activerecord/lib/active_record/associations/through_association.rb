@@ -54,23 +54,24 @@ module ActiveRecord
         # some other type, because this opens up a whole can of worms, and in basically any
         # situation it is more natural for the user to just create or modify their join records
         # directly as required.
-        def construct_join_attributes(*records)
+        def construct_join_attributes(*records, query: false)
           ensure_mutable
 
-          reference = reflection.association_route.link.reference
+          link = reflection.association_route.link
+          mapping = query ? link.match : link.reference
 
-          if reference.target_key.to_a == reflection.klass.composite_query_constraints_list && !options[:source_type]
+          if mapping.target_key.to_a == reflection.klass.composite_query_constraints_list && !options[:source_type]
             join_attributes = { source_reflection.name => records }
           else
-            target_values = records.map { |record| reference.target_key.value_of(record) }
-            join_attributes = { reference.reference_key.name => target_values }
+            target_values = records.map { |record| mapping.target_key.value_of(record) }
+            join_attributes = { mapping.reference_key.name => target_values }
           end
 
           if options[:source_type]
             join_attributes[source_reflection.foreign_type] = [ options[:source_type] ]
           end
 
-          if records.count == 1
+          if records.count == 1 && !(query && mapping.target_key.composite?)
             join_attributes.transform_values!(&:first)
           else
             join_attributes

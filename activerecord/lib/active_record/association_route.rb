@@ -1,12 +1,14 @@
 # frozen_string_literal: true
 
 module ActiveRecord
-  # The writable reference between associated records.
+  # The writable reference and query-only mappings between associated records.
   class AssociationLink # :nodoc:
-    attr_reader :reference
+    attr_reader :reference, :constraints, :match
 
-    def initialize(reference:)
+    def initialize(reference:, constraints: Key::Mapping.empty)
       @reference = reference
+      @constraints = constraints
+      @match = constraints + reference
       freeze
     end
 
@@ -36,11 +38,13 @@ module ActiveRecord
         raise ArgumentError, "Unknown association reference endpoint: #{reference_on.inspect}"
       end
 
-      @origin_key, @destination_key, @key_pairs = orient(link.reference)
+      @origin_key, @destination_key, @key_pairs = orient(link.match)
+      @reference_origin_key, @reference_destination_key, @reference_pairs = orient(link.reference)
+      _, _, @constraint_pairs = orient(link.constraints)
       freeze
     end
 
-    attr_reader :origin_key, :destination_key
+    attr_reader :origin_key, :destination_key, :reference_origin_key, :reference_destination_key
 
     def each_match(&block)
       @key_pairs.each(&block)
@@ -48,6 +52,18 @@ module ActiveRecord
 
     def values_from_origin(origin)
       @origin_key.map { |column| origin.read_attribute(column) }
+    end
+
+    def each_reference(&block)
+      @reference_pairs.each(&block)
+    end
+
+    def each_constraint(&block)
+      @constraint_pairs.each(&block)
+    end
+
+    def constrained?
+      @constraint_pairs.any?
     end
 
     def reference_on_destination?

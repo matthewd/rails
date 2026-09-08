@@ -141,7 +141,11 @@ module ActiveRecord
           ensure_not_nested
 
           scope = through_association.scope
-          scope.where! construct_join_attributes(*records)
+          if records.empty?
+            scope.none!
+          else
+            scope.where! construct_join_attributes(*records, query: true)
+          end
           scope = scope.where(through_scope_attributes)
 
           case method
@@ -197,12 +201,37 @@ module ActiveRecord
         end
 
         def through_records_for(record)
-          attributes = construct_join_attributes(record)
+          ensure_mutable
           candidates = Array.wrap(through_association.target)
-          candidates.find_all do |c|
-            attributes.all? do |key, value|
-              c.public_send(key) == value
+          if record.new_record?
+            attributes = construct_join_attributes(record)
+            candidates.find_all do |candidate|
+              attributes.all? { |key, value| candidate.public_send(key) == value }
             end
+          else
+            route = reflection.association_route
+            fixed_values = if options[:source_type]
+              { source_reflection.foreign_type => options[:source_type] }
+            else
+              route.fixed_reference_values
+            end
+            candidates.find_all do |candidate|
+              route.link.match.all? do |reference_column, target_column|
+                through_key_matches?(candidate, reference_column, record, target_column)
+              end && fixed_values.all? do |column, value|
+                candidate.read_attribute(column) == value
+              end
+            end
+          end
+        end
+
+        def through_key_matches?(reference, reference_column, target, target_column)
+          reference_value = reference.read_attribute(reference_column)
+          target_value = target.read_attribute(target_column)
+          if reference.class.type_for_attribute(reference_column).type != target.class.type_for_attribute(target_column).type
+            reference_value&.to_s == target_value&.to_s
+          else
+            reference_value == target_value
           end
         end
 

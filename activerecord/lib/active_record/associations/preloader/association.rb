@@ -43,9 +43,12 @@ module ActiveRecord
 
             if destination_key_name.is_a?(Array)
               query_constraints = Hash.new { |hsh, key| hsh[key] = Set.new }
+              types = destination_key_name.map { |key_name| scope.model.type_for_attribute(key_name) }
 
               keys.each_with_object(query_constraints) do |values_set, constraints|
-                destination_key_name.zip(values_set).each do |key_name, value|
+                destination_key_name.each_with_index do |key_name, index|
+                  value = values_set[index]
+                  value = nil if types[index].serialize(value).nil?
                   constraints[key_name] << value
                 end
               end
@@ -167,9 +170,15 @@ module ActiveRecord
         end
 
         def owners_by_key
-          @owners_by_key ||= owners.each_with_object({}) do |owner, result|
-            key = derive_key(owner, origin_key_name)
-            (result[key] ||= []) << owner if key.is_a?(Array) ? key.all? : key
+          @owners_by_key ||= begin
+            route = association_route
+            owners.each_with_object({}) do |owner, result|
+              key = derive_key(owner, origin_key_name)
+              reference = route.constrained? ? route.reference_origin_key.value_of(owner) : key
+              next if reference.is_a?(Array) ? reference.any?(&:nil?) : reference.nil?
+
+              (result[key] ||= []) << owner
+            end
           end
         end
 
@@ -221,7 +230,10 @@ module ActiveRecord
           return if preload_scope && !preload_scope.empty_scope?
           return if reflection.collection?
 
-          unscoped_records.select { |r| r[destination_key_name].present? }.each do |record|
+          unscoped_records.select do |record|
+            key = association_route.reference_destination_key.value_of(record)
+            key.is_a?(Array) ? key.all?(&:present?) : key.present?
+          end.each do |record|
             owners = owners_by_key[derive_key(record, destination_key_name)]
             owners&.each_with_index do |owner, i|
               association = owner.association(reflection.name)
@@ -259,36 +271,25 @@ module ActiveRecord
             end
           end
 
-          def key_conversion_required?
-            unless defined?(@key_conversion_required)
-              @key_conversion_required = (destination_key_type != origin_key_type)
+          def key_conversion_required?(index)
+            @key_conversion_required ||= association_route.each_match.map do |origin_column, destination_column|
+              @model.type_for_attribute(origin_column).type != @klass.type_for_attribute(destination_column).type
             end
-
-            @key_conversion_required
+            @key_conversion_required[index]
           end
 
           def derive_key(owner, key)
             if key.is_a?(Array)
-              key.map { |k| convert_key(owner.read_attribute(k)) }
+              Array.new(key.length) do |index|
+                convert_key(owner.read_attribute(key[index]), index)
+              end
             else
-              convert_key(owner.read_attribute(key))
+              convert_key(owner.read_attribute(key), 0)
             end
           end
 
-          def convert_key(key)
-            if key_conversion_required?
-              key&.to_s
-            else
-              key
-            end
-          end
-
-          def destination_key_type
-            @klass.type_for_attribute(destination_key_name).type
-          end
-
-          def origin_key_type
-            @model.type_for_attribute(origin_key_name).type
+          def convert_key(key, index)
+            key_conversion_required?(index) ? key&.to_s : key
           end
 
           def reflection_scope

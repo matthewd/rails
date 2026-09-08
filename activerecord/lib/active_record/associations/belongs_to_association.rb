@@ -29,20 +29,21 @@ module ActiveRecord
         when :destroy
           raise ActiveRecord::Rollback unless target.destroy
         when :destroy_async
-          primary_key_column = reflection.active_record_primary_key
-          ids = foreign_key.map { |column| owner.public_send(column) }
+          route = association_route(target)
+          destination_key = route.destination_key
+          ids = destroy_association_async_ids(route)
           association_class = if reflection.polymorphic?
             owner.public_send(foreign_type)
           else
-            reflection.klass
+            klass
           end
 
           enqueue_destroy_association(
             owner_model_name: owner.class.to_s,
             owner_id: owner.id,
             association_class: association_class.to_s,
-            association_ids: foreign_key.composite? ? [ids] : ids,
-            association_primary_key_column: primary_key_column,
+            association_ids: route.destination_key.composite? ? [ids] : ids,
+            association_primary_key_column: destination_key.name,
             ensuring_owner_was_method: options.fetch(:ensuring_owner_was, nil)
           )
         else
@@ -87,8 +88,10 @@ module ActiveRecord
         foreign_key_was = foreign_key.composite? ? (values if values.all?) : values.first
 
         if foreign_key_was && model_was < ActiveRecord::Base
-          route = reflection.association_route(model_was)
-          update_counters_via_scope(model_was, foreign_key_was, -1, route)
+          route = reflection.association_route_for_origin(owner, model_was)
+          values = route.origin_key.map { |key| owner.attribute_before_last_save(key) }
+          origin_key_was = route.origin_key.composite? ? values : values.first
+          update_counters_via_scope(model_was, origin_key_was, -1, route)
         end
       end
 
@@ -105,6 +108,24 @@ module ActiveRecord
       end
 
       private
+        # Match the target selected for synchronous destruction. Fall back to
+        # owner values when a partial select omitted a physical reference key.
+        def destroy_association_async_ids(route)
+          route.each_match.map do |origin_column, destination_column|
+            origin_value = owner.read_attribute(origin_column)
+            if target.has_attribute?(destination_column)
+              destination_value = target.attribute_in_database(destination_column)
+              if !destination_value.nil? || !route.reference_destination_key.include?(destination_column)
+                destination_value
+              else
+                origin_value
+              end
+            else
+              origin_value
+            end
+          end
+        end
+
         def replace(record)
           if record
             raise_on_type_mismatch!(record)
@@ -145,7 +166,7 @@ module ActiveRecord
 
         def replace_keys(record, force: false)
           reference_key = @foreign_key
-          target_key = record ? association_route(record).destination_key : ActiveRecord::Key.for(nil)
+          target_key = record ? association_route(record).reference_destination_key : ActiveRecord::Key.for(nil)
           target_key_values = record ? target_key.map { |key| record.read_attribute(key) } : []
           origin_key_values = reference_key.map { |key| owner.read_attribute(key) }
 

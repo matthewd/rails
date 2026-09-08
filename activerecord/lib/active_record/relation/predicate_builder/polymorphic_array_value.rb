@@ -12,9 +12,10 @@ module ActiveRecord
       def queries
         return [ reflection.join_foreign_key => values ] if values.empty?
 
-        route_groups.map do |_key, (fixed_values, origin_key, ids)|
-          fixed_values.merge(origin_key => ids)
+        queries = route_groups.filter_map do |_key, (fixed_values, origin_key, ids)|
+          fixed_values.merge(origin_key => ids) unless ids.is_a?(Array) && ids.empty?
         end
+        queries.empty? ? [{}] : queries
       end
 
       private
@@ -33,7 +34,12 @@ module ActiveRecord
             end
 
             group = groups[key] ||= [fixed_values, origin_key, []]
-            group.last << convert_to_id(value, route)
+            ids = convert_to_id(value, route)
+            if value.is_a?(Relation) && route.destination_key.composite?
+              group.last.concat(ids)
+            else
+              group.last << ids
+            end
           end
         end
 
@@ -47,7 +53,11 @@ module ActiveRecord
           if value.is_a?(Base)
             route.destination_key.value_of(value)
           elsif value.is_a?(Relation)
-            value.select(route.destination_key.name)
+            if route.destination_key.composite?
+              value.pluck(route.destination_key.name)
+            else
+              value.select(route.destination_key.name)
+            end
           else
             value
           end

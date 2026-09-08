@@ -849,39 +849,47 @@ module ActiveRecord
           reference_key = association_route_key_for(reference_class, foreign_key)
           target_key_name = belongs_to? ? association_primary_key(target_class) : active_record_primary_key
           target_key = association_route_key_for(target_class, target_key_name)
+          constraints = association_route_constraints(reference_class, target_class)
 
           if fixed_values.empty? && !polymorphic? && !type
             default_route = association_route
             if default_route.link.reference.reference_key == reference_key &&
-                default_route.link.reference.target_key == target_key
+                default_route.link.reference.target_key == target_key &&
+                default_route.link.constraints == constraints
               return default_route
             end
           end
 
-          key = [fixed_values, reference_key, target_key].freeze
+          key = [fixed_values, reference_key, target_key, constraints].freeze
           association_routes.compute_if_absent(key) do
             build_association_route(
               reference_class: reference_class,
               target_class: target_class,
               fixed_values: fixed_values,
               reference_key: reference_key,
-              target_key: target_key
+              target_key: target_key,
+              constraints: constraints
             )
           end
         end
 
-        def build_association_route(reference_class:, target_class:, fixed_values: {}, reference_key: nil, target_key: nil)
+        def build_association_route(reference_class:, target_class:, fixed_values: {}, reference_key: nil, target_key: nil, constraints: nil)
           target_key_name = belongs_to? ? association_primary_key(target_class) : active_record_primary_key
           reference = Key::Mapping.new(
             reference_key: reference_key || association_route_key_for(reference_class, foreign_key),
             target_key: target_key || association_route_key_for(target_class, target_key_name)
           )
+          constraints ||= association_route_constraints(reference_class, target_class)
 
           AssociationRoute.new(
-            link: AssociationLink.new(reference: reference),
+            link: AssociationLink.new(reference: reference, constraints: constraints),
             reference_on: belongs_to? ? :origin : :destination,
             fixed_reference_values: fixed_values
           )
+        end
+
+        def association_route_constraints(_reference_class, _target_class)
+          Key::Mapping.empty
         end
 
         # Attempts to find the inverse association name automatically.

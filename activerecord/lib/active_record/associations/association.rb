@@ -263,8 +263,15 @@ module ActiveRecord
           end
 
           routes = reflection.association_scope_routes(klass, owner)
+          nil_constraint = false
+          if routes.last.constrained?
+            # Query constraints are excluded from stale state, so a fresh load
+            # must not reuse a scope built from their previous values.
+            reset_scope
+            nil_constraint = null_query_constraint?(routes.last)
+          end
           scope = self.scope(routes)
-          if skip_statement_cache?(scope)
+          if skip_statement_cache?(scope) || nil_constraint
             if async
               return scope.load_async.then(&:to_a)
             else
@@ -283,6 +290,14 @@ module ActiveRecord
               set_inverse_instance(record)
               set_strict_loading(record)
             end
+          end
+        end
+
+        def null_query_constraint?(route)
+          destination_class = reflection.through_reflection? ? reflection.chain.last.klass : klass
+          route.each_constraint.any? do |origin_column, destination_column|
+            value = owner.read_attribute(origin_column)
+            destination_class.type_for_attribute(destination_column).serialize(value).nil?
           end
         end
 

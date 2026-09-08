@@ -33,7 +33,14 @@ module ActiveRecord
         end
 
         def add_constraints(reflection, key, join_ids, owner, ordered)
-          scope = reflection.build_scope(reflection.aliased_table).where(key => join_ids)
+          route = reflection.association_route
+          scope = reflection.build_scope(reflection.aliased_table)
+          unless route.constrained?
+            scope.where!(key => join_ids)
+          else
+            predicate = scope.where(key => join_ids).where_clause.ast
+            scope.where!(query_constraint(predicate))
+          end
 
           relation = reflection.klass.scope_for_association
           scope.merge!(
