@@ -18,6 +18,10 @@ module ActiveRecord
         end
       end
 
+      def association_route(record = nil)
+        reflection.association_route_for_origin(owner, record ? record.class : klass)
+      end
+
       def handle_dependency
         return unless load_target
 
@@ -26,8 +30,7 @@ module ActiveRecord
           raise ActiveRecord::Rollback unless target.destroy
         when :destroy_async
           primary_key_column = reflection.active_record_primary_key
-          ids = foreign_key.map { |col| owner.public_send(col) }
-
+          ids = foreign_key.map { |column| owner.public_send(column) }
           association_class = if reflection.polymorphic?
             owner.public_send(foreign_type)
           else
@@ -80,12 +83,12 @@ module ActiveRecord
         else
           model_was = klass
         end
-
-        values = foreign_key.map { |fk| owner.attribute_before_last_save(fk) }
+        values = foreign_key.map { |key| owner.attribute_before_last_save(key) }
         foreign_key_was = foreign_key.composite? ? (values if values.all?) : values.first
 
         if foreign_key_was && model_was < ActiveRecord::Base
-          update_counters_via_scope(model_was, foreign_key_was, -1)
+          route = reflection.association_route(model_was)
+          update_counters_via_scope(model_was, foreign_key_was, -1, route)
         end
       end
 
@@ -121,14 +124,14 @@ module ActiveRecord
             if target && !stale_target?
               target.increment!(reflection.counter_cache_column, by, touch: reflection.options[:touch])
             else
-              update_counters_via_scope(klass, foreign_key.value_of(owner), by)
+              route = association_route
+              update_counters_via_scope(klass, route.origin_key.value_of(owner), by, route)
             end
           end
         end
 
-        def update_counters_via_scope(klass, values, by)
-          primary_key = ActiveRecord::Key.for(primary_key(klass))
-          scope = klass.all_queries_scope.where!(primary_key.where_hash(values))
+        def update_counters_via_scope(klass, values, by, route)
+          scope = klass.all_queries_scope.where!(route.destination_key.where_hash(values))
           scope.update_counters(reflection.counter_cache_column => by, touch: reflection.options[:touch])
         end
 
@@ -141,25 +144,23 @@ module ActiveRecord
         end
 
         def replace_keys(record, force: false)
-          target_key_values = record ? ActiveRecord::Key.for(primary_key(record.class)).map { |col| record.read_attribute(col) } : []
-          owner_key_values = foreign_key.map { |fk| owner.read_attribute(fk) }
+          reference_key = @foreign_key
+          target_key = record ? association_route(record).destination_key : ActiveRecord::Key.for(nil)
+          target_key_values = record ? target_key.map { |key| record.read_attribute(key) } : []
+          origin_key_values = reference_key.map { |key| owner.read_attribute(key) }
 
-          return if !force && owner_key_values == target_key_values
+          return if !force && origin_key_values == target_key_values
 
-          owner_pk = ActiveRecord::Key.for(owner.class.primary_key)
+          origin_primary_key = ActiveRecord::Key.for(owner.class.primary_key)
 
           # Preserve shared primary key columns only if another foreign key
           # column can be cleared to disassociate the record.
-          preserve_owner_pk = record.nil? && foreign_key.any? { |key| !owner_pk.include?(key) }
+          preserve_origin_primary_key = record.nil? && reference_key.any? { |key| !origin_primary_key.include?(key) }
 
-          foreign_key.each_with_index do |key, index|
-            next if preserve_owner_pk && owner_pk.include?(key)
+          reference_key.each_with_index do |key, index|
+            next if preserve_origin_primary_key && origin_primary_key.include?(key)
             owner.write_attribute(key, target_key_values[index])
           end
-        end
-
-        def primary_key(klass)
-          reflection.association_primary_key(klass)
         end
 
         def foreign_key_present?

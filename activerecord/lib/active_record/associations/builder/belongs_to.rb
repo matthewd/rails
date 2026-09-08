@@ -46,26 +46,34 @@ module ActiveRecord::Associations::Builder # :nodoc:
       association = o.association(name)
       foreign_key = association.foreign_key
 
-      old_foreign_id = if foreign_key.any? { |fk| o.public_send(change_method, fk) }
-        values = foreign_key.map do |fk|
-          change = o.public_send(change_method, fk)
-          change ? change.first : o.read_attribute(fk)
+      old_route = old_origin_id = nil
+      if foreign_key.any? { |key| o.public_send(change_method, key) }
+        read_old = lambda do |column|
+          change = o.public_send(change_method, column)
+          change ? change.first : o.read_attribute(column)
         end
-        foreign_key.composite? ? values : values.first
+        values = foreign_key.map { |key| read_old.call(key) }
+        old_reference = foreign_key.composite? ? values : values.first
+
+        if old_reference
+          reflection = association.reflection
+          if reflection.polymorphic?
+            type = read_old.call(association.foreign_type) || o.public_send(association.foreign_type)
+            klass = o.class.polymorphic_class_for(type)
+          else
+            klass = association.klass
+          end
+
+          if klass
+            old_route = reflection.association_route_for_origin(o, klass)
+            values = old_route.origin_key.map { |key| read_old.call(key) }
+            old_origin_id = old_route.origin_key.composite? ? values : values.first
+          end
+        end
       end
 
-      if old_foreign_id
-        reflection = association.reflection
-        if reflection.polymorphic?
-          foreign_type = association.foreign_type
-          change = o.public_send(change_method, foreign_type)
-          klass = (change && change.first) || o.public_send(foreign_type)
-          klass = o.class.polymorphic_class_for(klass)
-        else
-          klass = association.klass
-        end
-        primary_key = reflection.association_primary_key(klass)
-        old_record = klass.find_by(primary_key => [old_foreign_id])
+      if old_origin_id
+        old_record = klass.find_by(old_route.destination_key.name => [old_origin_id])
 
         if old_record
           if touch != true

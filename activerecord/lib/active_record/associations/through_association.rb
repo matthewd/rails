@@ -57,13 +57,13 @@ module ActiveRecord
         def construct_join_attributes(*records)
           ensure_mutable
 
-          association_primary_key = source_reflection.association_primary_key(reflection.klass)
+          reference = reflection.association_route.link.reference
 
-          if Array(association_primary_key) == reflection.klass.composite_query_constraints_list && !options[:source_type]
+          if reference.target_key.to_a == reflection.klass.composite_query_constraints_list && !options[:source_type]
             join_attributes = { source_reflection.name => records }
           else
-            assoc_pk_values = records.map { |record| record.read_attribute(association_primary_key) }
-            join_attributes = { source_reflection.foreign_key => assoc_pk_values }
+            target_values = records.map { |record| reference.target_key.value_of(record) }
+            join_attributes = { reference.reference_key.name => target_values }
           end
 
           if options[:source_type]

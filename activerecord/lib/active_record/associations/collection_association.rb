@@ -287,8 +287,8 @@ module ActiveRecord
         end
       end
 
-      def scope
-        scope = super
+      def scope(routes = nil)
+        scope = super(routes)
         scope.none! if null_scope?
         scope.default_order!(options[:default_order]) if options[:default_order].present?
         scope

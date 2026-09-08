@@ -3,28 +3,54 @@
 module ActiveRecord
   class PredicateBuilder
     class AssociationQueryValue # :nodoc:
-      def initialize(reflection, value)
+      def initialize(reflection, value, origin_model, route = nil)
         @reflection = reflection
         @value = value
+        @origin_model = origin_model
+        @association_route = route
       end
 
       def queries
-        key = ActiveRecord::Key.for(reflection.join_foreign_key)
-        id_list = ids
-        id_list = id_list.pluck(primary_key) if key.composite? && id_list.is_a?(Relation)
+        return queries_for_ids if @association_route
 
-        key.where_clauses(id_list)
+        if value.is_a?(Array) && value.none? { |record| record.is_a?(Base) || record.is_a?(Relation) }
+          @association_route = association_route_for(nil)
+          queries_for_ids
+        elsif value.is_a?(Array)
+          routes = value.group_by { |record| association_route_for(record) }
+          if routes.empty? || routes.one?
+            @association_route = routes.keys.first if routes.one?
+            queries_for_ids
+          else
+            routes.flat_map do |route, records|
+              self.class.new(reflection, records, @origin_model, route).queries
+            end
+          end
+        else
+          queries_for_ids
+        end
       end
 
       private
         attr_reader :reflection, :value
+
+        def queries_for_ids
+          key = association_route.origin_key
+          id_list = ids
+          id_list = id_list.pluck(primary_key) if key.composite? && id_list.is_a?(Relation)
+
+          key.where_clauses(id_list)
+        end
 
         def ids
           case value
           when Relation
             relation = value
             relation = relation.select(primary_key) if select_clause?
-            relation = relation.where(primary_type => polymorphic_name) if polymorphic_clause?
+            fixed_values = association_route.destination_fixed_values.reject do |column, _|
+              relation.where_values_hash.has_key?(column)
+            end
+            relation = relation.where(fixed_values) unless fixed_values.empty?
             relation
           when Array
             value.map { |v| convert_to_id(v) }
@@ -34,23 +60,27 @@ module ActiveRecord
         end
 
         def primary_key
-          reflection.join_primary_key
+          association_route.destination_key.name
         end
 
-        def primary_type
-          reflection.join_primary_type
+        def association_route
+          @association_route ||= association_route_for(value)
         end
 
-        def polymorphic_name
-          reflection.polymorphic_name
+        def association_route_for(target)
+          destination_class = case target
+          when Relation
+            target.model
+          when Base
+            target.class
+          else
+            reflection.klass
+          end
+          reflection.association_route_for_origin(@origin_model, destination_class || reflection.klass)
         end
 
         def select_clause?
           value.select_values.empty?
-        end
-
-        def polymorphic_clause?
-          primary_type && !value.where_values_hash.has_key?(primary_type)
         end
 
         def convert_to_id(value)

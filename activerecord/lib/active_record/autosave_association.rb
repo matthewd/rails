@@ -492,13 +492,8 @@ module ActiveRecord
           return unless (autosave && record.changed_for_autosave?) || _record_changed?(reflection, record, primary_key_value)
 
           unless reflection.through_reflection
-            foreign_key = ActiveRecord::Key.for(reflection.foreign_key)
-            primary_key_foreign_key_pairs = primary_key.zip(foreign_key)
-
-            primary_key_foreign_key_pairs.each do |primary_key, foreign_key|
-              association_id = read_attribute(primary_key)
-              record.write_attribute(foreign_key, association_id) unless record.read_attribute(foreign_key) == association_id
-            end
+            route = reflection.association_route_for_origin(self, record.class)
+            route.link.write_reference(record, self)
             association.set_inverse_instance(record)
           end
 
@@ -566,14 +561,7 @@ module ActiveRecord
             end
 
             if association.updated?
-              primary_key = ActiveRecord::Key.for(reflection.association_primary_key(record.class))
-              foreign_key = ActiveRecord::Key.for(reflection.foreign_key)
-
-              primary_key_foreign_key_pairs = primary_key.zip(foreign_key)
-              primary_key_foreign_key_pairs.each do |primary_key, foreign_key|
-                association_id = record.read_attribute(primary_key)
-                write_attribute(foreign_key, association_id) unless read_attribute(foreign_key) == association_id
-              end
+              association.association_route(record).link.write_reference(self, record)
               association.loaded!
             end
 

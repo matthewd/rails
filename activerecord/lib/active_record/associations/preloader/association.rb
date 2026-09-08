@@ -159,7 +159,7 @@ module ActiveRecord
 
         # The name of the key on the associated records
         def destination_key_name
-          reflection.join_primary_key(klass)
+          association_route.destination_key.name
         end
 
         def loader_query
@@ -239,7 +239,11 @@ module ActiveRecord
 
           # The name of the key on the model which declares the association
           def origin_key_name
-            reflection.join_foreign_key
+            association_route.origin_key.name
+          end
+
+          def association_route
+            @association_route ||= reflection.association_route_for_origin(owners.first, klass)
           end
 
           def associate_records_to_owner(owner, records)
@@ -294,8 +298,9 @@ module ActiveRecord
           def build_scope
             scope = klass.scope_for_association
 
-            if reflection.type && !reflection.through_reflection?
-              scope.where!(reflection.type => model.polymorphic_name)
+            unless reflection.through_reflection?
+              fixed_values = association_route.destination_fixed_values
+              scope.where!(fixed_values) unless fixed_values.empty?
             end
 
             scope.merge!(reflection_scope) unless reflection_scope.empty_scope?
