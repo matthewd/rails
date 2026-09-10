@@ -1,3 +1,8 @@
+*   Fix `find_by` with an associated record whose composite key includes an
+    array-valued column.
+
+    *Matthew Draper*
+
 *   Read PostgreSQL indexes and constraints from the table an unqualified name resolves to.
 
     `indexes`, `foreign_keys`, `check_constraints`, `unique_constraints` and
