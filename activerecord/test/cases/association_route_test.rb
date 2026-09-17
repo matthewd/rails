@@ -67,6 +67,20 @@ class AssociationRouteTest < ActiveRecord::TestCase
       class_name: "Sponsor"
   end
 
+  class ArrayRouteRecord < ActiveRecord::Base
+    self.table_name = "bigint_array"
+
+    belongs_to :same_row,
+      class_name: "AssociationRouteTest::ArrayRouteRecord",
+      foreign_key: :id,
+      optional: true
+    belongs_to :same_array,
+      class_name: "AssociationRouteTest::ArrayRouteRecord",
+      foreign_key: [:big_int_data_points],
+      primary_key: [:big_int_data_points],
+      optional: true
+  end
+
   def test_association_link_combines_constraints_with_the_reference
     reference = build_mapping(reference_key: :post_id, target_key: :id)
     constraints = build_mapping(reference_key: :account_id, target_key: :account_id)
@@ -428,6 +442,33 @@ class AssociationRouteTest < ActiveRecord::TestCase
     assert_same route, reflection.association_route_for_join(Client, destination_class: Firm)
   end
 
+  def test_belongs_to_assignment_uses_the_assigned_subclass_key
+    target_class = Class.new(Firm) do
+      def self.name = "AlternatePrimaryKeyFirm"
+
+      self.primary_key = :firm_id
+    end
+    firm = target_class.new(firm_id: 42)
+    client = Client.new
+
+    client.firm = firm
+
+    assert_equal 42, client.client_of
+
+    client.name = "Subclass key client"
+    client.save!(validate: false)
+    assert_equal client, Client.where(firm: firm).first
+    assert_equal client, Client.find_by(firm: firm)
+  end
+
+  def test_equivalent_belongs_to_routes_group_sti_values
+    post = Post.new(id: 1)
+    special_post = SpecialPost.new(id: 2)
+
+    assert_equal Comment.where(post_id: [post.id, special_post.id]).to_sql,
+      Comment.where(post: [post, special_post]).to_sql
+  end
+
   def test_routes_are_cached_by_concrete_query_constraints
     reflection = Client.reflect_on_association(:firm)
     first_class = Class.new(Client) do
@@ -644,6 +685,167 @@ class AssociationRouteTest < ActiveRecord::TestCase
     end
   end
 
+  def test_empty_association_array_predicate_is_false
+    assert_empty Client.where(firm: [])
+  end
+
+  def test_association_predicate_combines_scalar_ids_and_nil_in_either_order
+    firm = Firm.create!(name: "Predicate firm")
+    associated = Client.create!(name: "Associated client", firm: firm)
+    unassociated = Client.new(name: "Unassociated client")
+    unassociated.save!(validate: false)
+    expected = [associated, unassociated].sort_by(&:id)
+
+    assert_equal expected, Client.where(firm: [nil, firm.id]).order(:id).to_a
+    assert_equal expected, Client.where(firm: [firm.id, nil]).order(:id).to_a
+  end
+
+  def test_nil_association_predicate_preserves_scalar_and_composite_reference_shapes
+    [
+      [:post_id, :id, { "post_id" => nil }],
+      [[:post_id], [:id], { "post_id" => nil }],
+      [[:author_id, :post_id], [:author_id, :id], { "author_id" => nil, "post_id" => nil }],
+    ].each do |foreign_key, primary_key, expected|
+      reflection = ActiveRecord::Reflection.create(:belongs_to, :post, nil,
+        { class_name: "Post", foreign_key: foreign_key, primary_key: primary_key }, NullableRouteComment)
+      value = ActiveRecord::PredicateBuilder::AssociationQueryValue.new(reflection, nil, NullableRouteComment)
+
+      assert_equal [expected], value.queries
+    end
+  end
+
+  def test_nil_association_predicate_uses_only_the_reference
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "sponsors"
+
+      def self.name = "NilPredicateReference"
+
+      belongs_to :routed_ship,
+        class_name: "Ship",
+        foreign_key: :club_id,
+        primary_key: :pirate_id,
+        optional: true
+    end
+    reference = reference_class.create!(club_id: nil, sponsorable_type: "Present constraint")
+    reflection = reference_class.reflect_on_association(:routed_ship)
+    route = build_belongs_to_route(
+      reference: { reference_key: :club_id, target_key: :pirate_id },
+      constraints: { reference_key: :sponsorable_type, target_key: :name }
+    )
+
+    reflection.stub(:association_route, route) do
+      assert_includes reference_class.where(routed_ship: nil), reference
+      assert_includes reference_class.where(routed_ship: [nil]), reference
+
+      target = Ship.new(pirate_id: nil, name: reference.sponsorable_type)
+      assert_equal reference, reference_class.where(routed_ship: target).first
+      assert_equal reference, reference_class.find_by(routed_ship: target)
+    end
+  end
+
+  def test_scalar_association_predicate_uses_only_the_reference
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "sponsors"
+
+      def self.name = "ScalarPredicateReference"
+
+      belongs_to :routed_ship,
+        class_name: "Ship",
+        foreign_key: :club_id,
+        primary_key: :pirate_id,
+        optional: true
+    end
+    target = Ship.create!(pirate_id: 9_000_051, name: "Scalar predicate")
+    reference = reference_class.create!(club_id: target.pirate_id, sponsorable_type: "Different constraint")
+    reflection = reference_class.reflect_on_association(:routed_ship)
+    route = build_belongs_to_route(
+      reference: { reference_key: :club_id, target_key: :pirate_id },
+      constraints: { reference_key: :sponsorable_type, target_key: :name }
+    )
+
+    reflection.stub(:association_route, route) do
+      assert_equal reference, reference_class.where(routed_ship: target.pirate_id).first
+      assert_equal reference, reference_class.find_by(routed_ship: target.pirate_id)
+    end
+  end
+
+  def test_polymorphic_relation_predicate_uses_the_complete_match
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "sponsors"
+
+      def self.name = "ConstrainedPolymorphicReference"
+
+      belongs_to :subject,
+        polymorphic: true,
+        foreign_key: :club_id,
+        foreign_type: :sponsorable_type,
+        optional: true
+    end
+    post = Post.create!(title: "Polymorphic relation", body: "Polymorphic relation")
+    reference = reference_class.create!(club_id: post.id, sponsor_type: post.title, sponsorable_type: Post.polymorphic_name)
+    reflection = reference_class.reflect_on_association(:subject)
+
+    with_constraints(reflection, reference_key: :sponsor_type, target_key: :title) do
+      assert_equal [reference], reference_class.where(subject: Post.where(id: post.id)).to_a
+      assert_empty reference_class.where(subject: Post.none)
+    end
+  end
+
+  def test_empty_constrained_association_predicates_are_false
+    reflection = Comment.reflect_on_association(:post)
+    route = build_belongs_to_route(
+      reference: { reference_key: :post_id, target_key: :id },
+      constraints: { reference_key: :body, target_key: :title }
+    )
+
+    reflection.stub(:association_route, route) do
+      assert_empty Comment.where(post: [])
+      assert_empty Comment.where(post: Post.none)
+    end
+  end
+
+  def test_empty_association_predicate_is_false_for_array_constraint
+    skip unless current_adapter?(:PostgreSQLAdapter)
+
+    ArrayRouteRecord.create!(big_int_data_points: [])
+    reflection = ArrayRouteRecord.reflect_on_association(:same_row)
+
+    with_constraints(reflection, reference_key: :big_int_data_points, target_key: :big_int_data_points) do
+      assert_empty ArrayRouteRecord.where(same_row: [])
+      assert_empty ArrayRouteRecord.where(same_row: ArrayRouteRecord.none)
+    end
+  end
+
+  def test_normalized_single_column_match_preserves_array_valued_scalars
+    skip unless current_adapter?(:PostgreSQLAdapter)
+
+    record = ArrayRouteRecord.create!(big_int_data_points: [10, 20])
+    route = ArrayRouteRecord.reflect_on_association(:same_array).association_route
+
+    assert_not_predicate route.origin_key, :composite?
+    assert_not_predicate route.destination_key, :composite?
+    assert_equal [10, 20], route.origin_key.value_of(record)
+    assert_equal [10, 20], route.destination_key.value_of(record)
+    assert_equal record, record.same_array
+
+    record.association(:same_array).reset
+    ActiveRecord::Associations::Preloader.new(records: [record], associations: :same_array).call
+    assert_predicate record.association(:same_array), :loaded?
+    assert_equal record, record.same_array
+  end
+
+  def test_find_by_preserves_array_valued_query_constraint
+    skip unless current_adapter?(:PostgreSQLAdapter)
+
+    record = ArrayRouteRecord.create!(big_int_data_points: [10, 20])
+    reflection = ArrayRouteRecord.reflect_on_association(:same_row)
+
+    with_constraints(reflection, reference_key: :big_int_data_points, target_key: :big_int_data_points) do
+      assert_equal record, ArrayRouteRecord.where(same_row: record).first
+      assert_equal record, ArrayRouteRecord.find_by(same_row: record)
+    end
+  end
+
   def test_disable_joins_constraints_do_not_become_creation_defaults
     author = Author.create!(name: "Constrained author")
     post = Post.create!(author: author, title: "Constrained post", body: "Post body")
@@ -691,6 +893,13 @@ class AssociationRouteTest < ActiveRecord::TestCase
       reflection.stub(:association_route_constraints, constraints, &block)
     ensure
       reflection.clear_association_scope_cache unless reflection.polymorphic?
+    end
+
+    def build_belongs_to_route(reference:, constraints:)
+      reference = build_mapping(**reference)
+      constraints = build_mapping(**constraints)
+
+      ActiveRecord::AssociationRoute.new(link: ActiveRecord::AssociationLink.new(reference: reference, constraints: constraints))
     end
 
     def build_route(reference:, constraints:)
