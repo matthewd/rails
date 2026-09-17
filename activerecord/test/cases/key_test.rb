@@ -52,6 +52,115 @@ class KeyTest < ActiveRecord::TestCase
     assert(pk.columns.all?(&:frozen?))
   end
 
+  def test_map_retains_array_results_for_scalar_and_composite_keys
+    value = [10, 20]
+
+    assert_equal [value], Key.for(:payload).map { value }
+    assert_equal [value], Key.for([:payload]).map { value }
+    assert_empty Key.for(nil).map { flunk "Mapped a missing key" }
+  end
+
+  def test_map_value_returns_a_scalar_without_wrapping_it
+    value = [10, 20]
+    columns = []
+    result = Key.for(:payload).map_value do |column|
+      columns << column
+      value
+    end
+
+    assert_equal ["payload"], columns
+    assert_same value, result
+    assert_nil Key.for(:payload).map_value { nil }
+    assert_equal false, Key.for(:payload).map_value { false }
+  end
+
+  def test_map_value_preserves_composite_shape_and_component_values
+    value = [10, 20]
+    attributes = { "tenant_id" => 7, "payload" => value }
+    result = Key.for([:tenant_id, :payload]).map_value { |column| attributes.fetch(column) }
+
+    assert_equal [7, value], result
+    assert_same value, result.last
+    assert_equal [nil, false], Key.for([:missing, :disabled]).map_value { |column| column == "disabled" ? false : nil }
+  end
+
+  def test_map_value_preserves_singleton_composite_shape
+    value = [10, 20]
+    result = Key.for([:payload]).map_value { value }
+
+    assert_equal [value], result
+    assert_same value, result.first
+  end
+
+  def test_map_value_preserves_missing_and_empty_composite_shapes
+    assert_nil Key.for(nil).map_value { flunk "Mapped a missing key" }
+    assert_equal [], Key.for([]).map_value { flunk "Mapped an empty composite key" }
+  end
+
+  def test_map_value_supports_indexed_mapping_without_losing_shape
+    value = [10, 20]
+    cases = [
+      [:payload, [value], value],
+      [[:payload], [value], [value]],
+      [[:tenant_id, :payload], [7, value], [7, value]],
+      [[:payload, :payload], [nil, false], [nil, false]],
+      [nil, [], nil],
+      [[], [], []],
+    ]
+
+    cases.each do |name, values, expected|
+      key = Key.for(name)
+      columns = []
+      result = key.map_value.with_index do |column, index|
+        columns << column
+        values[index]
+      end
+
+      assert_equal key.columns, columns
+      if expected.nil?
+        assert_nil result
+      else
+        assert_equal expected, result
+      end
+      assert_same value, result if name == :payload
+    end
+  end
+
+  def test_transform_returns_a_frozen_scalar_key
+    key = Key.for(:id)
+    transformed = key.transform { |column| "parent_#{column}" }
+
+    assert_instance_of Key::Single, transformed
+    assert_equal "parent_id", transformed.name
+    assert_equal "id", key.name
+    assert_predicate transformed, :frozen?
+    assert_predicate transformed.name, :frozen?
+  end
+
+  def test_transform_preserves_composite_key_shape
+    key = Key.for([:tenant_id, :id])
+    aliases = { "tenant_id" => :account_id, "id" => :post_id }
+    transformed = key.transform { |column| aliases.fetch(column) }
+
+    assert_instance_of Key::Composite, transformed
+    assert_equal ["account_id", "post_id"], transformed.name
+    assert_equal ["tenant_id", "id"], key.name
+    assert_predicate transformed, :frozen?
+    assert_predicate transformed.columns, :frozen?
+    assert(transformed.columns.all?(&:frozen?))
+    assert_equal ["post_id"], Key.for([:id]).transform { :post_id }.name
+  end
+
+  def test_transform_preserves_missing_and_empty_composite_keys
+    key = Key.for(nil)
+    assert_same key, key.transform { flunk "Transformed a missing key" }
+    transformed = Key.for([]).transform { flunk "Transformed an empty composite key" }
+
+    assert_instance_of Key::Composite, transformed
+    assert_empty transformed.columns
+    assert_predicate transformed, :frozen?
+  end
+
   def test_where_hash_for_simple_key
     assert_equal({ "id" => 5 }, Key.for("id").where_hash(5))
     assert_equal({ "id" => [1, 2, 3] }, Key.for("id").where_hash([1, 2, 3]))

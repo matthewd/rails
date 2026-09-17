@@ -65,6 +65,17 @@ module ActiveRecord
       raise NotImplementedError
     end
 
+    # Yields column names and returns a scalar or tuple according to the key's
+    # shape. Unlike Enumerable#map, a scalar result is not wrapped in an Array.
+    def map_value
+      raise NotImplementedError
+    end
+
+    # Returns a key of the same shape with transformed column names.
+    def transform(&)
+      self.class.new(map_value(&)).freeze
+    end
+
     def value_of(record)
       raise NotImplementedError
     end
@@ -101,6 +112,11 @@ module ActiveRecord
 
       def cast(value, model)
         model.type_for_attribute(@name).cast(value)
+      end
+
+      def map_value
+        return enum_for(:map_value) unless block_given?
+        yield @name
       end
 
       def value_of(record)
@@ -147,6 +163,10 @@ module ActiveRecord
         casted
       end
 
+      def map_value(&)
+        @columns.map(&)
+      end
+
       def value_of(record)
         @columns.map { |column| record.read_attribute(column) }
       end
@@ -173,6 +193,15 @@ module ActiveRecord
       def initialize
         @name = nil
         @columns = [].freeze
+      end
+
+      def map_value
+        return enum_for(:map_value) unless block_given?
+        nil
+      end
+
+      def transform
+        self
       end
     end
   end
