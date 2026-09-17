@@ -140,7 +140,11 @@ module ActiveRecord
       end
 
       def cast(values, model)
-        @columns.zip(values).map! { |column, value| model.type_for_attribute(column).cast(value) }
+        casted = []
+        @columns.zip(values) do |column, value|
+          casted << model.type_for_attribute(column).cast(value)
+        end
+        casted
       end
 
       def value_of(record)

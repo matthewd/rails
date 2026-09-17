@@ -97,6 +97,43 @@ class KeyTest < ActiveRecord::TestCase
     assert_equal 5, Topic.primary_key_definition.cast("5", Topic)
   end
 
+  def test_composite_cast_preserves_input_and_pads_or_truncates_to_the_key
+    key = Key.for([:author_id, :id])
+    values = ["1", "3"].freeze
+
+    assert_equal [1, 3], key.cast(values, Cpk::Book)
+    assert_equal ["1", "3"], values
+    assert_equal [1, nil], key.cast(["1"], Cpk::Book)
+    assert_equal [nil, nil], key.cast([], Cpk::Book)
+    assert_equal [1, 3], key.cast(["1", "3", "unused"], Cpk::Book)
+  end
+
+  def test_composite_cast_accepts_enumerables_without_reading_past_the_key
+    key = Key.for([:author_id, :id])
+    values = Enumerator.new do |yielder|
+      yielder << "1"
+      yielder << "3"
+      flunk "Read beyond the key's columns"
+    end
+
+    assert_equal [1, 3], key.cast(values, Cpk::Book)
+    assert_equal [1, nil], key.cast(["1"].each, Cpk::Book)
+    assert_equal [nil, nil], key.cast([].each, Cpk::Book)
+  end
+
+  def test_composite_cast_preserves_singleton_and_empty_key_shapes
+    assert_equal [5], Key.for([:id]).cast(["5"], Topic)
+    assert_equal [5], Key.for([:id]).cast(["5"].each, Topic)
+    assert_equal [], Key.for([]).cast(Enumerator.new { flunk "Read values for an empty key" }, Topic)
+  end
+
+  def test_composite_cast_uses_each_column_type_and_resolves_aliases
+    key = Key.for([:id, :approved, :heading])
+
+    assert_equal [12, false, "123"], key.cast(["12", false, 123], Topic)
+    assert_equal [12, false, nil], key.cast(["12", false, nil].each, Topic)
+  end
+
   def test_value_of_reads_attributes_from_record
     book = Cpk::Book.new(id: [1, 3])
     assert_equal [1, 3], Cpk::Book.primary_key_definition.value_of(book)
