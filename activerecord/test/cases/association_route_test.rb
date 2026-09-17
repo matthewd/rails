@@ -230,6 +230,23 @@ class AssociationRouteTest < ActiveRecord::TestCase
       primary_key: :boolean_status
   end
 
+  class TouchRouteBook < ActiveRecord::Base
+    self.table_name = "books"
+
+    default_scope { where(name: "Touch route target") }
+  end
+
+  class SingletonTouchRouteReference < ActiveRecord::Base
+    self.table_name = "books"
+
+    belongs_to :routed_book,
+      class_name: "AssociationRouteTest::TouchRouteBook",
+      foreign_key: [:boolean_status],
+      primary_key: [:boolean_status],
+      touch: true,
+      optional: true
+  end
+
   class ArrayRouteRecord < ActiveRecord::Base
     self.table_name = "bigint_array"
 
@@ -1180,6 +1197,151 @@ class AssociationRouteTest < ActiveRecord::TestCase
     assert_nothing_raised { origin.save! }
   end
 
+  def test_historical_polymorphic_route_resolves_an_aliased_type
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "comments"
+
+      def self.name = "AliasedTypeRoutedReference"
+
+      alias_attribute :routed_type, :author_type
+      belongs_to :routed_target,
+        polymorphic: true,
+        foreign_key: :author_id,
+        foreign_type: :routed_type,
+        counter_cache: :legacy_comments_count,
+        optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_target)
+    route = reflection.association_route(destination_class: Post)
+    assert_equal({ "routed_type" => Post.polymorphic_name }, route.fixed_reference_values)
+
+    target = Post.create!(title: "Aliased route", body: "Aliased route")
+    target.update_column(:legacy_comments_count, 1)
+    reference_class.insert_all!([
+      {
+        post_id: target.id,
+        body: "Aliased route reference",
+        author_id: target.id,
+        author_type: Post.polymorphic_name,
+      }
+    ])
+    reference = reference_class.find_by!(body: "Aliased route reference")
+
+    reference.author_id = nil
+    reference.save!
+
+    assert_equal 0, target.reload.legacy_comments_count
+  end
+
+  def test_counter_decrement_reads_an_aliased_reference_before_last_save
+    reference_class = Class.new(NullableRouteComment) do
+      def self.name = "AliasedCounterReference"
+
+      alias_attribute :route_fk, :post_id
+      belongs_to :routed_post,
+        class_name: "Post",
+        foreign_key: :route_fk,
+        counter_cache: :legacy_comments_count,
+        optional: true
+    end
+    original = Post.create!(title: "Original", body: "Original")
+    replacement = Post.create!(title: "Replacement", body: "Replacement")
+    reference = reference_class.create!(routed_post: original, body: "Counter reference")
+    assert_equal 1, original.reload.legacy_comments_count
+
+    reference.update!(routed_post: replacement)
+
+    assert_equal 0, original.reload.legacy_comments_count
+    assert_equal 1, replacement.reload.legacy_comments_count
+  end
+
+  def test_touch_reads_an_aliased_reference_before_the_change
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "sponsors"
+      def self.name = "AliasedTouchReference"
+
+      alias_attribute :route_fk, :club_id
+      belongs_to :routed_ship,
+        class_name: "Ship",
+        primary_key: :pirate_id,
+        foreign_key: :route_fk,
+        touch: true,
+        optional: true
+    end
+    original = Ship.create!(pirate_id: 9_000_801, name: "Original")
+    replacement = Ship.create!(pirate_id: 9_000_802, name: "Replacement")
+    reference = reference_class.create!(routed_ship: original)
+    original_time = Time.utc(2000, 1, 1)
+    original.update_column(:updated_at, original_time)
+
+    reference.update!(routed_ship: replacement)
+
+    assert_operator original.reload.updated_at, :>, original_time
+  end
+
+  def test_touch_preserves_false_in_a_singleton_composite_reference
+    assert_touch_preserves_singleton_reference(false)
+  end
+
+  def test_touch_preserves_nil_in_a_singleton_composite_reference
+    assert_touch_preserves_singleton_reference(nil)
+  end
+
+  def test_touch_does_not_resolve_unchanged_missing_polymorphic_reference
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "sponsors"
+
+      def self.name = "TouchRoutedReference"
+
+      belongs_to :routed_target,
+        polymorphic: true,
+        foreign_key: :sponsorable_id,
+        foreign_type: :sponsorable_type,
+        touch: true,
+        optional: true
+    end
+    target = Member.create!(name: "Touch route target")
+    reference_class.insert_all!([
+      { sponsorable_id: target.id, sponsorable_type: "MissingRoutedClass" }
+    ])
+    reference = reference_class.find_by!(sponsorable_type: "MissingRoutedClass")
+
+    reference.sponsorable_type = Member.polymorphic_name
+
+    assert_nothing_raised { reference.save! }
+
+    reference_class.insert_all!([
+      { club_id: 2, sponsorable_id: nil, sponsorable_type: "MissingRoutedClass" }
+    ])
+    reference = reference_class.find_by!(club_id: 2)
+    assert_nothing_raised { reference.update!(routed_target: target) }
+  end
+
+  def test_partial_composite_reference_does_not_decrement_counters
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "sponsors"
+
+      def self.name = "CompositeCounterReference"
+
+      belongs_to :routed_post,
+        class_name: "Post",
+        foreign_key: [:club_id, :sponsorable_id],
+        primary_key: [:author_id, :id],
+        counter_cache: :legacy_comments_count,
+        optional: true
+    end
+    post = Post.create!(author_id: 9_000_001, title: "Composite counter", body: "Composite counter")
+    reference = reference_class.create!(club_id: 9_000_000, sponsorable_id: nil)
+    association = reference.association(:routed_post)
+    counter_changes = []
+
+    association.stub(:update_counters_via_scope, ->(_klass, _values, by, _route) { counter_changes << by }) do
+      reference.update!(club_id: post.author_id, sponsorable_id: post.id)
+    end
+
+    assert_equal [1], counter_changes
+  end
+
   def test_inverse_polymorphic_route_keeps_constraints
     member = ConstrainedRouteMember.create!(member_type_id: 42)
     Sponsor.create!(club_id: 41, sponsorable: member)
@@ -1707,6 +1869,95 @@ class AssociationRouteTest < ActiveRecord::TestCase
     end
   end
 
+  def test_query_constraints_identify_counter_cache_destinations
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "comments"
+      self.inheritance_column = nil
+
+      def self.name = "ConstrainedCounterReference"
+
+      belongs_to :routed_post,
+        class_name: "Post",
+        foreign_key: :author_id,
+        primary_key: :author_id,
+        counter_cache: :legacy_comments_count,
+        optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_post)
+    route = build_belongs_to_route(
+      reference: { reference_key: :author_id, target_key: :author_id },
+      constraints: { reference_key: :deleted_at, target_key: :deleted_at }
+    )
+    old_post = Post.create!(author_id: 9_000_101, title: "Old constrained post", body: "Old")
+    decoy = Post.create!(author_id: old_post.author_id, title: "Decoy constrained post", body: "Decoy", deleted_at: Time.utc(2000))
+    new_post = Post.create!(author_id: 9_000_102, title: "New constrained post", body: "New", deleted_at: Time.utc(2001))
+    old_post.update_column(:legacy_comments_count, 1)
+    decoy.update_column(:legacy_comments_count, 1)
+    reference_class.insert_all!([
+      {
+        post_id: -1,
+        author_id: old_post.author_id,
+        body: "Constrained reference",
+        deleted_at: old_post.deleted_at,
+      }
+    ])
+    reference = reference_class.find_by!(author_id: old_post.author_id, deleted_at: nil)
+
+    reflection.stub(:association_route, route) do
+      assert_equal reference, reference_class.where(routed_post: old_post).first
+      assert_equal reference, reference_class.find_by(routed_post: old_post)
+
+      reference.author_id = new_post.author_id
+      reference.deleted_at = new_post.deleted_at
+      reference.save!
+    end
+
+    assert_equal 0, old_post.reload.legacy_comments_count
+    assert_equal 1, decoy.reload.legacy_comments_count
+    assert_equal 1, new_post.reload.legacy_comments_count
+  end
+
+  def test_query_constraints_identify_touch_destinations
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "sponsors"
+
+      def self.name = "ConstrainedTouchReference"
+
+      belongs_to :routed_ship,
+        class_name: "Ship",
+        foreign_key: :club_id,
+        primary_key: :pirate_id,
+        touch: true,
+        optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_ship)
+    route = build_belongs_to_route(
+      reference: { reference_key: :club_id, target_key: :pirate_id },
+      constraints: { reference_key: :sponsorable_type, target_key: :name }
+    )
+    original_time = Time.utc(2000)
+    decoy = Ship.create!(name: "Decoy constrained ship", pirate_id: 9_000_111, updated_at: original_time)
+    old_ship = Ship.create!(name: "Old constrained ship", pirate_id: decoy.pirate_id, updated_at: original_time)
+    new_ship = Ship.create!(name: "New constrained ship", pirate_id: 9_000_112, updated_at: original_time)
+    reference_class.insert_all!([
+      {
+        club_id: old_ship.pirate_id,
+        sponsorable_id: -1,
+        sponsorable_type: old_ship.name,
+      }
+    ])
+    reference = reference_class.find_by!(sponsorable_type: old_ship.name)
+
+    reflection.stub(:association_route, route) do
+      reference.club_id = new_ship.pirate_id
+      reference.sponsorable_type = new_ship.name
+      reference.save!
+    end
+
+    assert_operator old_ship.reload.updated_at, :>, original_time
+    assert_equal original_time, decoy.reload.updated_at
+  end
+
   def test_through_deletion_uses_the_complete_match
     post = ConstrainedRoutePost.create!(title: "Constrained through", body: "Constrained through")
     first = Ship.create!(pirate_id: 9_000_301, name: "First constrained ship")
@@ -1884,6 +2135,20 @@ class AssociationRouteTest < ActiveRecord::TestCase
         [ActiveRecord::Reflection.create(:belongs_to, :sponsorable, nil,
           { polymorphic: true, inverse_of: false }, Sponsor), Member],
       ]
+    end
+
+    def assert_touch_preserves_singleton_reference(old_value)
+      original = TouchRouteBook.create!(boolean_status: old_value)
+      replacement = TouchRouteBook.create!(boolean_status: true)
+      reference = SingletonTouchRouteReference.create!(name: "Touch route reference", boolean_status: old_value)
+      original_time = Time.utc(2000, 1, 1)
+      original.update_column(:updated_at, original_time)
+      replacement.update_column(:updated_at, original_time)
+
+      reference.update!(boolean_status: true)
+
+      assert_operator original.reload.updated_at, :>, original_time
+      assert_operator replacement.reload.updated_at, :>, original_time
     end
 
     def each_statement_mode(&)

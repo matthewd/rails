@@ -84,12 +84,14 @@ module ActiveRecord
         else
           model_was = klass
         end
-
         foreign_key_was = foreign_key.map_value { |key| owner.attribute_before_last_save(key) }
         foreign_key_was = nil if foreign_key.composite? && !foreign_key_was.all?
 
         if foreign_key_was && model_was < ActiveRecord::Base
-          update_counters_via_scope(model_was, foreign_key_was, -1)
+          route = reflection.association_route(origin_class: owner.class, destination_class: model_was)
+          aliases = owner.class.attribute_aliases
+          origin_key_was = route.origin_key.map_value { |key| owner.attribute_before_last_save(aliases[key] || key) }
+          update_counters_via_scope(model_was, origin_key_was, -1, route)
         end
       end
 
@@ -125,14 +127,14 @@ module ActiveRecord
             if target && !stale_target?
               target.increment!(reflection.counter_cache_column, by, touch: reflection.options[:touch])
             else
-              update_counters_via_scope(klass, foreign_key.value_of(owner), by)
+              route = association_route
+              update_counters_via_scope(klass, route.origin_key.value_of(owner), by, route)
             end
           end
         end
 
-        def update_counters_via_scope(klass, values, by)
-          primary_key = ActiveRecord::Key.for(primary_key(klass))
-          scope = klass.all_queries_scope.where!(primary_key.where_hash(values))
+        def update_counters_via_scope(klass, values, by, route)
+          scope = klass.all_queries_scope.where!(route.destination_key.where_hash(values))
           scope.update_counters(reflection.counter_cache_column => by, touch: reflection.options[:touch])
         end
 
@@ -170,10 +172,6 @@ module ActiveRecord
           if foreign_type && (force || !owner.read_attribute(foreign_type).nil?)
             owner.write_attribute(foreign_type, nil)
           end
-        end
-
-        def primary_key(klass)
-          reflection.association_primary_key(klass)
         end
 
         def foreign_key_present?
