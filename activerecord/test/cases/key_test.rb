@@ -396,6 +396,52 @@ class KeyTest < ActiveRecord::TestCase
     assert_equal 7, Topic.primary_key_definition.value_of(topic)
   end
 
+  def test_value_of_applies_a_scalar_normalizer
+    topic = Topic.new(id: 7)
+    key = Key.for(:id)
+
+    assert_equal "7", key.value_of(topic, [:to_s.to_proc])
+    assert_equal 7, key.value_of(topic, nil)
+    assert_equal 7, key.value_of(topic, [nil])
+    assert_equal 7, topic.id
+  end
+
+  def test_value_of_applies_normalizers_by_column_position
+    book = Cpk::Book.new(id: [1, 3])
+    key = Cpk::Book.primary_key_definition
+
+    assert_equal [1, "3"], key.value_of(book, [nil, :to_s.to_proc])
+    assert_equal [11, 3], key.value_of(book, [->(value) { value + 10 }, nil])
+    assert_equal [1, 3], key.value_of(book, nil)
+    assert_equal [1, 3], book.id
+
+    repeated_key = Key.for([:id, :id])
+    assert_equal ["7", 7], repeated_key.value_of(Topic.new(id: 7), [:to_s.to_proc, nil])
+  end
+
+  def test_value_of_preserves_falsy_normalizer_results
+    topic = Topic.new(id: 7)
+    assert_nil Key.for(:id).value_of(topic, [->(_) { nil }])
+    assert_equal false, Key.for(:id).value_of(topic, [->(_) { false }])
+
+    book = Cpk::Book.new(id: [1, 3])
+    assert_equal [nil, false], Cpk::Book.primary_key_definition.value_of(book, [->(_) { nil }, ->(_) { false }])
+  end
+
+  def test_value_of_normalizes_array_valued_components_without_changing_key_shape
+    topic = Topic.new
+    value = [10, 20]
+    normalizer = ->(component) { component + [30] }
+
+    topic.stub(:read_attribute, value) do
+      assert_same value, Key.for(:payload).value_of(topic, [nil])
+      assert_equal [10, 20, 30], Key.for(:payload).value_of(topic, [normalizer])
+      assert_equal [[10, 20, 30]], Key.for([:payload]).value_of(topic, [normalizer])
+      assert_equal [], Key.for([]).value_of(topic, [])
+    end
+    assert_equal [10, 20], value
+  end
+
   def test_model_exposes_definition
     assert_not_predicate Topic.primary_key_definition, :composite?
     assert_equal "id", Topic.primary_key_definition.name

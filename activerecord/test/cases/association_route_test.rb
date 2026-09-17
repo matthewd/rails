@@ -38,10 +38,42 @@ class AssociationRouteTest < ActiveRecord::TestCase
     has_one :parents_mentors_parent, through: :parent, source: :mentors_parent
   end
 
+  class NullableRoutePost < ActiveRecord::Base
+    self.table_name = "posts"
+    self.inheritance_column = nil
+    serialize :type, coder: YAML, type: Hash
+
+    has_many :nullable_route_comments,
+      class_name: "AssociationRouteTest::NullableRouteComment",
+      foreign_key: :post_id
+  end
+
   class NullableRouteComment < ActiveRecord::Base
     self.table_name = "comments"
     self.inheritance_column = nil
     serialize :type, coder: YAML, type: Hash
+  end
+
+  class SingletonRoutePost < NullableRoutePost
+    self.primary_key = [:id]
+  end
+
+  class SingletonRouteComment < NullableRouteComment
+    belongs_to :scalar_reference,
+      class_name: "AssociationRouteTest::SingletonRoutePost",
+      foreign_key: :post_id,
+      primary_key: [:id],
+      optional: true
+    belongs_to :composite_reference,
+      class_name: "AssociationRouteTest::NullableRoutePost",
+      foreign_key: [:post_id],
+      primary_key: :id,
+      optional: true
+    belongs_to :composite_reference_and_target,
+      class_name: "AssociationRouteTest::SingletonRoutePost",
+      foreign_key: [:post_id],
+      primary_key: [:id],
+      optional: true
   end
 
   class DoubleAliasedRouteComment < NullableRouteComment
@@ -49,6 +81,23 @@ class AssociationRouteTest < ActiveRecord::TestCase
     alias_attribute :post_id, :author_id
 
     belongs_to :routed_post, class_name: "Post", foreign_key: :route_fk, optional: true
+  end
+
+  class AliasedCompositeRouteBook < Cpk::Book
+    alias_attribute :route_author_id, :author_id
+    alias_attribute :route_book_id, :id
+  end
+
+  class AliasedCompositeRouteReview < ActiveRecord::Base
+    self.table_name = "cpk_reviews"
+    alias_attribute :route_author_id, :author_id
+    alias_attribute :route_book_id, :number
+
+    belongs_to :routed_book,
+      class_name: "AssociationRouteTest::AliasedCompositeRouteBook",
+      primary_key: [:route_author_id, :route_book_id],
+      foreign_key: [:route_author_id, :route_book_id],
+      optional: true
   end
 
   class RoutedItem < Item
@@ -65,6 +114,104 @@ class AssociationRouteTest < ActiveRecord::TestCase
       -> { order(:id) },
       as: :sponsorable,
       class_name: "Sponsor"
+  end
+
+  class ConstrainedRoutePost < ActiveRecord::Base
+    self.table_name = "posts"
+    self.inheritance_column = nil
+
+    has_many :route_links,
+      class_name: "AssociationRouteTest::ConstrainedRouteLink",
+      foreign_key: :sponsorable_id
+    has_many :route_ships, through: :route_links, source: :ship
+  end
+
+  class StringKeyRouteShip < Ship
+    attribute :pirate_id, :string
+  end
+
+  class ConstrainedRouteLink < ActiveRecord::Base
+    self.table_name = "sponsors"
+
+    belongs_to :ship,
+      class_name: "Ship",
+      foreign_key: :club_id,
+      primary_key: :pirate_id,
+      optional: true
+  end
+
+  class AliasedThroughRouteLink < ActiveRecord::Base
+    self.table_name = "sponsors"
+
+    alias_attribute :route_fk, :club_id
+    belongs_to :ship,
+      class_name: "Ship",
+      foreign_key: :route_fk,
+      primary_key: :pirate_id,
+      optional: true
+  end
+
+  class RemappedThroughRouteLink < AliasedThroughRouteLink
+    alias_attribute :route_fk, :sponsor_id
+  end
+
+  class AliasedThroughRoutePost < ActiveRecord::Base
+    self.table_name = "posts"
+    self.inheritance_column = nil
+
+    has_many :aliased_route_links,
+      class_name: "AssociationRouteTest::RemappedThroughRouteLink",
+      foreign_key: :sponsorable_id
+    has_many :aliased_route_ships,
+      through: :aliased_route_links,
+      source: :ship
+  end
+
+  class InverseThroughRouteComment < ActiveRecord::Base
+    self.table_name = "comments"
+    self.inheritance_column = nil
+
+    alias_attribute :route_fk, :post_id
+    alias_attribute :route_type, :author_type
+  end
+
+  class InverseThroughRoutePost < ActiveRecord::Base
+    self.table_name = "posts"
+    self.inheritance_column = nil
+
+    alias_attribute :route_fk, :author_id
+    alias_attribute :route_type, :type
+    has_many :inverse_route_comments,
+      class_name: "AssociationRouteTest::InverseThroughRouteComment",
+      foreign_key: :route_fk
+    has_many :polymorphic_route_comments,
+      as: :commentable,
+      class_name: "AssociationRouteTest::InverseThroughRouteComment",
+      foreign_key: :route_fk,
+      foreign_type: :route_type
+  end
+
+  class InverseThroughRouteAuthor < ActiveRecord::Base
+    self.table_name = "authors"
+
+    has_many :inverse_route_posts,
+      class_name: "AssociationRouteTest::InverseThroughRoutePost",
+      foreign_key: :author_id
+    has_many :inverse_route_comments,
+      through: :inverse_route_posts,
+      source: :inverse_route_comments
+    has_many :polymorphic_route_comments,
+      through: :inverse_route_posts,
+      source: :polymorphic_route_comments
+  end
+
+  class BooleanRouteBook < ActiveRecord::Base
+    self.table_name = "books"
+
+    has_many :boolean_route_comments,
+      class_name: "Comment",
+      foreign_key: :author_type,
+      primary_key: :boolean_status
   end
 
   class ArrayRouteRecord < ActiveRecord::Base
@@ -385,6 +532,26 @@ class AssociationRouteTest < ActiveRecord::TestCase
       assert shared
     end
 
+    def test_match_normalizers_can_be_built_in_another_ractor
+      model = Class.new(ActiveRecord::Base) do
+        self.table_name = "companies"
+        def self.name = "RactorRouteModel"
+      end
+      ActiveSupport::Ractors.with(unshareable_proc_action: :raise) do
+        model.load_schema
+      end
+      route = build_belongs_to_route(
+        reference: { reference_key: :name, target_key: :id },
+        constraints: { reference_key: nil, target_key: nil }
+      )
+
+      values = Ractor.new(route, model) do |route, model|
+        origin, destination = route.match_normalizers(origin_class: model, destination_class: model)
+        [origin.first.call(123), destination.first.call(456), origin.first.call(nil), destination.first.call(false)]
+      end.value
+
+      assert_equal ["123", "456", nil, "false"], values
+    end
   end
 
   def test_equivalent_inverse_polymorphic_routes_share_identity
@@ -467,6 +634,42 @@ class AssociationRouteTest < ActiveRecord::TestCase
 
     assert_equal Comment.where(post_id: [post.id, special_post.id]).to_sql,
       Comment.where(post: [post, special_post]).to_sql
+  end
+
+  def test_association_reads_do_not_resolve_aliases_twice
+    target = Post.create!(title: "Target", body: "Target")
+    unrelated = Post.create!(title: "Unrelated", body: "Unrelated")
+    row = NullableRouteComment.create!(post_id: target.id, author_id: unrelated.id, body: "Aliased reference")
+    reference = DoubleAliasedRouteComment.find(row.id)
+
+    assert_equal target.id, reference.read_attribute(:route_fk)
+    assert_equal target, reference.routed_post
+    assert_equal [reference], DoubleAliasedRouteComment.where(routed_post: target).to_a
+    assert_equal reference, DoubleAliasedRouteComment.find_by(routed_post: target)
+    assert_equal [reference.id], DoubleAliasedRouteComment.joins(:routed_post).where(posts: { id: target.id }).pluck(:id)
+    assert_equal target, DoubleAliasedRouteComment.eager_load(:routed_post).find(reference.id).routed_post
+
+    reference.association(:routed_post).reset
+    ActiveRecord::Associations::Preloader.new(records: [reference], associations: :routed_post).call
+
+    assert_equal target, reference.routed_post
+  end
+
+  def test_composite_route_keys_preserve_aliases
+    book = AliasedCompositeRouteBook.create!(id: [9_000_821, 9_000_822])
+    review = AliasedCompositeRouteReview.create!(routed_book: book)
+    route = review.association(:routed_book).association_route
+
+    assert_equal ["route_author_id", "route_book_id"], route.origin_key.name
+    assert_equal ["route_author_id", "route_book_id"], route.destination_key.name
+    assert_equal book, review.reload.routed_book
+    assert_equal [review], AliasedCompositeRouteReview.where(routed_book: book).to_a
+    assert_equal review, AliasedCompositeRouteReview.find_by(routed_book: book)
+
+    review.reload
+    ActiveRecord::Associations::Preloader.new(records: [review], associations: :routed_book).call
+
+    assert_equal book, review.routed_book
   end
 
   def test_routes_are_cached_by_concrete_query_constraints
@@ -585,6 +788,57 @@ class AssociationRouteTest < ActiveRecord::TestCase
     assert_equal [["firm_id", "id"]], routes.last.link.reference.to_a
   end
 
+  def test_single_column_match_keys_load_scalar_and_composite_declarations
+    post = SingletonRoutePost.create!(title: "Single-column target", body: "Single-column target")
+    reference = SingletonRouteComment.create!(post_id: post.id_value, body: "Single-column reference")
+
+    [:scalar_reference, :composite_reference, :composite_reference_and_target].each do |name|
+      reflection = SingletonRouteComment.reflect_on_association(name)
+      target = reflection.klass.find_by!(id: post.id_value)
+      route = reflection.association_route
+
+      assert_not_predicate route.origin_key, :composite?
+      assert_not_predicate route.destination_key, :composite?
+      assert_equal post.id_value, route.origin_key.value_of(reference)
+      assert_equal post.id_value, route.destination_key.value_of(target)
+      assert_equal target, reference.public_send(name)
+
+      reference.association(name).reset
+      ActiveRecord::Associations::Preloader.new(records: [reference], associations: name).call
+      assert_predicate reference.association(name), :loaded?
+      assert_equal target, reference.public_send(name)
+    end
+  end
+
+  def test_through_preloading_handles_inherited_owner_reflections
+    owner_class = Class.new(SelfRoutedCompany) do
+      def self.name = "InheritedSelfRoutedCompany"
+    end
+    mentor = SelfRoutedCompany.create!(name: "Mentor")
+    parent = SelfRoutedCompany.create!(name: "Parent", mentor: mentor)
+    owner = owner_class.create!(name: "Owner", parent: parent)
+
+    ActiveRecord::Associations::Preloader.new(records: [owner], associations: [:parents_mentor, :scoped_parents_mentor]).call
+
+    assert_predicate owner.association(:parents_mentor), :loaded?
+    assert_predicate owner.association(:scoped_parents_mentor), :loaded?
+    assert_equal mentor, owner.parents_mentor
+    assert_equal mentor, owner.scoped_parents_mentor
+  end
+
+  def test_polymorphic_inverse_through_route_uses_the_destination_class_aliases
+    owner = InverseThroughRouteAuthor.create!(name: "Polymorphic inverse through")
+    post = InverseThroughRoutePost.create!(author_id: owner.id, title: "Through", body: "Through")
+    comment = InverseThroughRouteComment.create!(
+      post_id: post.id, author_type: InverseThroughRoutePost.polymorphic_name, body: "Through comment"
+    )
+
+    assert_equal [comment], owner.polymorphic_route_comments.to_a
+    assert_equal [comment], InverseThroughRouteAuthor.preload(:polymorphic_route_comments).find(owner.id).polymorphic_route_comments
+    assert_equal [owner.id], InverseThroughRouteAuthor.joins(:polymorphic_route_comments).where(comments: { id: comment.id }).pluck(:id)
+    assert_equal [comment], InverseThroughRouteAuthor.eager_load(:polymorphic_route_comments).find(owner.id).polymorphic_route_comments
+  end
+
   def test_join_resolves_an_inverse_polymorphic_route_from_the_relation_model
     item = items(:dvd)
     tagging = taggings(:godfather)
@@ -611,6 +865,37 @@ class AssociationRouteTest < ActiveRecord::TestCase
     item = RoutedItem.find(items(:dvd).id)
 
     assert_equal item.id, item.routed_item.id
+  end
+
+  def test_through_route_uses_the_concrete_intermediate_class_aliases
+    owner = AliasedThroughRoutePost.create!(title: "Aliased through", body: "Aliased through")
+    ship = Ship.create!(pirate_id: 9_000_411, name: "Aliased through ship")
+    RemappedThroughRouteLink.create!(
+      sponsorable_id: owner.id,
+      club_id: -1,
+      sponsor_id: ship.pirate_id
+    )
+
+    assert_equal [ship], owner.aliased_route_ships.to_a
+    assert_equal [ship], AliasedThroughRoutePost.where(id: owner.id).preload(:aliased_route_ships).first.aliased_route_ships
+    assert_equal [owner.id], AliasedThroughRoutePost.joins(:aliased_route_ships).where(ships: { id: ship.id }).pluck(:id)
+  end
+
+  def test_inverse_through_route_uses_the_destination_class_aliases
+    owner = InverseThroughRouteAuthor.create!(name: "Inverse through")
+    post = InverseThroughRoutePost.create!(author_id: owner.id, title: "Inverse through", body: "Inverse through")
+    comment = InverseThroughRouteComment.create!(post_id: post.id, author_id: -1, body: "Inverse through comment")
+
+    assert_equal [comment], owner.inverse_route_comments.to_a
+    assert_equal [comment], InverseThroughRouteAuthor.where(id: owner.id).preload(:inverse_route_comments).first.inverse_route_comments
+    assert_equal [owner.id], InverseThroughRouteAuthor.joins(:inverse_route_comments).where(comments: { id: comment.id }).pluck(:id)
+  end
+
+  def test_empty_polymorphic_through_collection_can_be_cleared
+    tag = Tag.create!(id: 9_000_001, name: "Unused route")
+
+    assert_empty tag.tagged_posts
+    assert_nothing_raised { tag.tagged_posts.clear }
   end
 
   def test_has_one_through_autosave_does_not_route_from_the_outer_owner
@@ -683,6 +968,269 @@ class AssociationRouteTest < ActiveRecord::TestCase
         assert_same statement, reflection.association_scope_cache(Sponsor, routes)
       end
     end
+  end
+
+  def test_internal_query_constraints_apply_to_reads_but_not_writes
+    reflection = Post.reflect_on_association(:comments)
+    route = build_route(
+      reference: { reference_key: :post_id, target_key: :id },
+      constraints: { reference_key: :body, target_key: :title }
+    )
+    post = posts(:welcome)
+    matching = Comment.create!(post_id: post.id, body: post.title)
+    mismatching = Comment.create!(post_id: post.id, body: "Not the post title")
+
+    reflection.stub(:association_route, route) do
+      post.comments.load
+      post.title = mismatching.body
+      assert_not_predicate post.association(:comments), :stale_target?
+      post.title = matching.body
+      post.association(:comments).reset
+
+      assert_equal [matching], post.comments.where(id: [matching.id, mismatching.id]).to_a
+
+      built = post.comments.build
+      assert_equal post.id, built.post_id
+      assert_nil built.body
+      assert_equal "Manual", post.comments.where(body: "Manual").build.body
+      assert_equal "Explicit", post.comments.create_with(body: "Explicit").build.body
+
+      preloaded = Post.where(id: post.id).preload(:comments).first
+      assert_includes preloaded.comments, matching
+      assert_not_includes preloaded.comments, mismatching
+
+      assert Post.joins(:comments).where(posts: { id: post.id }, comments: { id: matching.id }).exists?
+      assert_not Post.joins(:comments).where(posts: { id: post.id }, comments: { id: mismatching.id }).exists?
+    end
+  end
+
+  def test_origin_reference_completeness_ignores_query_constraints
+    link = ActiveRecord::AssociationLink.new(
+      reference: build_mapping(reference_key: [:author_id, :post_id], target_key: [:author_id, :id]),
+      constraints: build_mapping(reference_key: :body, target_key: :title)
+    )
+    forward = ActiveRecord::AssociationRoute.new(link: link)
+    reverse = ActiveRecord::AssociationRoute::Reverse.new(link: link)
+    reference = Comment.new(author_id: 7, post_id: 42, body: nil)
+    target = Post.new(author_id: 7, id: 42, title: nil)
+
+    assert forward.origin_reference_complete?(reference)
+    assert reverse.origin_reference_complete?(target)
+    reference.author_id = nil
+    target.author_id = nil
+    assert_not forward.origin_reference_complete?(reference)
+    assert_not reverse.origin_reference_complete?(target)
+  end
+
+  def test_origin_reference_completeness_retains_false_values
+    route = BooleanRouteBook.reflect_on_association(:boolean_route_comments).association_route
+
+    assert route.origin_reference_complete?(BooleanRouteBook.new(boolean_status: false))
+    assert_not route.origin_reference_complete?(BooleanRouteBook.new(boolean_status: nil))
+  end
+
+  def test_key_values_match_normalizes_and_checks_the_complete_mapping
+    link = ActiveRecord::AssociationLink.new(
+      reference: build_mapping(reference_key: :post_id, target_key: :id),
+      constraints: build_mapping(reference_key: :body, target_key: :author_id)
+    )
+
+    [ActiveRecord::AssociationRoute, ActiveRecord::AssociationRoute::Reverse].each_with_index do |route_class, index|
+      reference = Comment.new(post_id: 42, body: "7")
+      target = Post.new(id: 42, author_id: 7)
+      origin, destination = index.zero? ? [reference, target] : [target, reference]
+      route = route_class.new(link: link)
+
+      assert route.key_values_match?(origin, destination)
+      reference.body = "8"
+      assert_not route.key_values_match?(origin, destination)
+      reference.body = "7"
+      reference.post_id = 43
+      assert_not route.key_values_match?(origin, destination)
+    end
+  end
+
+  def test_matching_origins_prepare_each_class_once_and_preserve_order
+    string_link_class = Class.new(ConstrainedRouteLink) do
+      attribute :club_id, :string
+    end
+    preparations = []
+    route_class = Class.new(ActiveRecord::AssociationRoute) do
+      define_method(:match_normalizers) do |**classes|
+        preparations << classes[:origin_class]
+        super(**classes)
+      end
+    end
+    route = route_class.new(link: ActiveRecord::AssociationLink.new(
+      reference: build_mapping(reference_key: :club_id, target_key: :pirate_id)
+    ))
+    first = ConstrainedRouteLink.new(club_id: 42)
+    second = string_link_class.new(club_id: "42")
+    miss = ConstrainedRouteLink.new(club_id: 43)
+    destination = Ship.new(pirate_id: 42)
+    reader = destination.method(:read_attribute)
+    reads = []
+
+    destination.stub(:read_attribute, ->(column) { reads << column; reader.call(column) }) do
+      assert_equal [first, second, first], route.each_matching_origin([first, second, miss, first], destination).to_a
+    end
+
+    assert_equal [ConstrainedRouteLink, string_link_class], preparations
+    assert_equal ["pirate_id", "pirate_id"], reads
+  end
+
+  def test_matching_origins_do_not_retain_values_between_enumerations
+    route = ConstrainedRouteLink.reflect_on_association(:ship).association_route
+    first = ConstrainedRouteLink.new(club_id: 42)
+    second = ConstrainedRouteLink.new(club_id: 43)
+    destination = Ship.new(pirate_id: 42)
+    matches = route.each_matching_origin([first, second], destination)
+
+    assert_equal [first], matches.to_a
+    destination.pirate_id = 43
+    assert_equal [second], matches.to_a
+  end
+
+  def test_matching_origins_preserve_nil_and_false_destination_values
+    route = build_belongs_to_route(
+      reference: { reference_key: :boolean_status, target_key: :boolean_status },
+      constraints: { reference_key: nil, target_key: nil }
+    )
+    origins = [nil, false, false].map { |value| BooleanRouteBook.new(boolean_status: value) }
+
+    [nil, false].each do |value|
+      destination = BooleanRouteBook.new(boolean_status: value)
+      reader = destination.method(:read_attribute)
+      reads = []
+      destination.stub(:read_attribute, ->(column) { reads << column; reader.call(column) }) do
+        assert_equal origins.select { |origin| origin.boolean_status == value }, route.each_matching_origin(origins, destination).to_a
+      end
+      assert_equal ["boolean_status"], reads
+    end
+  end
+
+  def test_matching_origins_check_the_complete_mapping_in_both_directions
+    link = ActiveRecord::AssociationLink.new(
+      reference: build_mapping(reference_key: :post_id, target_key: :id),
+      constraints: build_mapping(reference_key: :body, target_key: :author_id)
+    )
+    [ActiveRecord::AssociationRoute, ActiveRecord::AssociationRoute::Reverse].each do |route_class|
+      route = route_class.new(link: link)
+      if route_class == ActiveRecord::AssociationRoute
+        destination = Post.new(id: 42, author_id: 7)
+        origins = [Comment.new(post_id: 42, body: "7"), Comment.new(post_id: 42, body: "8"), Comment.new(post_id: 43, body: "7")]
+      else
+        destination = Comment.new(post_id: 42, body: "7")
+        origins = [Post.new(id: 42, author_id: 7), Post.new(id: 42, author_id: 8), Post.new(id: 43, author_id: 7)]
+      end
+
+      assert_equal [origins.first], route.each_matching_origin(origins, destination).to_a
+    end
+  end
+
+  def test_match_normalizers_are_absent_for_matching_types
+    route = Client.reflect_on_association(:firm).association_route
+
+    assert_equal [nil, nil], route.match_normalizers(origin_class: Client, destination_class: Firm)
+  end
+
+  def test_match_normalizers_convert_each_column_pair_independently
+    route = build_belongs_to_route(
+      reference: { reference_key: :body, target_key: :id },
+      constraints: { reference_key: :author_id, target_key: :author_id }
+    )
+    origin_normalizers, destination_normalizers = route.match_normalizers(origin_class: Comment, destination_class: Post)
+    origin = Comment.new(author_id: 7, body: "42")
+    destination = Post.new(author_id: 7, id: 42)
+
+    assert_equal 2, origin_normalizers.length
+    assert_equal 2, destination_normalizers.length
+    assert_nil origin_normalizers.first
+    assert_nil destination_normalizers.first
+    assert_equal [7, "42"], route.origin_key.value_of(origin, origin_normalizers)
+    assert_equal [7, "42"], route.destination_key.value_of(destination, destination_normalizers)
+    assert_predicate origin_normalizers, :frozen?
+    assert_predicate destination_normalizers, :frozen?
+  end
+
+  def test_match_normalizers_preserve_nil_and_convert_false
+    route = BooleanRouteBook.reflect_on_association(:boolean_route_comments).association_route
+    origin_normalizers, destination_normalizers = route.match_normalizers(origin_class: BooleanRouteBook, destination_class: Comment)
+    origin = BooleanRouteBook.new(boolean_status: false)
+    destination = Comment.new(author_type: "false")
+
+    assert_equal "false", route.origin_key.value_of(origin, origin_normalizers)
+    assert_equal "false", route.destination_key.value_of(destination, destination_normalizers)
+    assert_nil origin_normalizers.first.call(nil)
+    assert_nil destination_normalizers.first.call(nil)
+  end
+
+  def test_match_normalizers_allow_endpoint_specific_conversions_using_type_objects
+    types_seen = []
+    parse_integer = ->(value) { value&.to_i }
+    link = ActiveRecord::AssociationLink.new(reference: build_mapping(reference_key: :body, target_key: :id))
+    comment = Comment.new(body: "42")
+    post = Post.new(id: 42)
+
+    [ActiveRecord::AssociationRoute, ActiveRecord::AssociationRoute::Reverse].each_with_index do |base_route_class, index|
+      route_class = Class.new(base_route_class) do
+        define_method(:normalizers_for_types) do |origin_type, destination_type|
+          types_seen << [origin_type, destination_type]
+          [origin_type.type == :text ? parse_integer : nil, destination_type.type == :text ? parse_integer : nil]
+        end
+        private :normalizers_for_types
+      end
+      origin, destination = index.zero? ? [comment, post] : [post, comment]
+      route = route_class.new(link: link)
+      origin_normalizers, destination_normalizers = route.match_normalizers(origin_class: origin.class, destination_class: destination.class)
+
+      assert_same origin.class.type_for_attribute(route.origin_key.name), types_seen[index].first
+      assert_same destination.class.type_for_attribute(route.destination_key.name), types_seen[index].last
+      assert_equal 42, route.origin_key.value_of(origin, origin_normalizers)
+      assert_equal 42, route.destination_key.value_of(destination, destination_normalizers)
+      assert_nil index.zero? ? destination_normalizers : origin_normalizers
+    end
+  end
+
+  def test_preloader_keeps_false_reference_values_after_type_conversion
+    book = BooleanRouteBook.create!(boolean_status: false)
+    comment = Comment.create!(post_id: -1, body: "Boolean route", author_type: "false")
+
+    ActiveRecord::Associations::Preloader.new(records: [book], associations: :boolean_route_comments).call
+
+    assert_equal [comment], book.boolean_route_comments
+  end
+
+  def test_preloader_converts_each_match_key_pair_independently
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "comments"
+      self.inheritance_column = nil
+
+      def self.name = "TypedRouteComment"
+
+      belongs_to :routed_post,
+        class_name: "Post",
+        foreign_key: :body,
+        primary_key: :id,
+        optional: true
+    end
+    post = Post.create!(author_id: 9_000_201, title: "Typed route", body: "Typed route")
+    reference = reference_class.create!(post_id: -1, author_id: post.author_id, body: post.id.to_s)
+    reflection = reference_class.reflect_on_association(:routed_post)
+    route = build_belongs_to_route(
+      reference: { reference_key: :body, target_key: :id },
+      constraints: { reference_key: :author_id, target_key: :author_id }
+    )
+
+    reflection.stub(:association_route, route) do
+      ActiveRecord::Associations::Preloader.new(
+        records: [reference],
+        associations: :routed_post,
+        available_records: [post]
+      ).call
+    end
+
+    assert_equal post, reference.routed_post
   end
 
   def test_empty_association_array_predicate_is_false
@@ -860,6 +1408,137 @@ class AssociationRouteTest < ActiveRecord::TestCase
       scope = author.association(:no_joins_comments).scope
       assert_equal [comment], scope.to_a
       assert_not scope.scope_for_create.key?("body")
+    end
+  end
+
+  def test_through_deletion_uses_the_complete_match
+    post = ConstrainedRoutePost.create!(title: "Constrained through", body: "Constrained through")
+    first = Ship.create!(pirate_id: 9_000_301, name: "First constrained ship")
+    second = Ship.create!(pirate_id: first.pirate_id, name: "Second constrained ship")
+    first_link = ConstrainedRouteLink.create!(sponsorable_id: post.id, club_id: first.pirate_id, sponsor_type: first.name)
+    second_link = ConstrainedRouteLink.create!(sponsorable_id: post.id, club_id: second.pirate_id, sponsor_type: second.name)
+    reflection = ConstrainedRouteLink.reflect_on_association(:ship)
+
+    with_constraints(reflection, reference_key: :sponsor_type, target_key: :name) do
+      assert_equal [first, second], post.route_ships.order(:id).to_a
+      post.route_links.load
+      post.route_ships.delete(first)
+    end
+
+    assert_not ConstrainedRouteLink.exists?(first_link.id)
+    assert ConstrainedRouteLink.exists?(second_link.id)
+    assert_equal [second_link], post.route_links.to_a
+  end
+
+  def test_deleting_an_unsaved_through_target_preserves_other_join_records
+    post = Post.new(title: "Unsaved through", body: "Unsaved through")
+    first = Tag.new(name: "First unsaved tag")
+    second = Tag.new(name: "Second unsaved tag")
+
+    post.tags.concat(first, second)
+    assert_equal [first, second], post.taggings.map(&:tag)
+
+    post.tags.delete(first)
+
+    assert_equal [second], post.taggings.map(&:tag)
+  end
+
+  def test_sti_source_type_deletion_updates_the_loaded_through_cache
+    author = Author.create!(name: "STI source type author")
+    author.books.load
+    hardback = BestHardback.create!
+    author.best_hardbacks << hardback
+    join = author.books.find { |book| book.format_record == hardback }
+
+    author.best_hardbacks.delete(hardback)
+
+    assert_not Book.exists?(join.id)
+    assert_not_includes author.books, join
+  end
+
+  def test_through_deletion_matches_loaded_keys_after_type_conversion
+    post = ConstrainedRoutePost.create!(title: "Typed through", body: "Typed through")
+    first = Ship.create!(pirate_id: 9_000_321, name: "First typed ship")
+    second = Ship.create!(pirate_id: first.pirate_id, name: "Second typed ship")
+    first_link = ConstrainedRouteLink.create!(
+      sponsorable_id: post.id,
+      sponsorable_type: first.id.to_s,
+      club_id: first.pirate_id
+    )
+    second_link = ConstrainedRouteLink.create!(
+      sponsorable_id: post.id,
+      sponsorable_type: second.id.to_s,
+      club_id: second.pirate_id
+    )
+    reflection = ConstrainedRouteLink.reflect_on_association(:ship)
+    route = build_belongs_to_route(
+      reference: { reference_key: :club_id, target_key: :pirate_id },
+      constraints: { reference_key: :sponsorable_type, target_key: :id }
+    )
+
+    post.route_links.load
+    reflection.stub(:association_route, route) do
+      post.route_ships.delete(first)
+    end
+
+    assert_not ConstrainedRouteLink.exists?(first_link.id)
+    assert ConstrainedRouteLink.exists?(second_link.id)
+    assert_equal [second_link], post.route_links.to_a
+  end
+
+  def test_through_matching_uses_the_actual_destination_record_type
+    post = ConstrainedRoutePost.create!(title: "Typed through", body: "Typed through")
+    ship = StringKeyRouteShip.create!(pirate_id: 9_000_841, name: "String key ship")
+    link = ConstrainedRouteLink.create!(sponsorable_id: post.id, club_id: ship.pirate_id)
+    post.route_links.load
+
+    assert_equal :integer, Ship.type_for_attribute("pirate_id").type
+    assert_equal :string, ship.class.type_for_attribute("pirate_id").type
+
+    post.route_ships.delete(ship)
+
+    assert_not ConstrainedRouteLink.exists?(link.id)
+    assert_empty post.route_links
+  end
+
+  def test_through_matching_uses_each_loaded_candidate_class
+    string_link_class = Class.new(ConstrainedRouteLink) do
+      def self.name = "StringThroughRouteLink"
+      attribute :club_id, :string
+    end
+    post = ConstrainedRoutePost.create!(title: "Mixed through", body: "Mixed through")
+    ship = Ship.create!(pirate_id: 9_000_842, name: "Mixed through ship")
+    first = ConstrainedRouteLink.create!(sponsorable_id: post.id, club_id: ship.pirate_id)
+    second = string_link_class.create!(sponsorable_id: post.id, club_id: ship.pirate_id)
+    decoy = ConstrainedRouteLink.create!(sponsorable_id: post.id, club_id: ship.pirate_id + 1)
+    post.association(:route_links).target = [first, second, decoy]
+
+    assert_equal :integer, first.class.type_for_attribute("club_id").type
+    assert_equal :string, second.class.type_for_attribute("club_id").type
+
+    post.route_ships.delete(ship)
+
+    assert_equal [decoy], post.route_links.to_a
+    assert_not ConstrainedRouteLink.exists?(first.id)
+    assert_not ConstrainedRouteLink.exists?(second.id)
+    assert ConstrainedRouteLink.exists?(decoy.id)
+  end
+
+  def test_through_matching_preserves_component_comparison_across_key_shapes
+    post = ConstrainedRoutePost.create!(title: "Through key shapes", body: "Through key shapes")
+    ship = Ship.create!(pirate_id: 9_000_851, name: "Through key shapes")
+    link = ConstrainedRouteLink.create!(sponsorable_id: post.id, club_id: ship.pirate_id)
+    post.route_links.load
+    reflection = ConstrainedRouteLink.reflect_on_association(:ship)
+
+    [[:club_id, [:pirate_id]], [[:club_id], :pirate_id]].each do |reference_key, target_key|
+      route = build_belongs_to_route(
+        reference: { reference_key: reference_key, target_key: target_key },
+        constraints: { reference_key: nil, target_key: nil }
+      )
+      reflection.stub(:association_route, route) do
+        assert_equal [link], post.association(:route_ships).send(:through_records_for, ship)
+      end
     end
   end
 

@@ -81,7 +81,9 @@ module ActiveRecord
       self.class.new(map_value(&)).freeze
     end
 
-    def value_of(record)
+    # Reads attributes with optional per-column normalizers. A nil list or entry
+    # leaves the corresponding values unchanged.
+    def value_of(record, normalizers = nil)
       raise NotImplementedError
     end
 
@@ -124,8 +126,10 @@ module ActiveRecord
         yield @name
       end
 
-      def value_of(record)
-        record.read_attribute(@name)
+      def value_of(record, normalizers = nil)
+        value = record.read_attribute(@name)
+        normalizer = normalizers&.first
+        normalizer ? normalizer.call(value) : value
       end
 
       def expects_multiple_ids?(value)
@@ -172,8 +176,16 @@ module ActiveRecord
         @columns.map(&)
       end
 
-      def value_of(record)
-        @columns.map { |column| record.read_attribute(column) }
+      def value_of(record, normalizers = nil)
+        if normalizers
+          Array.new(@columns.length) do |index|
+            value = record.read_attribute(@columns[index])
+            normalizer = normalizers[index]
+            normalizer ? normalizer.call(value) : value
+          end
+        else
+          @columns.map { |column| record.read_attribute(column) }
+        end
       end
 
       # A single composite id is itself an Array, so several ids are an Array of
