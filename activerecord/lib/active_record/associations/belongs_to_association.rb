@@ -145,20 +145,30 @@ module ActiveRecord
         end
 
         def replace_keys(record, force: false)
-          target_key_values = record ? ActiveRecord::Key.for(primary_key(record.class)).map { |col| record.read_attribute(col) } : []
-          owner_key_values = foreign_key.map { |fk| owner.read_attribute(fk) }
+          if record.nil? && foreign_key_partially_overlaps_primary_key?
+            clear_reference_with_shared_primary_key(force: force)
+          else
+            route = reflection.association_route(origin_class: owner.class, destination_class: record&.class)
+            route.write(owner, record, force: force)
+          end
+        end
 
-          return if !force && owner_key_values == target_key_values
+        def foreign_key_partially_overlaps_primary_key?
+          primary_key = owner.class.primary_key_definition
+          shared_count = foreign_key.count { |key| primary_key.include?(key) }
+          shared_count > 0 && shared_count < foreign_key.size
+        end
 
-          owner_pk = ActiveRecord::Key.for(owner.class.primary_key)
+        def clear_reference_with_shared_primary_key(force:)
+          primary_key = owner.class.primary_key_definition
 
-          # Preserve shared primary key columns only if another foreign key
-          # column can be cleared to disassociate the record.
-          preserve_owner_pk = record.nil? && foreign_key.any? { |key| !owner_pk.include?(key) }
+          foreign_key.each do |key|
+            next if primary_key.include?(key)
+            owner.write_attribute(key, nil)
+          end
 
-          foreign_key.each_with_index do |key, index|
-            next if preserve_owner_pk && owner_pk.include?(key)
-            owner.write_attribute(key, target_key_values[index])
+          if foreign_type && (force || !owner.read_attribute(foreign_type).nil?)
+            owner.write_attribute(foreign_type, nil)
           end
         end
 

@@ -3,6 +3,9 @@
 module ActiveRecord
   # The writable reference and query-only mappings between associated records.
   class AssociationLink # :nodoc:
+    EMPTY_FIXED_VALUES = {}.freeze
+    private_constant :EMPTY_FIXED_VALUES
+
     attr_reader :reference, :reference_key, :constraints, :match
 
     def initialize(reference: nil, reference_key: reference&.reference_key, constraints: Key::Mapping.empty)
@@ -12,6 +15,39 @@ module ActiveRecord
       @match = (constraints + reference).normalize if reference
       freeze
     end
+
+    def reference_values(target_record, fixed_values: EMPTY_FIXED_VALUES)
+      each_reference_value(target_record, fixed_values).to_h
+    end
+
+    def reference_needs_update?(reference_record, target_record, fixed_values: EMPTY_FIXED_VALUES)
+      if reference_key.all? { |column| reference_record.has_attribute?(column) }
+        return true if each_reference_value(target_record, EMPTY_FIXED_VALUES).any? { |column, value|
+          reference_record.read_attribute(column) != value
+        }
+      end
+
+      fixed_values.any? { |column, value| reference_record.read_attribute(column) != value }
+    end
+
+    def write_reference(reference_record, target_record, fixed_values: EMPTY_FIXED_VALUES, force: true)
+      each_reference_value(target_record, fixed_values) do |column, value|
+        next if !force && reference_record.read_attribute(column) == value
+        reference_record.write_attribute(column, value)
+      end
+    end
+
+    private
+      def each_reference_value(target_record, fixed_values, &)
+        return enum_for(__method__, target_record, fixed_values) unless block_given?
+
+        target_columns = reference.target_key.columns if target_record
+
+        reference_key.each_with_index do |column, index|
+          yield column, target_record&.read_attribute(target_columns[index])
+        end
+        fixed_values.each(&)
+      end
   end
 
   # A resolved association link, viewed from one reflection endpoint.
@@ -85,6 +121,10 @@ module ActiveRecord
       reference_origin_key.all? { |column| !origin.read_attribute(column).nil? }
     end
 
+    def reference_needs_update?(origin, destination)
+      @link.reference_needs_update?(origin, destination, fixed_values: @fixed_reference_values)
+    end
+
     def each_reference(&block)
       @reference_pairs.each(&block)
     end
@@ -95,6 +135,11 @@ module ActiveRecord
 
     def destination_fixed_values
       EMPTY_FIXED_VALUES
+    end
+
+    def write(origin, destination, force: true)
+      @link.write_reference(origin, destination,
+        fixed_values: @fixed_reference_values, force: force)
     end
 
     private
@@ -118,8 +163,17 @@ module ActiveRecord
   end
 
   class AssociationRoute::Reverse < AssociationRoute # :nodoc:
+    def reference_needs_update?(origin, destination)
+      @link.reference_needs_update?(destination, origin, fixed_values: @fixed_reference_values)
+    end
+
     def destination_fixed_values
       fixed_reference_values
+    end
+
+    def write(origin, destination, force: true)
+      @link.write_reference(destination, origin,
+        fixed_values: @fixed_reference_values, force: force)
     end
 
     private

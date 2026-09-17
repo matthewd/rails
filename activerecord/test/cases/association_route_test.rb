@@ -83,6 +83,11 @@ class AssociationRouteTest < ActiveRecord::TestCase
     belongs_to :routed_post, class_name: "Post", foreign_key: :route_fk, optional: true
   end
 
+  class DoubleAliasedTypeRouteComment < NullableRouteComment
+    alias_attribute :routed_type, :author_type
+    alias_attribute :author_type, :person_type
+  end
+
   class AliasedCompositeRouteBook < Cpk::Book
     alias_attribute :route_author_id, :author_id
     alias_attribute :route_book_id, :id
@@ -105,6 +110,17 @@ class AssociationRouteTest < ActiveRecord::TestCase
       through: :tagging,
       source: :taggable,
       source_type: "Item"
+  end
+
+  class InverseAliasedRouteComment < ActiveRecord::Base
+    self.table_name = "comments"
+    self.inheritance_column = nil
+
+    alias_attribute :route_fk, :post_id
+  end
+
+  class InverseRemappedRouteComment < InverseAliasedRouteComment
+    alias_attribute :route_fk, :author_id
   end
 
   class ConstrainedRouteMember < ActiveRecord::Base
@@ -601,12 +617,127 @@ class AssociationRouteTest < ActiveRecord::TestCase
     end
   end
 
+  def test_polymorphic_route_writes_nil_without_a_destination_class
+    reflection = Sponsor.reflect_on_association(:sponsorable)
+    reference = Sponsor.new(sponsorable_id: 42, sponsorable_type: "MissingClass")
+
+    reflection.stub(:klass, -> { flunk "Tried to infer a polymorphic destination" }) do
+      route = reflection.association_route
+      assert_same route, reflection.association_route
+      assert_equal "sponsorable_id", route.reference_origin_key.name
+      assert_equal({ "sponsorable_id" => nil }, route.link.reference_values(nil))
+
+      route.write(reference, nil)
+      assert_nil reference.sponsorable_id
+      assert_nil reference.sponsorable_type
+
+      bound_route = reflection.association_route(destination_class: Member)
+      assert_equal [["sponsorable_id", "id"]], bound_route.link.reference.to_a
+      bound_route.write(reference, Member.new)
+      assert_nil reference.sponsorable_id
+      assert_equal Member.polymorphic_name, reference.sponsorable_type
+    end
+  end
+
   def test_runtime_reflection_keeps_its_resolved_join_route
     association = Client.new.association(:firm)
     route = association.association_route
     reflection = ActiveRecord::Reflection::RuntimeReflection.new(association.reflection, association, route)
 
     assert_same route, reflection.association_route_for_join(Client, destination_class: Firm)
+  end
+
+  def test_route_writes_only_the_physical_reference_record
+    reflection = Client.reflect_on_association(:firm)
+    route = reflection.association_route
+    client = Client.new
+    firm = Firm.new(id: 42)
+
+    route.write(client, firm)
+
+    assert_equal 42, client.client_of
+    assert_equal 42, firm.id
+  end
+
+  def test_route_writes_and_clears_references_in_both_directions
+    link = ActiveRecord::AssociationLink.new(
+      reference: build_mapping(reference_key: [:sponsorable_id, :club_id], target_key: [:id, :member_type_id]),
+      constraints: build_mapping(reference_key: :sponsor_type, target_key: :name)
+    )
+
+    [ActiveRecord::AssociationRoute, ActiveRecord::AssociationRoute::Reverse].each_with_index do |route_class, index|
+      reference = Sponsor.new(sponsorable_id: 1, club_id: 2, sponsorable_type: "Preserved type", sponsor_type: "Preserved constraint")
+      target = Member.new(id: 42, member_type_id: 7, name: "Target constraint")
+      target_attributes = target.attributes
+      route = route_class.new(link: link, fixed_reference_values: { "sponsorable_type" => Member.polymorphic_name })
+      origin, destination = index.zero? ? [reference, target] : [target, reference]
+
+      route.write(origin, destination)
+
+      assert_equal 42, reference.sponsorable_id
+      assert_equal 7, reference.club_id
+      assert_equal Member.polymorphic_name, reference.sponsorable_type
+      assert_equal "Preserved constraint", reference.sponsor_type
+      assert_equal target_attributes, target.attributes
+
+      origin, destination = index.zero? ? [reference, nil] : [nil, reference]
+      route.write(origin, destination)
+
+      assert_nil reference.sponsorable_id
+      assert_nil reference.club_id
+      assert_equal Member.polymorphic_name, reference.sponsorable_type
+      assert_equal "Preserved constraint", reference.sponsor_type
+      assert_equal target_attributes, target.attributes
+    end
+  end
+
+  def test_route_write_is_unconditional_unless_requested_otherwise
+    reference = Client.new(client_of: "042")
+    target = Firm.new(id: 42)
+    route = Client.reflect_on_association(:firm).association_route
+
+    route.write(reference, target, force: false)
+    assert_equal "042", reference.client_of_before_type_cast
+
+    route.write(reference, target)
+    assert_equal 42, reference.client_of_before_type_cast
+
+    reference.freeze
+    assert_nothing_raised { route.write(reference, target, force: false) }
+    assert_raises(FrozenError) { route.write(reference, target) }
+  end
+
+  def test_nil_route_write_clears_shared_primary_keys_without_compatibility_policy
+    route = build_belongs_to_route(
+      reference: { reference_key: [:id, :club_id], target_key: [:id, :member_type_id] },
+      constraints: { reference_key: nil, target_key: nil }
+    )
+    reference = Sponsor.new(id: 42, club_id: 7)
+
+    route.write(reference, nil)
+
+    assert_nil reference.id
+    assert_nil reference.club_id
+  end
+
+  def test_belongs_to_build_applies_scope_values_for_its_reference_key
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "comments"
+      self.inheritance_column = nil
+
+      def self.name = "ScopedReferenceKeyComment"
+
+      belongs_to :routed_parent,
+        -> { where(post_id: 42) },
+        class_name: "Comment",
+        foreign_key: :post_id,
+        optional: true
+    end
+    reference = reference_class.new
+
+    built = reference.association(:routed_parent).build(post_id: 7)
+
+    assert_equal 42, built.post_id
   end
 
   def test_belongs_to_assignment_uses_the_assigned_subclass_key
@@ -636,6 +767,85 @@ class AssociationRouteTest < ActiveRecord::TestCase
       Comment.where(post: [post, special_post]).to_sql
   end
 
+  def test_belongs_to_route_uses_the_concrete_reference_class_aliases
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "comments"
+      self.inheritance_column = nil
+
+      def self.name = "AliasedRouteComment"
+
+      alias_attribute :route_id, :post_id
+      belongs_to :routed_post,
+        class_name: "Post",
+        foreign_key: :route_id,
+        optional: true,
+        inverse_of: false
+    end
+    subclass = Class.new(reference_class) do
+      def self.name = "RemappedRouteComment"
+
+      alias_attribute :route_id, :author_id
+    end
+    unrelated = Post.create!(title: "Unrelated", body: "Unrelated")
+    target = Post.create!(title: "Target", body: "Target")
+    replacement = Post.create!(title: "Replacement", body: "Replacement")
+    reference = subclass.new(post_id: unrelated.id, author_id: target.id, body: "Reference")
+
+    assert_equal target, reference.routed_post
+
+    reference.routed_post = replacement
+    reference.save!
+
+    assert_equal unrelated.id, reference.post_id
+    assert_equal replacement.id, reference.author_id
+    assert_equal reference, subclass.find_by(routed_post: replacement)
+    assert_equal [reference], subclass.where(routed_post: replacement).to_a
+    assert_equal [reference.id], subclass.joins(:routed_post).where(posts: { id: replacement.id }).pluck(:id)
+    assert_equal replacement, subclass.eager_load(:routed_post).find(reference.id).routed_post
+
+    base = reference_class.create!(post_id: target.id, author_id: unrelated.id, body: "Base reference")
+    reference.association(:routed_post).reset
+    ActiveRecord::Associations::Preloader.new(records: [base, reference], associations: :routed_post).call
+
+    assert_equal target, base.routed_post
+    assert_equal replacement, reference.routed_post
+  end
+
+  def test_inverse_route_uses_the_concrete_origin_class_aliases
+    origin_class = Class.new(NullableRoutePost) do
+      def self.name = "AliasedRoutePost"
+
+      alias_attribute :route_key, :id
+      has_many :routed_comments,
+        class_name: "AssociationRouteTest::InverseAliasedRouteComment",
+        foreign_key: :route_fk,
+        primary_key: :route_key,
+        inverse_of: false
+    end
+    subclass = Class.new(origin_class) do
+      def self.name = "RemappedRoutePost"
+
+      alias_attribute :route_key, :author_id
+    end
+    owner = subclass.create!(
+      id: 9_000_401,
+      author_id: 9_000_402,
+      title: "Inverse alias",
+      body: "Inverse alias"
+    )
+    comment = InverseAliasedRouteComment.create!(post_id: owner.author_id, body: "Inverse alias comment")
+    remapped = InverseRemappedRouteComment.new(body: "Remapped inverse alias")
+    owner.association(:routed_comments).send(:set_owner_attributes, remapped)
+
+    assert_equal owner.author_id, owner.routed_comments.build.post_id
+    assert_equal owner.author_id, remapped.author_id
+    assert_nil remapped.post_id
+    assert_equal [comment], owner.routed_comments.reload.to_a
+    joined = subclass.where(id: owner.id).joins(:routed_comments)
+    assert_predicate joined, :exists?, joined.to_sql
+    assert_equal [comment], subclass.eager_load(:routed_comments).find(owner.id).routed_comments
+  end
+
   def test_association_reads_do_not_resolve_aliases_twice
     target = Post.create!(title: "Target", body: "Target")
     unrelated = Post.create!(title: "Unrelated", body: "Unrelated")
@@ -653,6 +863,26 @@ class AssociationRouteTest < ActiveRecord::TestCase
     ActiveRecord::Associations::Preloader.new(records: [reference], associations: :routed_post).call
 
     assert_equal target, reference.routed_post
+  end
+
+  def test_route_writes_do_not_resolve_fixed_value_aliases_twice
+    owner_class = Class.new(NullableRoutePost) do
+      def self.name = "AliasedTypeRouteOwner"
+
+      has_many :routed_comments,
+        as: :commentable,
+        class_name: "AssociationRouteTest::DoubleAliasedTypeRouteComment",
+        foreign_key: :post_id,
+        foreign_type: :routed_type
+    end
+    owner = owner_class.new(id: 42)
+    record = DoubleAliasedTypeRouteComment.new
+
+    owner.association(:routed_comments).send(:set_owner_attributes, record)
+
+    assert_equal owner.id, record.post_id
+    assert_equal owner.class.polymorphic_name, record.routed_type
+    assert_nil record.person_type
   end
 
   def test_composite_route_keys_preserve_aliases
@@ -891,6 +1121,35 @@ class AssociationRouteTest < ActiveRecord::TestCase
     assert_equal [owner.id], InverseThroughRouteAuthor.joins(:inverse_route_comments).where(comments: { id: comment.id }).pluck(:id)
   end
 
+  def test_polymorphic_association_class_tracks_direct_type_changes
+    sponsor = Sponsor.new(sponsorable_type: Member.polymorphic_name)
+    association = sponsor.association(:sponsorable)
+
+    assert_equal Member, association.klass
+
+    sponsor.sponsorable_type = Firm.polymorphic_name
+
+    assert_equal Company, association.klass
+  end
+
+  def test_polymorphic_association_class_uses_the_stored_sti_type_after_assignment
+    sponsor = Sponsor.new
+    sponsor.sponsorable = Firm.new
+
+    assert_equal Company.polymorphic_name, sponsor.sponsorable_type
+    assert_equal Company, sponsor.association(:sponsorable).klass
+  end
+
+  def test_polymorphic_assignment_ignores_an_unresolvable_stored_type
+    member = Member.create!(name: "Replacement target")
+    sponsor = Sponsor.new(sponsorable_id: -1, sponsorable_type: "MissingRoutedClass")
+
+    assert_nothing_raised { sponsor.sponsorable = member }
+    assert_same member, sponsor.sponsorable
+    assert_equal member.id, sponsor.sponsorable_id
+    assert_equal Member.polymorphic_name, sponsor.sponsorable_type
+  end
+
   def test_empty_polymorphic_through_collection_can_be_cleared
     tag = Tag.create!(id: 9_000_001, name: "Unused route")
 
@@ -1002,6 +1261,43 @@ class AssociationRouteTest < ActiveRecord::TestCase
       assert Post.joins(:comments).where(posts: { id: post.id }, comments: { id: matching.id }).exists?
       assert_not Post.joins(:comments).where(posts: { id: post.id }, comments: { id: mismatching.id }).exists?
     end
+  end
+
+  def test_reference_update_checks_writable_values_but_not_query_constraints
+    link = ActiveRecord::AssociationLink.new(
+      reference: build_mapping(reference_key: [:sponsorable_id, :club_id], target_key: [:id, :member_type_id]),
+      constraints: build_mapping(reference_key: :sponsor_type, target_key: :name)
+    )
+
+    [ActiveRecord::AssociationRoute, ActiveRecord::AssociationRoute::Reverse].each_with_index do |route_class, index|
+      reference = Sponsor.new(sponsorable_id: 42, club_id: 7, sponsorable_type: Member.polymorphic_name, sponsor_type: "Different constraint")
+      target = Member.new(id: 42, member_type_id: 7, name: "Target constraint")
+      origin, destination = index.zero? ? [reference, target] : [target, reference]
+      route = route_class.new(link: link, fixed_reference_values: { "sponsorable_type" => Member.polymorphic_name })
+
+      assert_not route.reference_needs_update?(origin, destination)
+      reference.club_id = 8
+      assert route.reference_needs_update?(origin, destination)
+      reference.club_id = 7
+      reference.sponsorable_type = "Other"
+      assert route.reference_needs_update?(origin, destination)
+      assert_equal "Other", reference.sponsorable_type
+      assert_equal "Different constraint", reference.sponsor_type
+    end
+  end
+
+  def test_reference_update_does_not_infer_key_changes_from_unselected_attributes
+    link = ActiveRecord::AssociationLink.new(
+      reference: build_mapping(reference_key: [:sponsorable_id, :club_id], target_key: [:id, :member_type_id])
+    )
+    route = ActiveRecord::AssociationRoute.new(link: link, fixed_reference_values: { "sponsorable_type" => Member.polymorphic_name })
+    reference = Sponsor.instantiate("id" => 1, "club_id" => 7, "sponsorable_type" => Member.polymorphic_name)
+    target = Member.new(id: 42, member_type_id: 7)
+
+    assert_not reference.has_attribute?(:sponsorable_id)
+    assert_not route.reference_needs_update?(reference, target)
+    reference.sponsorable_type = "Other"
+    assert route.reference_needs_update?(reference, target)
   end
 
   def test_origin_reference_completeness_ignores_query_constraints
@@ -1540,6 +1836,42 @@ class AssociationRouteTest < ActiveRecord::TestCase
         assert_equal [link], post.association(:route_ships).send(:through_records_for, ship)
       end
     end
+  end
+
+  def test_reference_metadata_does_not_resolve_a_missing_polymorphic_class
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "sponsors"
+
+      def self.name = "MissingClassRoutedReference"
+
+      belongs_to :routed_target,
+        polymorphic: true,
+        foreign_key: :sponsorable_id,
+        foreign_type: :sponsorable_type,
+        counter_cache: true,
+        optional: true
+    end
+    reference_class.insert_all!([
+      { club_id: 1, sponsorable_id: nil, sponsorable_type: "MissingNamespace::MissingRoutedClass" }
+    ])
+    reference = reference_class.find_by!(club_id: 1)
+    association = reference.association(:routed_target)
+
+    reference_class.stub(:polymorphic_class_for, ->(*) { flunk("foreign-key metadata resolved the polymorphic class") }) do
+      assert_equal ActiveRecord::Key.for(:sponsorable_id), association.foreign_key
+      assert_not_predicate association, :target_changed?
+    end
+
+    reference.club_id = 2
+    assert_nothing_raised { reference.save! }
+  end
+
+  def test_polymorphic_reference_can_be_cleared_when_stored_class_is_missing
+    sponsor = Sponsor.new(sponsorable_id: 42, sponsorable_type: "MissingNamespace::MissingRoutedClass")
+
+    assert_nothing_raised { sponsor.sponsorable = nil }
+    assert_nil sponsor.sponsorable_id
+    assert_nil sponsor.sponsorable_type
   end
 
   private

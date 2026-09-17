@@ -56,25 +56,13 @@ module ActiveRecord
       end
 
       def reference_changed_for_autosave?(record)
-        primary_key = ActiveRecord::Key.for(reflection.active_record_primary_key)
-        foreign_key = ActiveRecord::Key.for(reflection.foreign_key)
-        reference_changed = if foreign_key.all? { |key| record.has_attribute?(key) }
-          foreign_key.map { |key| record.read_attribute(key) } != primary_key.map { |key| owner.read_attribute(key) }
-        end
-        inverse_type_changed = if reflection.inverse_of&.polymorphic?
-          record.read_attribute(reflection.inverse_of.foreign_type) != reflection.active_record.polymorphic_name
-        end
-        reference_changed || inverse_type_changed || reference_key_changed_for_save?(record)
+        route = reflection.association_route(origin_class: owner.class, destination_class: record.class)
+        route.reference_needs_update?(owner, record) || reference_key_changed_for_save?(record)
       end
 
       def synchronize_reference(record)
-        primary_key = ActiveRecord::Key.for(reflection.active_record_primary_key)
-        foreign_key = ActiveRecord::Key.for(reflection.foreign_key)
-
-        primary_key.zip(foreign_key).each do |primary_key, foreign_key|
-          association_id = owner.read_attribute(primary_key)
-          record.write_attribute(foreign_key, association_id) unless record.read_attribute(foreign_key) == association_id
-        end
+        route = reflection.association_route(origin_class: owner.class, destination_class: record.class)
+        route.write(owner, record, force: false)
         set_inverse_instance(record)
       end
 

@@ -531,14 +531,7 @@ module ActiveRecord
             end
 
             if association.updated?
-              primary_key = ActiveRecord::Key.for(reflection.association_primary_key(record.class))
-              foreign_key = ActiveRecord::Key.for(reflection.foreign_key)
-
-              primary_key_foreign_key_pairs = primary_key.zip(foreign_key)
-              primary_key_foreign_key_pairs.each do |primary_key, foreign_key|
-                association_id = record.read_attribute(primary_key)
-                write_attribute(foreign_key, association_id) unless read_attribute(foreign_key) == association_id
-              end
+              association.association_route(record).write(self, record, force: false)
               association.loaded!
             end
 
