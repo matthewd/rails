@@ -161,6 +161,151 @@ class KeyTest < ActiveRecord::TestCase
     assert_predicate transformed, :frozen?
   end
 
+  def test_zip_pairs_key_columns
+    assert_equal [["post_id", "id"]], Key.for(:post_id).zip(Key.for(:id))
+    assert_equal [["post_id", "id"]], Key.for([:post_id]).zip(Key.for(:id))
+    assert_equal [["post_id", "id"]], Key.for(:post_id).zip(Key.for([:id]))
+    assert_equal [["shop_id", "shop_id"], ["post_id", "id"]],
+      Key.for([:shop_id, :post_id]).zip(Key.for([:shop_id, :id]))
+  end
+
+  def test_zip_uses_the_receiving_keys_length
+    assert_empty Key.for(nil).zip(Key.for(:id))
+    assert_empty Key.for([]).zip(Key.for(nil))
+    assert_equal [["post_id", nil]], Key.for(:post_id).zip(Key.for(nil))
+    assert_equal [["shop_id", "id"], ["post_id", nil]], Key.for([:shop_id, :post_id]).zip(Key.for(:id))
+    assert_equal [["post_id", "shop_id"]], Key.for(:post_id).zip(Key.for([:shop_id, :id]))
+  end
+
+  def test_zip_yields_columns_to_a_block
+    pairs = []
+    result = Key.for([:shop_id, :post_id]).zip(Key.for([:shop_id, :id])) do |left, right|
+      pairs << [left, right]
+    end
+
+    assert_nil result
+    assert_equal [["shop_id", "shop_id"], ["post_id", "id"]], pairs
+  end
+
+  def test_mapping_preserves_column_pairs
+    reference_key = Key.for([:account_id, :post_id])
+    target_key = Key.for([:account_id, :id])
+    mapping = Key::Mapping.new(reference_key: reference_key, target_key: target_key)
+
+    assert_same reference_key, mapping.reference_key
+    assert_same target_key, mapping.target_key
+
+    assert_equal [
+      ["account_id", "account_id"],
+      ["post_id", "id"],
+    ], mapping.to_a
+    assert_equal ["account_id", "post_id"], mapping.reference_key.name
+    assert_equal ["account_id", "id"], mapping.target_key.name
+    assert_not_predicate mapping, :empty?
+  end
+
+  def test_mapping_requires_equal_arity
+    error = assert_raises(ArgumentError) do
+      Key::Mapping.new(
+        reference_key: Key.for([:account_id, :post_id]),
+        target_key: Key.for(:id)
+      )
+    end
+
+    assert_equal "Key mappings must have the same number of columns", error.message
+  end
+
+  def test_mapping_rejects_a_populated_key_paired_with_an_empty_key
+    [[nil, :id], [:id, nil], [[], :id], [:id, []]].each do |reference, target|
+      assert_raises(ArgumentError) do
+        Key::Mapping.new(reference_key: Key.for(reference), target_key: Key.for(target))
+      end
+    end
+  end
+
+  def test_mapping_composes_corresponding_keys
+    constraints = Key::Mapping.new(
+      reference_key: Key.for(:account_id),
+      target_key: Key.for(:account_id)
+    )
+    reference = Key::Mapping.new(
+      reference_key: Key.for(:post_id),
+      target_key: Key.for(:id)
+    )
+
+    assert_equal [
+      ["account_id", "account_id"],
+      ["post_id", "id"],
+    ], (constraints + reference).to_a
+  end
+
+  def test_mapping_preserves_singleton_composite_keys
+    reference_key = Key.for([:post_id])
+    target_key = Key.for([:id])
+    mapping = Key::Mapping.new(reference_key: reference_key, target_key: target_key)
+
+    assert_same reference_key, mapping.reference_key
+    assert_same target_key, mapping.target_key
+    assert_predicate mapping.reference_key, :composite?
+    assert_predicate mapping.target_key, :composite?
+    assert_equal [["post_id", "id"]], mapping.to_a
+  end
+
+  def test_empty_mapping_reuses_a_shared_empty_key
+    mapping = Key::Mapping.empty
+
+    assert_same mapping, Key::Mapping.empty
+    assert_predicate mapping, :empty?
+    assert_same mapping.reference_key, mapping.target_key
+    assert_not_predicate mapping.reference_key, :present?
+    assert_empty mapping.to_a
+    assert_predicate mapping, :frozen?
+    assert_predicate mapping.reference_key, :frozen?
+  end
+
+  if RUBY_VERSION >= "4.0"
+    def test_empty_mapping_is_shared_across_ractors
+      assert_same Key::Mapping.empty, Ractor.new { Key::Mapping.empty }.value
+    end
+  end
+
+  def test_empty_mapping_preserves_the_other_mapping_and_its_shape
+    [[:post_id, :id], [[:post_id], [:id]], [[:account_id, :post_id], [:account_id, :id]]].each do |reference, target|
+      mapping = Key::Mapping.new(reference_key: Key.for(reference), target_key: Key.for(target))
+
+      assert_same mapping, Key::Mapping.empty + mapping
+      assert_same mapping, mapping + Key::Mapping.empty
+    end
+  end
+
+  def test_mapping_normalize_scalarizes_single_column_keys_without_changing_the_original
+    [[:post_id, [:id]], [[:post_id], :id], [[:post_id], [:id]]].each do |reference, target|
+      reference_key = Key.for(reference)
+      target_key = Key.for(target)
+      mapping = Key::Mapping.new(reference_key: reference_key, target_key: target_key)
+      normalized = mapping.normalize
+
+      assert_equal "post_id", normalized.reference_key.name
+      assert_equal "id", normalized.target_key.name
+      assert_not_predicate normalized.reference_key, :composite?
+      assert_not_predicate normalized.target_key, :composite?
+      assert_predicate normalized, :frozen?
+      assert_same normalized, normalized.normalize
+      assert_same reference_key, mapping.reference_key
+      assert_same target_key, mapping.target_key
+      assert_same reference_key, normalized.reference_key unless reference_key.composite?
+      assert_same target_key, normalized.target_key unless target_key.composite?
+    end
+  end
+
+  def test_mapping_normalize_reuses_already_normalized_mappings
+    [[:post_id, :id], [[:account_id, :post_id], [:account_id, :id]], [nil, nil], [[], []]].each do |reference, target|
+      mapping = Key::Mapping.new(reference_key: Key.for(reference), target_key: Key.for(target))
+
+      assert_same mapping, mapping.normalize
+    end
+  end
+
   def test_where_hash_for_simple_key
     assert_equal({ "id" => 5 }, Key.for("id").where_hash(5))
     assert_equal({ "id" => [1, 2, 3] }, Key.for("id").where_hash([1, 2, 3]))
