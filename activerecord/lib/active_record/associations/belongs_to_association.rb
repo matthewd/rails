@@ -29,21 +29,26 @@ module ActiveRecord
         when :destroy
           raise ActiveRecord::Rollback unless target.destroy
         when :destroy_async
-          primary_key_column = reflection.active_record_primary_key
-          ids = foreign_key.map { |col| owner.public_send(col) }
-
+          route = association_route(target)
+          destination_key = route.destination_key
+          id = destroy_association_async_id(route, destination_key)
+          # Tuple syntax distinguishes an Array-valued key from the job's ID list.
+          if !destination_key.composite? && id.is_a?(Array)
+            destination_key = ActiveRecord::Key.for(destination_key.columns)
+            id = [id]
+          end
           association_class = if reflection.polymorphic?
             owner.public_send(foreign_type)
           else
-            reflection.klass
+            klass
           end
 
           enqueue_destroy_association(
             owner_model_name: owner.class.to_s,
             owner_id: owner.id,
             association_class: association_class.to_s,
-            association_ids: foreign_key.composite? ? [ids] : ids,
-            association_primary_key_column: primary_key_column,
+            association_ids: [id],
+            association_primary_key_column: destination_key.name,
             ensuring_owner_was_method: options.fetch(:ensuring_owner_was, nil)
           )
         else
@@ -108,6 +113,27 @@ module ActiveRecord
       end
 
       private
+        # Prefer the target's persisted values, falling back to the owner for
+        # values unavailable after a partial select.
+        def destroy_association_async_id(route, destination_key)
+          aliases = target.class.attribute_aliases
+          origin_columns = route.origin_key.columns
+          destination_key.map_value.with_index do |destination_column, index|
+            origin_value = owner.read_attribute(origin_columns[index])
+            if target.has_attribute?(destination_column)
+              destination_value = target.attribute_in_database(aliases[destination_column] || destination_column)
+              # An unselected primary key can still be present as nil.
+              if !destination_value.nil? || !route.reference_destination_key.include?(destination_column)
+                destination_value
+              else
+                origin_value
+              end
+            else
+              origin_value
+            end
+          end
+        end
+
         def replace(record)
           if record
             raise_on_type_mismatch!(record)

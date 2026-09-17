@@ -105,6 +105,23 @@ class AssociationRouteTest < ActiveRecord::TestCase
       optional: true
   end
 
+  class AliasedAsyncRoutePost < ActiveRecord::Base
+    self.table_name = "posts"
+    alias_attribute :route_key, :author_id
+  end
+
+  class RemappedAsyncRoutePost < AliasedAsyncRoutePost
+    alias_attribute :route_key, :id
+  end
+
+  class AliasedAsyncRouteComment < NullableRouteComment
+    belongs_to :routed_post,
+      class_name: "AssociationRouteTest::AliasedAsyncRoutePost",
+      primary_key: :route_key,
+      foreign_key: :post_id,
+      optional: true
+  end
+
   class RoutedItem < Item
     has_one :routed_item,
       through: :tagging,
@@ -1956,6 +1973,182 @@ class AssociationRouteTest < ActiveRecord::TestCase
 
     assert_operator old_ship.reload.updated_at, :>, original_time
     assert_equal original_time, decoy.reload.updated_at
+  end
+
+  def test_query_constraints_identify_async_destruction_destinations
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "comments"
+      self.inheritance_column = nil
+
+      def self.name = "ConstrainedAsyncReference"
+
+      belongs_to :routed_post,
+        class_name: "Post",
+        foreign_key: :author_id,
+        primary_key: :author_id,
+        optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_post)
+    reflection.options[:dependent] = :destroy_async
+    route = build_belongs_to_route(
+      reference: { reference_key: :author_id, target_key: :author_id },
+      constraints: { reference_key: :body, target_key: :title }
+    )
+    post = Post.create!(author_id: 9_000_121, title: "Async constrained post", body: "Async")
+    reference = reference_class.create!(post_id: -1, author_id: post.author_id, body: post.title)
+    association = reference.association(:routed_post)
+    enqueued = nil
+
+    reflection.stub(:association_route, route) do
+      association.stub(:enqueue_destroy_association, ->(**options) { enqueued = options }) do
+        association.handle_dependency
+      end
+    end
+
+    assert_equal Post.to_s, enqueued[:association_class]
+    assert_equal [[post.title, post.author_id]], enqueued[:association_ids]
+    assert_equal ["title", "author_id"], enqueued[:association_primary_key_column]
+  end
+
+  def test_async_destruction_uses_the_loaded_destination_match
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "comments"
+      self.inheritance_column = nil
+
+      def self.name = "LoadedAsyncReference"
+
+      belongs_to :routed_post,
+        class_name: "Post",
+        foreign_key: :author_id,
+        primary_key: :author_id,
+        optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_post)
+    reflection.options[:dependent] = :destroy_async
+    route = build_belongs_to_route(
+      reference: { reference_key: :author_id, target_key: :author_id },
+      constraints: { reference_key: :body, target_key: :title }
+    )
+    original = Post.create!(author_id: 9_000_131, title: "Original", body: "Original")
+    replacement = Post.create!(author_id: original.author_id, title: "Replacement", body: "Replacement")
+    reference = reference_class.create!(post_id: -1, author_id: original.author_id, body: original.title)
+    association = reference.association(:routed_post)
+    enqueued = nil
+
+    persisted_title = replacement.title
+    persisted_author_id = replacement.author_id
+    reflection.stub(:association_route, route) do
+      reference.routed_post = replacement
+      replacement.title = "Unsaved title"
+      replacement.author_id = 9_000_132
+      association.stub(:enqueue_destroy_association, ->(**options) { enqueued = options }) do
+        association.handle_dependency
+      end
+    end
+
+    assert_equal [[persisted_title, persisted_author_id]], enqueued[:association_ids]
+  end
+
+  def test_async_destruction_falls_back_to_owner_values_for_unselected_columns
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "comments"
+      self.inheritance_column = nil
+
+      def self.name = "PartialAsyncComment"
+
+      belongs_to :routed_post,
+        -> { select(:title) },
+        class_name: "Post",
+        foreign_key: :post_id,
+        optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_post)
+    reflection.options[:dependent] = :destroy_async
+    post = Post.create!(title: "Partial async target", body: "Partial async target")
+    reference = reference_class.create!(post_id: post.id, body: "Partial async reference")
+    association = reference.association(:routed_post)
+    enqueued = nil
+
+    association.load_target
+    association.stub(:enqueue_destroy_association, ->(**options) { enqueued = options }) do
+      association.handle_dependency
+    end
+
+    assert_equal [post.id], enqueued[:association_ids]
+  end
+
+  def test_async_destruction_preserves_logical_keys_and_the_declared_class
+    post = RemappedAsyncRoutePost.create!(author_id: 9_000_811, title: "Async alias", body: "Async alias")
+    reference = AliasedAsyncRouteComment.create!(routed_post: post, body: "Async reference")
+    reflection = AliasedAsyncRouteComment.reflect_on_association(:routed_post)
+    reflection.options[:dependent] = :destroy_async
+    association = reference.association(:routed_post)
+    enqueued = nil
+
+    association.stub(:enqueue_destroy_association, ->(**options) { enqueued = options }) do
+      association.handle_dependency
+    end
+
+    assert_equal AliasedAsyncRoutePost.name, enqueued[:association_class]
+    assert_equal "route_key", enqueued[:association_primary_key_column]
+    assert_equal [post.id], enqueued[:association_ids]
+  end
+
+  def test_async_destruction_identity_follows_the_selected_key_shape
+    post = SingletonRoutePost.create!(title: "Key-shaped identity", body: "Key-shaped identity")
+    reference = SingletonRouteComment.new(post_id: post.id_value)
+    association = reference.association(:scalar_reference)
+    association.load_target
+    route = association.association_route(association.target)
+
+    assert_equal post.id_value, association.send(:destroy_association_async_id, route, route.destination_key)
+    assert_equal [post.id_value], association.send(:destroy_association_async_id, route, route.reference_destination_key)
+  end
+
+  def test_async_destruction_uses_scalar_payloads_for_single_column_scalar_values
+    post = SingletonRoutePost.create!(title: "Single-column async", body: "Single-column async")
+    reference = SingletonRouteComment.create!(post_id: post.id_value, body: "Single-column async")
+
+    [:scalar_reference, :composite_reference, :composite_reference_and_target].each do |name|
+      association = reference.association(name)
+      association.reflection.options[:dependent] = :destroy_async
+      association.load_target
+      enqueued = nil
+
+      association.stub(:enqueue_destroy_association, ->(**options) { enqueued = options }) do
+        association.handle_dependency
+      end
+
+      assert_equal "id", enqueued[:association_primary_key_column]
+      assert_equal [post.id_value], enqueued[:association_ids]
+    end
+  end
+
+  def test_async_destruction_reads_physical_composite_key_columns
+    reference_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "cpk_reviews"
+
+      def self.name = "CompositeAsyncReference"
+
+      belongs_to :routed_book,
+        class_name: "Cpk::Book",
+        foreign_key: [:author_id, :number],
+        primary_key: [:author_id, :id],
+        optional: true
+    end
+    reflection = reference_class.reflect_on_association(:routed_book)
+    reflection.options[:dependent] = :destroy_async
+    book = Cpk::Book.create!(id: [9_000_141, 9_000_142])
+    reference = reference_class.create!(author_id: book.author_id, number: book.id_value)
+    association = reference.association(:routed_book)
+    enqueued = nil
+
+    association.load_target
+    association.stub(:enqueue_destroy_association, ->(**options) { enqueued = options }) do
+      association.handle_dependency
+    end
+
+    assert_equal [[book.author_id, book.id_value]], enqueued[:association_ids]
   end
 
   def test_through_deletion_uses_the_complete_match
