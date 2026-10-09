@@ -42,6 +42,45 @@ class AssociationRouteCacheTest < ActiveSupport::TestCase
     assert_equal [["id", "owner_id"]], reflection.association_route.each_match.to_a
   end
 
+  def test_discarded_routes_release_normalizer_endpoint_classes
+    refs = Thread.new do
+      route = build_route
+      origin, destination = build_model, build_model
+      route.match_normalizers(origin_class: origin, destination_class: destination)
+      weak_references(route, origin, destination)
+    end.value
+
+    assert_collected refs
+  end
+
+  def test_live_routes_do_not_retain_normalizer_endpoint_classes
+    route = build_route
+    refs = Thread.new do
+      origin, destination = build_model, build_model
+      route.match_normalizers(origin_class: origin, destination_class: destination)
+      weak_references(origin, destination)
+    end.value
+
+    assert_collected refs
+    assert_equal [["owner_id", "id"]], route.each_match.to_a
+  end
+
+  def test_normalizers_follow_replaced_schema_contexts
+    route = build_route
+    origin, destination = build_model, build_model
+    assert_equal [nil, nil], route.match_normalizers(origin_class: origin, destination_class: destination)
+
+    refs = Thread.new do
+      replaced = weak_references(origin.schema_context)
+      origin.reload_stub_schema(ActiveModel::Type::String)
+      replaced
+    end.value
+    normalizers = route.match_normalizers(origin_class: origin, destination_class: destination)
+
+    assert_equal ["42", "42"], normalizers.map { |list| list&.first&.call(42) }
+    assert_collected refs
+  end
+
   def test_belongs_to_routes_follow_destination_schema_contexts
     owner, destination = build_model, build_model
     reflection = ActiveRecord::Reflection::BelongsToReflection.new(:parent, nil,
@@ -95,11 +134,13 @@ class AssociationRouteCacheTest < ActiveSupport::TestCase
     reflection, owner, destination = build_reflection
     origin = Class.new(owner)
     route = reflection.association_route(origin_class: origin, destination_class: destination)
+    normalizers = route.match_normalizers(origin_class: origin, destination_class: destination)
     default_route = reflection.association_route
 
     collect
 
     assert_same route, reflection.association_route(origin_class: origin, destination_class: destination)
+    assert_same normalizers, route.match_normalizers(origin_class: origin, destination_class: destination)
     assert_same default_route, reflection.association_route
   end
 
@@ -141,15 +182,20 @@ class AssociationRouteCacheTest < ActiveSupport::TestCase
       ActiveSupport::Ractors.make_shareable(route)
       assert_ractor_shareable reflection
       assert_ractor_shareable route
+      # Warm the attribute type constants before accessing them on another Ractor.
+      owner.type_for_attribute("id")
+      origin.type_for_attribute("id")
 
-      shared, pairs, inherited_pairs = on_ractor(reflection, route, origin, destination) do |reflection, route, origin, destination|
+      shared, pairs, normalizers, inherited_pairs = on_ractor(reflection, route, owner, origin, destination) do |reflection, route, owner, origin, destination|
         default = reflection.association_route
+        values = route.match_normalizers(origin_class: owner, destination_class: destination)
         inherited = reflection.association_route(origin_class: origin, destination_class: destination)
-        [default.equal?(route), default.each_match.to_a, inherited.each_match.to_a]
+        [default.equal?(route), default.each_match.to_a, values, inherited.each_match.to_a]
       end
 
       assert shared
       assert_equal [["id", "owner_id"]], pairs
+      assert_equal [nil, nil], normalizers
       assert_equal [["id", "owner_id"]], inherited_pairs
       assert_same route, reflection.association_route
     end
@@ -195,6 +241,13 @@ class AssociationRouteCacheTest < ActiveSupport::TestCase
         { anonymous_class: destination, foreign_key: "owner_id", primary_key: "id", inverse_of: false }, owner)
       owner._reflections = { children: reflection }.freeze
       [reflection, owner, destination]
+    end
+
+    def build_route
+      reference = ActiveRecord::Key::Mapping.new(
+        reference_key: ActiveRecord::Key.for("owner_id"), target_key: ActiveRecord::Key.for("id")
+      )
+      ActiveRecord::AssociationRoute.new(link: ActiveRecord::AssociationLink.new(reference: reference))
     end
 
     def weak_references(*objects)
