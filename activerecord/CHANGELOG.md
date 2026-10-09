@@ -1,3 +1,8 @@
+*   Fix `find_by` with an associated record whose composite key includes an
+    array-valued column.
+
+    *Matthew Draper*
+
 *   Fix `has_many`/`has_one :through` associations with `disable_joins: true`
     raising when the owner's foreign key is composite.
 
