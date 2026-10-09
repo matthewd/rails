@@ -43,7 +43,8 @@ module ActiveRecord
   class AssociationRoute # :nodoc:
     EMPTY_FIXED_VALUES = {}.freeze
     EMPTY_KEY_PAIRS = [].freeze
-    private_constant :EMPTY_FIXED_VALUES, :EMPTY_KEY_PAIRS
+    STRING_NORMALIZER = ActiveSupport::Ractors.shareable_lambda { |value| value&.to_s }.freeze
+    private_constant :EMPTY_FIXED_VALUES, :EMPTY_KEY_PAIRS, :STRING_NORMALIZER
 
     class Cache < ActiveSupport::WeakKeyMap # :nodoc:
       NIL_KEY = Object.new.freeze
@@ -95,6 +96,43 @@ module ActiveRecord
       @key_pairs.each(&block)
     end
 
+    # Per-column conversions for comparing origin and destination key values.
+    # A nil list or entry leaves the corresponding values unchanged.
+    def match_normalizers(origin_class:, destination_class:)
+      # Schema contexts are replaced on reload, so key by them to avoid
+      # reusing conversions computed from outdated attribute types.
+      cache = Cache.for(self)
+      by_destination = cache.fetch_or_store(origin_class.schema_context) { Cache.new }
+      by_destination.fetch_or_store(destination_class.schema_context) do
+        build_match_normalizers(origin_class, destination_class)
+      end
+    end
+
+    def key_values_match?(origin, destination)
+      origin_normalizers, destination_normalizers = match_normalizers(origin_class: origin.class, destination_class: destination.class)
+      origin_key.value_of(origin, origin_normalizers) == destination_key.value_of(destination, destination_normalizers)
+    end
+
+    def each_matching_origin(origins, destination)
+      return enum_for(__method__, origins, destination) unless block_given?
+
+      # The destination's conversion depends on the owner's attribute types, so
+      # cache its converted value separately for each owner class.
+      comparisons_by_class = {}
+      origins.each do |origin|
+        origin_normalizers, destination_value = comparisons_by_class[origin.class] ||= begin
+          origin_normalizers, destination_normalizers = match_normalizers(origin_class: origin.class, destination_class: destination.class)
+          [origin_normalizers, destination_key.value_of(destination, destination_normalizers)]
+        end
+
+        yield origin if origin_key.value_of(origin, origin_normalizers) == destination_value
+      end
+    end
+
+    def origin_reference_complete?(origin)
+      reference_origin_key.all? { |column| !origin.read_attribute(column).nil? }
+    end
+
     def each_reference(&block)
       @reference_pairs.each(&block)
     end
@@ -118,6 +156,29 @@ module ActiveRecord
         @reference_origin_key = link.reference_key
         @reference_destination_key = link.reference&.target_key
         @constraint_pairs = link.constraints.empty? ? EMPTY_KEY_PAIRS : pairs_for(link.constraints.reference_key, link.constraints.target_key)
+      end
+
+      def build_match_normalizers(origin_class, destination_class)
+        origin_normalizers = destination_normalizers = nil
+        each_match.with_index do |(origin_column, destination_column), index|
+          origin_type = origin_class.type_for_attribute(origin_column)
+          destination_type = destination_class.type_for_attribute(destination_column)
+          origin_normalizer, destination_normalizer = normalizers_for_types(origin_type, destination_type)
+
+          if origin_normalizer
+            (origin_normalizers ||= Array.new(@key_pairs.length))[index] = origin_normalizer
+          end
+          if destination_normalizer
+            (destination_normalizers ||= Array.new(@key_pairs.length))[index] = destination_normalizer
+          end
+        end
+        [origin_normalizers&.freeze, destination_normalizers&.freeze].freeze
+      end
+
+      def normalizers_for_types(origin_type, destination_type)
+        unless origin_type.type == destination_type.type
+          [STRING_NORMALIZER, STRING_NORMALIZER]
+        end
       end
 
       def pairs_for(origin_key, destination_key)
