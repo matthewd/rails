@@ -76,6 +76,13 @@ module ActiveRecord
           joins
         end
 
+        # The key the join to this node matches on, from the same hop that
+        # #join_constraints joins against.
+        def destination_key(parent_klass)
+          first, adjacent = reflection.chain
+          first.association_route_for_join(adjacent&.klass || parent_klass, destination_class: base_klass).destination_key
+        end
+
         def readonly?
           return @readonly if defined?(@readonly)
 
