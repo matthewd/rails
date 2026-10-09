@@ -81,8 +81,8 @@ module ActiveRecord
           model_was = klass
         end
 
-        values = foreign_key.map { |fk| owner.attribute_before_last_save(fk) }
-        foreign_key_was = foreign_key.composite? ? (values if values.all?) : values.first
+        foreign_key_was = foreign_key.map_value { |key| owner.attribute_before_last_save(key) }
+        foreign_key_was = nil if foreign_key.composite? && !foreign_key_was.all?
 
         if foreign_key_was && model_was < ActiveRecord::Base
           update_counters_via_scope(model_was, foreign_key_was, -1)
@@ -172,10 +172,10 @@ module ActiveRecord
         end
 
         def stale_state
-          values = foreign_key.map do |fk|
+          value = foreign_key.map_value do |fk|
             owner.read_attribute(fk) { |n| owner.send(:missing_attribute, n, caller) }
           end
-          foreign_key.composite? ? (values if values.any?) : values.first
+          foreign_key.composite? ? (value if value.any?) : value
         end
     end
   end
