@@ -795,6 +795,16 @@ class HasOneAssociationsTest < ActiveRecord::TestCase
     assert_equal "new name", pirate.ship.reload.name
   end
 
+  def test_saving_the_owner_does_not_update_a_target_loaded_without_its_foreign_key
+    pirate = Pirate.create!(catchphrase: "Arr")
+    ship = Ship.create!(name: "Partial", pirate: pirate)
+    pirate = Pirate.find(pirate.id)
+    pirate.association(:ship).target = Ship.select(:id, :name).find(ship.id)
+    pirate.catchphrase = "Changed"
+
+    assert_no_queries_match(/UPDATE.*ships/i) { pirate.save! }
+  end
+
   def test_has_one_autosave_with_primary_key_manually_set
     post = Post.create(id: 1234, title: "Some title", body: "Some content")
     author = Author.new(id: 33, name: "Hank Moody")

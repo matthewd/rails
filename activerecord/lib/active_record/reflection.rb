@@ -574,12 +574,11 @@ module ActiveRecord
 
         unless polymorphic?
           klass
-          join_primary_key
+          association_primary_key if belongs_to?
           inverse_of
           inverse_which_updates_counter_cache
         end
 
-        join_foreign_key
         active_record_primary_key
         association_foreign_key
         counter_cache_column
@@ -643,18 +642,6 @@ module ActiveRecord
           else
             derive_primary_key(active_record) { |model| model.query_constraints_list }
           end
-      end
-
-      def join_primary_key(klass = nil)
-        foreign_key
-      end
-
-      def join_primary_type
-        type
-      end
-
-      def join_foreign_key
-        active_record_primary_key
       end
 
       def check_validity!
@@ -1038,18 +1025,6 @@ module ActiveRecord
         derive_primary_key(klass) { |model| model.composite_query_constraints_list }
       end
 
-      def join_primary_key(klass = nil)
-        polymorphic? ? association_primary_key(klass) : association_primary_key
-      end
-
-      def join_foreign_key
-        foreign_key
-      end
-
-      def join_foreign_type
-        foreign_type
-      end
-
       private
         def build_default_association_route
           build_association_route(reference_class: active_record, target_class: klass)
@@ -1096,7 +1071,7 @@ module ActiveRecord
     # in the Active Record class.
     class ThroughReflection < AbstractReflection # :nodoc:
       delegate :foreign_key, :foreign_type, :association_foreign_key, :type,
-               :active_record_primary_key, :join_foreign_key, to: :source_reflection
+               :active_record_primary_key, to: :source_reflection
 
       def initialize(delegate_reflection)
         super()
@@ -1243,10 +1218,6 @@ module ActiveRecord
         else
           primary_key(klass || self.klass)
         end
-      end
-
-      def join_primary_key(klass = self.klass)
-        source_reflection.join_primary_key(klass)
       end
 
       def association_route(**)
@@ -1413,8 +1384,8 @@ module ActiveRecord
     end
 
     class PolymorphicReflection < AbstractReflection # :nodoc:
-      delegate :klass, :scope, :plural_name, :type, :join_primary_key, :join_foreign_key,
-               :name, :scope_for, :association_route, :association_route_for_join, to: :@reflection
+      delegate :klass, :scope, :plural_name, :type, :name, :scope_for,
+               :association_route, :association_route_for_join, to: :@reflection
 
       def initialize(reflection, previous_reflection)
         super()

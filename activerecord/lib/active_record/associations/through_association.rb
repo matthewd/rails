@@ -126,9 +126,8 @@ module ActiveRecord
             target = through_association.target
 
             if inverse && target && !target.is_a?(Array)
-              Array(target.id).zip(Array(inverse.foreign_key)).map do |primary_key_value, foreign_key_column|
-                attributes[foreign_key_column] = primary_key_value
-              end
+              route = source_reflection.association_route(origin_class: target.class)
+              attributes.merge!(route.destination_attributes(target))
             end
           end
 

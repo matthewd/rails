@@ -192,6 +192,82 @@ class HasManyAssociationsTest < ActiveRecord::TestCase
     assert_same author, post.author
   end
 
+  class AliasedKeyComment < ActiveRecord::Base
+    self.table_name = "comments"
+    self.inheritance_column = nil
+
+    alias_attribute :post_key, :post_id
+  end
+
+  class RemappedKeyComment < AliasedKeyComment
+    alias_attribute :post_key, :author_id
+  end
+
+  class AliasedKeyPost < ActiveRecord::Base
+    self.table_name = "posts"
+    self.inheritance_column = nil
+
+    alias_attribute :comment_key, :id
+    has_many :keyed_comments,
+      class_name: "HasManyAssociationsTest::AliasedKeyComment",
+      foreign_key: :post_key,
+      primary_key: :comment_key,
+      inverse_of: false
+  end
+
+  class RemappedKeyPost < AliasedKeyPost
+    alias_attribute :comment_key, :author_id
+  end
+
+  def test_has_many_access_paths_resolve_aliases_for_each_concrete_class
+    owner = RemappedKeyPost.create!(id: 9_000_401, author_id: 9_000_402, title: "Aliased keys", body: "Aliased keys")
+    comment = AliasedKeyComment.create!(post_id: owner.author_id, body: "Aliased key comment")
+
+    assert_equal [comment], owner.keyed_comments.to_a
+    joined = RemappedKeyPost.where(id: owner.id).joins(:keyed_comments)
+    assert_predicate joined, :exists?, joined.to_sql
+    assert_equal [comment], RemappedKeyPost.eager_load(:keyed_comments).find(owner.id).keyed_comments
+
+    assert_equal owner.author_id, owner.keyed_comments.build.post_id
+
+    remapped = RemappedKeyComment.new(post_id: -1, body: "Remapped key comment")
+    owner.keyed_comments << remapped
+    assert_equal owner.author_id, remapped.author_id
+    assert_equal(-1, remapped.post_id)
+  end
+
+  class DoubleAliasedTypeComment < ActiveRecord::Base
+    self.table_name = "comments"
+    self.inheritance_column = nil
+
+    alias_attribute :commentable_type, :author_type
+    alias_attribute :author_type, :person_type
+  end
+
+  def test_polymorphic_has_many_owner_attributes_resolve_a_foreign_type_alias_once
+    owner_class = Class.new(ActiveRecord::Base) do
+      self.table_name = "posts"
+      self.inheritance_column = nil
+
+      def self.name; "Temp"; end
+
+      has_many :aliased_type_comments,
+        as: :commentable,
+        class_name: "HasManyAssociationsTest::DoubleAliasedTypeComment",
+        foreign_key: :post_id,
+        foreign_type: :commentable_type
+    end
+    owner = owner_class.new(id: 42)
+    comment = DoubleAliasedTypeComment.new
+
+    # Not build: scope_for_create resolves the foreign_type alias chain twice (a separate, pre-existing bug).
+    owner.association(:aliased_type_comments).send(:set_owner_attributes, comment)
+
+    assert_equal owner.id, comment.post_id
+    assert_equal owner.class.polymorphic_name, comment.commentable_type
+    assert_nil comment.person_type
+  end
+
   def test_has_many_build_with_options
     college = College.create(name: "UFMT")
     Student.create(active: true, college_id: college.id, name: "Sarah")
