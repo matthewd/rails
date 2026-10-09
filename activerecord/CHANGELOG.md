@@ -1,3 +1,8 @@
+*   Fix `find_by` with an associated record whose composite key includes an
+    array-valued column.
+
+    *Matthew Draper*
+
 *   Fix `remove_index` and `index_exists?` in migrations declaring version 4.2
     to honor `table_name_prefix` and `table_name_suffix`.
 
