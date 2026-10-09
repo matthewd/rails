@@ -1,3 +1,8 @@
+*   Fix `find_by` with an associated record whose composite key includes an
+    array-valued column.
+
+    *Matthew Draper*
+
 *   Fix `where` with a `Range` of value objects on a single-mapping `composed_of`
     attribute.
 
