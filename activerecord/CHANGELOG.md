@@ -1,3 +1,8 @@
+*   Respect explicit polymorphic type conditions when an inverse association's
+    type column is declared with an attribute alias.
+
+    *Matthew Draper*
+
 *   Fix reusing available records when preloading `has_one :through` associations.
 
     Matching now uses each component association's keys rather than applying the
