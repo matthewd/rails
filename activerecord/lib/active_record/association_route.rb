@@ -35,6 +35,47 @@ module ActiveRecord
     alias_method :eql?, :==
 
     attr_reader :hash
+
+    def reference_values(target_record)
+      each_reference_value(target_record).to_h
+    end
+
+    def reference_needs_update?(reference_record, target_record)
+      if reference_key.all? { |column| reference_record.has_attribute?(column) }
+        return true if each_reference_key_value(target_record).any? { |column, value|
+          reference_record.read_attribute(column) != value
+        }
+      end
+
+      fixed_values.any? do |column, value|
+        reference_record.has_attribute?(column) && reference_record.read_attribute(column) != value
+      end
+    end
+
+    def write_reference(reference_record, target_record, force: true)
+      each_reference_value(target_record) do |column, value|
+        next if !force && reference_record.read_attribute(column) == value
+        reference_record.write_attribute(column, value)
+      end
+    end
+
+    private
+      def each_reference_value(target_record, &)
+        return enum_for(__method__, target_record) unless block_given?
+
+        each_reference_key_value(target_record, &)
+        fixed_values.each(&)
+      end
+
+      def each_reference_key_value(target_record)
+        return enum_for(__method__, target_record) unless block_given?
+
+        target_columns = reference.target_key.columns if target_record
+
+        reference_key.each_with_index do |column, index|
+          yield column, target_record&.read_attribute(target_columns[index])
+        end
+      end
   end
 
   # A link from an owner (origin) to its associated record (destination).
@@ -133,6 +174,10 @@ module ActiveRecord
       reference_origin_key.all? { |column| !origin.read_attribute(column).nil? }
     end
 
+    def reference_needs_update?(origin, destination)
+      @link.reference_needs_update?(origin, destination)
+    end
+
     def each_reference(&block)
       @reference_pairs.each(&block)
     end
@@ -147,6 +192,10 @@ module ActiveRecord
 
     def destination_fixed_values
       EMPTY_FIXED_VALUES
+    end
+
+    def write(origin, destination, force: true)
+      @link.write_reference(origin, destination, force: force)
     end
 
     private
@@ -187,12 +236,25 @@ module ActiveRecord
   end
 
   class AssociationRoute::Reverse < AssociationRoute # :nodoc:
+    def reference_needs_update?(origin, destination)
+      @link.reference_needs_update?(destination, origin)
+    end
+
     def origin_fixed_values
       EMPTY_FIXED_VALUES
     end
 
     def destination_fixed_values
       @link.fixed_values
+    end
+
+    def write(origin, destination, force: true)
+      @link.write_reference(destination, origin, force: force)
+    end
+
+    # The attributes #write would assign to a destination, for building one.
+    def destination_attributes(origin)
+      @link.reference_values(origin)
     end
 
     private
