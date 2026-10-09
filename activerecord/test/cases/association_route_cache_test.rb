@@ -42,6 +42,29 @@ class AssociationRouteCacheTest < ActiveSupport::TestCase
     assert_equal [["id", "owner_id"]], reflection.association_route.each_match.to_a
   end
 
+  def test_discarded_routes_release_normalizer_endpoint_classes
+    refs = Thread.new do
+      route = build_route
+      origin, destination = build_model, build_model
+      route.match_normalizers(origin_class: origin, destination_class: destination)
+      weak_references(route, origin, destination)
+    end.value
+
+    assert_collected refs
+  end
+
+  def test_live_routes_do_not_retain_normalizer_endpoint_classes
+    route = build_route
+    refs = Thread.new do
+      origin, destination = build_model, build_model
+      route.match_normalizers(origin_class: origin, destination_class: destination)
+      weak_references(origin, destination)
+    end.value
+
+    assert_collected refs
+    assert_equal [["owner_id", "id"]], route.each_match.to_a
+  end
+
   def test_dup_and_clear_do_not_share_reflection_caches
     reflection, _, destination = build_reflection
     copy = reflection.dup
@@ -72,11 +95,13 @@ class AssociationRouteCacheTest < ActiveSupport::TestCase
     reflection, owner, destination = build_reflection
     origin = Class.new(owner)
     route = reflection.association_route(origin_class: origin, destination_class: destination)
+    normalizers = route.match_normalizers(origin_class: origin, destination_class: destination)
     default_route = reflection.association_route
 
     collect
 
     assert_same route, reflection.association_route(origin_class: origin, destination_class: destination)
+    assert_same normalizers, route.match_normalizers(origin_class: origin, destination_class: destination)
     assert_same default_route, reflection.association_route
   end
 
@@ -117,14 +142,18 @@ class AssociationRouteCacheTest < ActiveSupport::TestCase
       ActiveSupport::Ractors.make_shareable(route)
       assert_ractor_shareable reflection
       assert_ractor_shareable route
+      # Warm the attribute type constant before accessing it on another Ractor.
+      owner.type_for_attribute("id")
 
-      pairs, rebuilt = on_ractor(reflection, route, owner, destination) do |reflection, route, owner, destination|
+      pairs, normalizers, rebuilt = on_ractor(reflection, route, owner, destination) do |reflection, route, owner, destination|
         before = reflection.association_route
+        values = route.match_normalizers(origin_class: owner, destination_class: destination)
         reflection.clear_association_scope_cache(destination)
-        [before.each_match.to_a, !before.equal?(reflection.association_route)]
+        [before.each_match.to_a, values, !before.equal?(reflection.association_route)]
       end
 
       assert_equal [["id", "owner_id"]], pairs
+      assert_equal [nil, nil], normalizers
       assert rebuilt
       assert_same route, reflection.association_route
     end
@@ -145,6 +174,13 @@ class AssociationRouteCacheTest < ActiveSupport::TestCase
         { anonymous_class: destination, foreign_key: "owner_id", primary_key: "id", inverse_of: false }, owner)
       owner._reflections = { children: reflection }.freeze
       [reflection, owner, destination]
+    end
+
+    def build_route
+      reference = ActiveRecord::Key::Mapping.new(
+        reference_key: ActiveRecord::Key.for("owner_id"), target_key: ActiveRecord::Key.for("id")
+      )
+      ActiveRecord::AssociationRoute.new(link: ActiveRecord::AssociationLink.new(reference: reference))
     end
 
     def weak_references(*objects)

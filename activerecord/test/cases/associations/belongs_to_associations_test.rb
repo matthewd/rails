@@ -237,6 +237,48 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
     ActiveRecord.belongs_to_required_validates_foreign_key = original_value
   end
 
+  class SingletonKeyPost < ActiveRecord::Base
+    self.table_name = "posts"
+    self.inheritance_column = nil
+    self.primary_key = [:id]
+  end
+
+  class SingletonKeyComment < ActiveRecord::Base
+    self.table_name = "comments"
+    self.inheritance_column = nil
+
+    belongs_to :scalar_reference,
+      class_name: "BelongsToAssociationsTest::SingletonKeyPost",
+      foreign_key: :post_id,
+      primary_key: [:id],
+      optional: true
+    belongs_to :composite_reference,
+      class_name: "Post",
+      foreign_key: [:post_id],
+      primary_key: :id,
+      optional: true
+    belongs_to :composite_reference_and_target,
+      class_name: "BelongsToAssociationsTest::SingletonKeyPost",
+      foreign_key: [:post_id],
+      primary_key: [:id],
+      optional: true
+  end
+
+  def test_belongs_to_with_single_column_keys_declared_as_arrays
+    post = SingletonKeyPost.create!(title: "Single-column target", body: "Single-column target")
+    comment = SingletonKeyComment.create!(post_id: post.id_value, body: "Single-column reference")
+
+    [:scalar_reference, :composite_reference, :composite_reference_and_target].each do |name|
+      target = comment.association(name).klass.find_by!(id: post.id_value)
+      assert_equal target, comment.public_send(name)
+
+      comment.association(name).reset
+      ActiveRecord::Associations::Preloader.new(records: [comment], associations: name).call
+      assert_predicate comment.association(name), :loaded?
+      assert_equal target, comment.public_send(name)
+    end
+  end
+
   def test_belongs_to_with_primary_key_joins_on_correct_column
     sql = Client.joins(:firm_with_primary_key).to_sql
     if current_adapter?(:Mysql2Adapter, :TrilogyAdapter)
