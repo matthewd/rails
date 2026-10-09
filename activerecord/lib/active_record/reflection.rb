@@ -596,12 +596,11 @@ module ActiveRecord
 
         unless polymorphic?
           klass
-          join_primary_key_definition
+          association_primary_key_definition if belongs_to?
           inverse_of
           inverse_which_updates_counter_cache
         end
 
-        join_foreign_key_definition
         active_record_primary_key_definition
         association_foreign_key_definition
         counter_cache_column
@@ -697,26 +696,6 @@ module ActiveRecord
         else
           inferred_primary_key_definition(active_record)
         end
-      end
-
-      def join_primary_key(klass = nil)
-        join_primary_key_definition(klass).name
-      end
-
-      def join_primary_key_definition(klass = nil) # :nodoc:
-        foreign_key_definition
-      end
-
-      def join_primary_type
-        type
-      end
-
-      def join_foreign_key
-        join_foreign_key_definition.name
-      end
-
-      def join_foreign_key_definition # :nodoc:
-        active_record_primary_key_definition
       end
 
       def check_validity!
@@ -930,7 +909,7 @@ module ActiveRecord
           constraints = association_route_constraints(reference_class, target_class)
 
           association_route_class.new(
-            link: AssociationLink.new(
+            link: AssociationLink.for(
               reference: reference, constraints: constraints, fixed_values: fixed_values,
               reference_class: reference_class, target_class: target_class
             )
@@ -1153,23 +1132,11 @@ module ActiveRecord
         end
       end
 
-      def join_primary_key_definition(klass = nil) # :nodoc:
-        polymorphic? ? association_primary_key_definition(klass) : association_primary_key_definition
-      end
-
-      def join_foreign_key_definition # :nodoc:
-        foreign_key_definition
-      end
-
-      def join_foreign_type
-        foreign_type
-      end
-
       private
         def resolve_association_route(origin_class, destination_class)
           if polymorphic?
             unless destination_class
-              return AssociationRoute.new(link: AssociationLink.new(reference_key: foreign_key_definition, fixed_values: { foreign_type => nil }, reference_class: origin_class))
+              return AssociationRoute.new(link: AssociationLink.for(reference_key: foreign_key_definition, fixed_values: { foreign_type => nil }, reference_class: origin_class))
             end
             fixed_values = { foreign_type => -destination_class.polymorphic_name }
           else
@@ -1205,8 +1172,7 @@ module ActiveRecord
     class ThroughReflection < AbstractReflection # :nodoc:
       delegate :foreign_key, :foreign_key_definition, :foreign_type, :association_foreign_key,
                :association_foreign_key_definition, :type,
-               :active_record_primary_key, :active_record_primary_key_definition,
-               :join_foreign_key, :join_foreign_key_definition, to: :source_reflection
+               :active_record_primary_key, :active_record_primary_key_definition, to: :source_reflection
 
       def initialize(delegate_reflection)
         super()
@@ -1357,14 +1323,6 @@ module ActiveRecord
         else
           primary_key_definition(klass || self.klass)
         end
-      end
-
-      def join_primary_key(klass = self.klass)
-        join_primary_key_definition(klass).name
-      end
-
-      def join_primary_key_definition(klass = self.klass) # :nodoc:
-        source_reflection.join_primary_key_definition(klass)
       end
 
       def association_route(**)
@@ -1531,8 +1489,7 @@ module ActiveRecord
     end
 
     class PolymorphicReflection < AbstractReflection # :nodoc:
-      delegate :klass, :scope, :plural_name, :type, :join_primary_key, :join_primary_key_definition,
-               :join_foreign_key, :join_foreign_key_definition, :name, :scope_for,
+      delegate :klass, :scope, :plural_name, :type, :name, :scope_for,
                :association_route, :association_route_for_join, to: :@reflection
 
       def initialize(reflection, previous_reflection)
