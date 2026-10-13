@@ -147,6 +147,22 @@ class AssociationsTest < ActiveRecord::TestCase
     assert_equal 1, firm.clients.size, "New firm should have reloaded clients count"
   end
 
+  def test_has_many_follows_a_changed_owner_primary_key
+    firm = Class.new(ActiveRecord::Base) do
+      self.table_name = "companies"
+      self.inheritance_column = nil
+      def self.name = "Firm"
+      has_many :clients, foreign_key: :firm_name, class_name: "Client"
+    end
+    firm.first.clients.load
+
+    firm.primary_key = "name"
+
+    expected = Client.where(firm_name: "37signals").to_a
+    assert_not_empty expected
+    assert_equal expected.sort_by(&:id), firm.find_by!(name: "37signals").clients.sort_by(&:id)
+  end
+
   def test_using_limitable_reflections_helper
     using_limitable_reflections = lambda { |reflections| Tagging.all.send :using_limitable_reflections?, reflections }
     belongs_to_reflections = [Tagging.reflect_on_association(:tag), Tagging.reflect_on_association(:super_tag)]

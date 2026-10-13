@@ -663,14 +663,13 @@ module ActiveRecord
 
       # Same as +active_record_primary_key+ but returns an ActiveRecord::Key.
       def active_record_primary_key_definition # :nodoc:
-        @active_record_primary_key_definition ||=
-          if options[:primary_key]
-            ActiveRecord::Key.for(options[:primary_key])
-          elsif active_record.has_query_constraints? || options[:query_constraints]
-            ActiveRecord::Key.for(active_record.query_constraints_list)
-          else
-            inferred_primary_key_definition(active_record)
-          end
+        if options[:primary_key]
+          @active_record_primary_key_definition ||= ActiveRecord::Key.for(options[:primary_key])
+        elsif active_record.has_query_constraints? || options[:query_constraints]
+          @active_record_primary_key_definition ||= ActiveRecord::Key.for(active_record.query_constraints_list)
+        else
+          inferred_primary_key_definition(active_record)
+        end
       end
 
       def join_primary_key(klass = nil)
