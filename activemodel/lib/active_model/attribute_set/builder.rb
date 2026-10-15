@@ -30,8 +30,10 @@ module ActiveModel
       @materialized = false
     end
 
+    # A name in the loaded values is always initialized, so only other names
+    # need their attribute materialized to check.
     def key?(name)
-      (values.key?(name) || types.key?(name) || @attributes.key?(name)) && self[name].initialized?
+      values.key?(name) || ((types.key?(name) || @attributes.key?(name)) && self[name].initialized?)
     end
 
     def keys
