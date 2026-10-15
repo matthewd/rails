@@ -99,6 +99,9 @@ module ActiveRecord
     end
 
     class Single < Key # :nodoc:
+      NO_PATTERN = Object.new.freeze
+      private_constant :NO_PATTERN
+
       def initialize(name)
         @name = -name.to_s
         @columns = [@name].freeze
@@ -110,13 +113,16 @@ module ActiveRecord
         self
       end
 
-      def all?
-        return super unless block_given?
+      # A sentinel default, as a rest parameter would allocate on every call.
+      def all?(pattern = NO_PATTERN)
+        return super(pattern) unless NO_PATTERN.equal?(pattern)
+        return super() unless block_given?
         yield(@name) ? true : false
       end
 
-      def any?
-        return super unless block_given?
+      def any?(pattern = NO_PATTERN)
+        return super(pattern) unless NO_PATTERN.equal?(pattern)
+        return super() unless block_given?
         yield(@name) ? true : false
       end
 
@@ -258,8 +264,15 @@ module ActiveRecord
         true
       end
 
-      def each
+      def each(&block)
+        return enum_for(:each) unless block
+        self
       end
+
+      # Undo Single's scalar fast paths: None has no columns.
+      def all?(...) = EMPTY.all?(...)
+      def any?(...) = EMPTY.any?(...)
+      def map(...) = EMPTY.map(...)
 
       def zip(other, &)
         EMPTY.zip(other.to_a, &)
