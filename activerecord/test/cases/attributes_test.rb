@@ -38,6 +38,18 @@ module ActiveRecord
       assert_equal 1.1, data.unoverloaded_float
     end
 
+    test "the attributes builder is reused until the schema reloads" do
+      klass = Class.new(ActiveRecord::Base) do
+        self.table_name = "overloaded_types"
+      end
+      builder = klass.attributes_builder
+      assert_same builder, klass.attributes_builder
+
+      klass.attribute :added_after_load, :string, default: "added"
+      assert_not_same builder, klass.attributes_builder
+      assert_equal "added", klass.new.added_after_load
+    end
+
     if current_adapter?(:Mysql2Adapter, :TrilogyAdapter)
       test "overloading boolean types" do
         # On MySQL-like databases `tinyint(1)` can easily be confused with a boolean.

@@ -462,7 +462,15 @@ module ActiveRecord
       end
 
       def attributes_builder # :nodoc:
-        schema_context.attributes.builder
+        @attributes_builder || begin
+          builder = schema_context.attributes.builder
+
+          ActiveSupport::Ractors.on_main(self) do
+            @attributes_builder ||= builder
+          end
+
+          builder
+        end
       end
 
       def columns_hash # :nodoc:
@@ -615,6 +623,7 @@ module ActiveRecord
         def reload_schema_contexts_from_cache
           @schema_context = nil
           @_returning_columns_for_insert = nil
+          @attributes_builder = nil
           @_returning_columns_for_update = nil
         end
 
