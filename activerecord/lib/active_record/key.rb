@@ -27,6 +27,15 @@ module ActiveRecord
       @columns.each(&block)
     end
 
+    # Enumerable's versions iterate through #each; delegating avoids that
+    # indirection on these hot paths.
+    def all?(...) = @columns.all?(...)
+    def any?(...) = @columns.any?(...)
+    def none?(...) = @columns.none?(...)
+    def count(...) = @columns.count(...)
+    def map(&) = @columns.map(&)
+    def each_with_index(&) = @columns.each_with_index(&)
+
     def length
       @columns.length
     end
@@ -124,6 +133,18 @@ module ActiveRecord
         return super(pattern) unless NO_PATTERN.equal?(pattern)
         return super() unless block_given?
         yield(@name) ? true : false
+      end
+
+      def none?(pattern = NO_PATTERN)
+        return super(pattern) unless NO_PATTERN.equal?(pattern)
+        return super() unless block_given?
+        yield(@name) ? false : true
+      end
+
+      def each_with_index
+        return super unless block_given?
+        yield @name, 0
+        @columns
       end
 
       def map
@@ -272,7 +293,9 @@ module ActiveRecord
       # Undo Single's scalar fast paths: None has no columns.
       def all?(...) = EMPTY.all?(...)
       def any?(...) = EMPTY.any?(...)
+      def none?(...) = EMPTY.none?(...)
       def map(...) = EMPTY.map(...)
+      def each_with_index(&) = EMPTY.each_with_index(&)
 
       def zip(other, &)
         EMPTY.zip(other.to_a, &)
