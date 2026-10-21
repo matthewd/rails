@@ -192,7 +192,7 @@ module ActiveRecord
 
         def stale_state
           value = foreign_key.map_value do |fk|
-            owner.read_attr(fk)
+            owner.read_attribute(fk) { |n| owner.send(:missing_attribute, n, caller) }
           end
           foreign_key.composite? ? (value if value.any?) : value
         end

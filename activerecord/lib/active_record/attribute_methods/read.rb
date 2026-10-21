@@ -35,12 +35,13 @@ module ActiveRecord
         @attributes.fetch_value(name, &block)
       end
 
-      # Like #read_attribute, but +attr_name+ must be a String, and a missing
-      # attribute raises ActiveModel::MissingAttributeError.
-      # We assume that attribute name is a string.  This is an internal method,
-      # don't call it!
+      # Like #read_attribute, but +attr_name+ must be a String and no block is
+      # forwarded. An uninitialized attribute returns nil.
       def read_attr(attr_name) # :nodoc:
-        @attributes.fetch_value!(resolve_alias(attr_name))
+        attr_name = resolve_alias(attr_name)
+        @attributes.fetch_value!(attr_name)
+      rescue ActiveModel::MissingAttributeError
+        raise if @attributes.key?(attr_name)
       end
 
       # This gets overridden on models that use attribute aliases.

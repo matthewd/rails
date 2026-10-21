@@ -132,6 +132,20 @@ class KeyTest < ActiveRecord::TestCase
     assert_equal 7, Topic.primary_key_definition.value_of(topic)
   end
 
+  def test_value_of_reads_an_unselected_attribute_as_nil
+    topic = Topic.instantiate("id" => 7)
+    key = Key.for(:title)
+
+    assert_nil key.value_of(topic)
+  end
+
+  def test_composite_value_of_reads_unselected_attributes_as_nil
+    topic = Topic.instantiate("id" => 7)
+    key = Key.for([:id, :title])
+
+    assert_equal [7, nil], key.value_of(topic)
+  end
+
   def test_model_exposes_definition
     assert_not_predicate Topic.primary_key_definition, :composite?
     assert_equal "id", Topic.primary_key_definition.name
