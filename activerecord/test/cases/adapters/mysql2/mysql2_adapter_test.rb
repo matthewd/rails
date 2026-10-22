@@ -37,6 +37,24 @@ class Mysql2AdapterTest < ActiveRecord::Mysql2TestCase
     connection&.disconnect!
   end
 
+  def test_found_rows_flag_is_added_without_mutating_a_frozen_config_flags_array
+    db_config = ActiveRecord::Base.configurations.configs_for(env_name: "arunit", name: "primary")
+    flags_config = ActiveRecord::DatabaseConfigurations::HashConfig.new(
+      "arunit", "flags", db_config.configuration_hash.merge(flags: ["COMPRESS"].freeze)
+    ).freeze
+
+    connections = 2.times.map do
+      flags_config.new_connection.tap(&:connect!)
+    end
+
+    assert_equal ["COMPRESS"], flags_config.configuration_hash[:flags]
+    connections.each do |connection|
+      assert_equal ["COMPRESS", "FOUND_ROWS"], connection.raw_connection.query_options[:flags]
+    end
+  ensure
+    connections&.each(&:disconnect!)
+  end
+
   def test_connection_error
     error = assert_raises ActiveRecord::ConnectionNotEstablished do
       ActiveRecord::ConnectionAdapters::Mysql2Adapter.new(socket: File::NULL, prepared_statements: false).connect!

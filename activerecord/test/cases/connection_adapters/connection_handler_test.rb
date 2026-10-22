@@ -293,6 +293,88 @@ module ActiveRecord
         assert_same klass2.lease_connection, ActiveRecord::Base.lease_connection
       end
 
+      def test_establish_connection_reuses_the_pool_for_the_same_config_object
+        connection = @pool.lease_connection
+        connection.begin_transaction
+
+        assert_same @pool, @handler.establish_connection(@pool.db_config)
+        assert_same @pool, @handler.establish_connection(:arunit, owner_name: @connection_name)
+        assert_same @pool, @handler.retrieve_connection_pool(@connection_name)
+        assert_same connection, @pool.active_connection
+        assert_predicate connection, :transaction_open?
+      ensure
+        connection&.rollback_transaction
+      end
+
+      def test_establish_connection_replaces_the_pool_for_an_equal_but_distinct_config
+        configuration_hash = @pool.db_config.configuration_hash
+        first_config = DatabaseConfigurations::HashConfig.new("arunit", "primary", configuration_hash)
+        second_config = DatabaseConfigurations::HashConfig.new("arunit", "primary", configuration_hash)
+
+        first_pool = @handler.establish_connection(first_config, owner_name: "distinct_configs")
+        first_pool.lease_connection
+        second_pool = @handler.establish_connection(second_config, owner_name: "distinct_configs")
+
+        assert_not_same first_pool, second_pool
+        assert_same second_config, second_pool.db_config
+        assert_same second_pool, @handler.retrieve_connection_pool("distinct_configs")
+        assert_not_predicate first_pool, :connected?
+      end
+
+      def test_establish_connection_replaces_the_pool_for_a_repeated_configuration_hash
+        configuration_hash = @pool.db_config.configuration_hash
+
+        first_pool = @handler.establish_connection(configuration_hash, owner_name: "repeated_hash")
+        second_pool = @handler.establish_connection(configuration_hash, owner_name: "repeated_hash")
+
+        assert_not_same first_pool, second_pool
+        assert_not_same first_pool.db_config, second_pool.db_config
+        assert_same second_pool, @handler.retrieve_connection_pool("repeated_hash")
+      end
+
+      def test_replace_db_configs_retargets_established_pools_by_identity
+        configuration_hash = @pool.db_config.configuration_hash
+        old_config = DatabaseConfigurations::HashConfig.new("arunit", "primary", configuration_hash)
+        equal_config = DatabaseConfigurations::HashConfig.new("arunit", "primary", configuration_hash)
+        new_config = DatabaseConfigurations::HashConfig.new("arunit", "primary", configuration_hash)
+
+        old_pool = @handler.establish_connection(old_config, owner_name: "replaced", role: :reading, shard: :shard_one)
+        old_pool.lease_connection
+        old_token = old_pool.pool_config.pool_token
+        equal_pool = @handler.establish_connection(equal_config, owner_name: "untouched")
+
+        PoolConfig.replace_db_configs!({ old_config => new_config }.compare_by_identity)
+
+        new_pool = @handler.retrieve_connection_pool("replaced", role: :reading, shard: :shard_one)
+        assert_not_same old_pool, new_pool
+        assert_same old_pool.pool_config, new_pool.pool_config
+        assert_same new_config, new_pool.db_config
+        assert_equal ["replaced", :reading, :shard_one], [new_pool.pool_config.connection_descriptor.name, new_pool.role, new_pool.shard]
+        assert_not_equal old_token, new_pool.pool_config.pool_token
+        assert_not_predicate old_pool, :connected?
+        assert_not old_pool.automatic_reconnect
+        assert_equal 1, new_pool.with_connection { |connection| connection.select_value("SELECT 1") }
+
+        assert_same equal_pool, @handler.retrieve_connection_pool("untouched")
+        assert_same equal_config, equal_pool.db_config
+      end
+
+      if current_adapter?(:SQLite3Adapter)
+        def test_establish_connection_resets_an_in_memory_database_for_a_repeated_configuration_hash
+          configuration_hash = { adapter: "sqlite3", database: ":memory:" }
+
+          first_pool = @handler.establish_connection(configuration_hash, owner_name: "in_memory")
+          first_pool.with_connection { |connection| connection.execute("CREATE TABLE scratch (id integer)") }
+          assert_same first_pool, @handler.establish_connection(first_pool.db_config, owner_name: "in_memory")
+          assert_equal ["scratch"], first_pool.with_connection(&:tables)
+
+          second_pool = @handler.establish_connection(configuration_hash, owner_name: "in_memory")
+
+          assert_not_same first_pool, second_pool
+          assert_empty second_pool.with_connection(&:tables)
+        end
+      end
+
       class ApplicationRecord < ActiveRecord::Base
         self.abstract_class = true
       end

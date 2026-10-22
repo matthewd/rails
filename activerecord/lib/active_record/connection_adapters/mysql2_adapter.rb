@@ -61,7 +61,7 @@ module ActiveRecord
         @config[:flags] ||= 0
 
         if @config[:flags].kind_of? Array
-          @config[:flags].push "FOUND_ROWS"
+          @config[:flags] += ["FOUND_ROWS"]
         else
           @config[:flags] |= ::Mysql2::Client::FOUND_ROWS
         end

@@ -23,12 +23,19 @@ module ActiveRecord
     def self.create_and_load_schema(i, env_name:)
       old, ENV["VERBOSE"] = ENV["VERBOSE"], "false"
 
-      ActiveRecord::Base.configurations.configs_for(env_name: env_name, include_hidden: true).each do |db_config|
-        db_config._database = "#{db_config.database}_#{i}"
+      # Database configs may be frozen (e.g. once shared with another Ractor),
+      # so each renamed database gets a new config object, which replaces the
+      # original in the configurations and in already established pools.
+      replacements = {}.compare_by_identity
+      ActiveRecord::Base.configurations = ActiveRecord::Base.configurations.configurations.map do |db_config|
+        next db_config unless db_config.env_name == env_name
 
-        if db_config.database_tasks?
-          ActiveRecord::Tasks::DatabaseTasks.reconstruct_from_schema(db_config, nil)
-        end
+        replacements[db_config] = db_config.dup.tap { |renamed| renamed._database = "#{db_config.database}_#{i}" }
+      end
+      ActiveRecord::ConnectionAdapters::PoolConfig.replace_db_configs!(replacements)
+
+      ActiveRecord::Base.configurations.configs_for(env_name: env_name).each do |db_config|
+        ActiveRecord::Tasks::DatabaseTasks.reconstruct_from_schema(db_config, nil)
       end
     ensure
       ActiveRecord::Base.establish_connection

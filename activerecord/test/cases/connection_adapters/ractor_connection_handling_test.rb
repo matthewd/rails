@@ -257,12 +257,30 @@ module ActiveRecord
             assert_not handler.connected?("Nonexistent::Base")
           end
 
-          def test_establish_connection_reuses_the_main_pool_for_a_config_copy
+          def test_establish_connection_reuses_the_main_pool_for_its_own_config
             pool_before = main_pool
             pool = RactorConnectionHandler.instance.establish_connection(pool_before.db_config)
 
             assert_equal ["ActiveRecord::Base", :writing, :default, pool_before.pool_config.pool_token], pool.key
             assert_same pool_before, main_pool
+          end
+
+          def test_proxy_pool_shares_the_main_pool_config_object
+            assert_same main_pool.db_config, proxy_pool.db_config
+            assert_predicate main_pool.db_config, :frozen?
+          end
+
+          def test_establish_connection_replaces_the_main_pool_for_an_equal_but_distinct_config
+            pool_before = main_pool
+            equal_config = DatabaseConfigurations::HashConfig.new("arunit", "primary", pool_before.db_config.configuration_hash)
+            pool = RactorConnectionHandler.instance.establish_connection(equal_config)
+
+            assert_not_equal pool_before.pool_config.pool_token, pool.key.last
+            assert_not_same pool_before, main_pool
+            assert_same equal_config, main_pool.db_config
+            assert_same equal_config, pool.db_config
+          ensure
+            without_ractor_proxy { ActiveRecord::Base.establish_connection(:arunit) }
           end
 
           def test_clear_active_connections_releases_retrieved_connections
@@ -941,6 +959,83 @@ module ActiveRecord
             File.delete(database_path) if File.exist?(database_path)
           end
 
+          def test_reestablishing_the_proxy_config_keeps_the_pool_and_open_transaction
+            pool_before = main_pool
+            table = widgets_table
+
+            db_config, same_config, same_pool = on_ractor(table) do |widgets|
+              handler = ConnectionAdapters::RactorConnectionHandler.instance
+              pool = handler.retrieve_connection_pool("ActiveRecord::Base")
+              config = pool.db_config
+
+              pool.with_connection do |conn|
+                conn.transaction do
+                  conn.insert(Arel.sql("INSERT INTO #{widgets} (name, price) VALUES ('before', 1)"))
+                  reestablished = handler.establish_connection(config)
+                  conn.insert(Arel.sql("INSERT INTO #{widgets} (name, price) VALUES ('after', 2)"))
+                  [config, reestablished.db_config.equal?(config), reestablished.equal?(pool)]
+                end
+              end
+            end
+
+            assert_same pool_before.db_config, db_config
+            assert same_config
+            assert same_pool
+            assert_same pool_before, main_pool
+            assert_equal %w[after before], main_pool.with_connection { |conn| conn.select_values("SELECT name FROM #{widgets_table}").sort }
+          end
+
+          if current_adapter?(:SQLite3Adapter)
+            def test_reestablishing_the_proxy_config_keeps_an_in_memory_database
+              main_memory_pool = establish_in_memory_pool
+
+              same_config, same_pool, names = on_ractor do
+                handler = ConnectionAdapters::RactorConnectionHandler.instance
+                pool = handler.retrieve_connection_pool("RactorInMemoryDatabase")
+                config = pool.db_config
+
+                pool.with_connection do |conn|
+                  reestablished = conn.transaction do
+                    conn.insert(Arel.sql("INSERT INTO scratch (name) VALUES ('worker_before')"))
+                    handler.establish_connection(config, owner_name: "RactorInMemoryDatabase").tap do
+                      conn.insert(Arel.sql("INSERT INTO scratch (name) VALUES ('worker_after')"))
+                    end
+                  end
+
+                  [
+                    reestablished.db_config.equal?(config),
+                    reestablished.equal?(pool),
+                    reestablished.with_connection { |c| c.select_values("SELECT name FROM scratch ORDER BY name") },
+                  ]
+                end
+              end
+
+              assert same_config
+              assert same_pool
+              assert_equal %w[main worker_after worker_before], names
+              assert_same main_memory_pool, in_memory_main_pool
+            ensure
+              remove_in_memory_pool
+            end
+
+            def test_establishing_an_equal_in_memory_config_hash_resets_the_database
+              main_memory_pool = establish_in_memory_pool
+
+              replaced, tables = on_ractor do
+                handler = ConnectionAdapters::RactorConnectionHandler.instance
+                pool = handler.retrieve_connection_pool("RactorInMemoryDatabase")
+                fresh = handler.establish_connection(pool.db_config.configuration_hash, owner_name: "RactorInMemoryDatabase")
+                [!fresh.equal?(pool), fresh.with_connection(&:tables)]
+              end
+
+              assert replaced
+              assert_empty tables
+              assert_not_same main_memory_pool, in_memory_main_pool
+            ensure
+              remove_in_memory_pool
+            end
+          end
+
           def test_model_entry_points_work_with_and_without_main_ractor_warmup
             expected = Topic.count
 
@@ -976,6 +1071,30 @@ module ActiveRecord
           end
 
           private
+            def establish_in_memory_pool
+              without_ractor_proxy do
+                config = { adapter: "sqlite3", database: ":memory:", max_connections: 1 }
+                pool = ActiveRecord::Base.connection_handler.establish_connection(config, owner_name: "RactorInMemoryDatabase")
+                pool.with_connection do |conn|
+                  conn.create_table(:scratch) { |t| t.string :name }
+                  conn.insert(Arel.sql("INSERT INTO scratch (name) VALUES ('main')"))
+                end
+                pool
+              end
+            end
+
+            def in_memory_main_pool
+              without_ractor_proxy do
+                ActiveRecord::Base.connection_handler.retrieve_connection_pool("RactorInMemoryDatabase")
+              end
+            end
+
+            def remove_in_memory_pool
+              without_ractor_proxy do
+                ActiveRecord::Base.connection_handler.remove_connection_pool("RactorInMemoryDatabase")
+              end
+            end
+
             def install_shareable_notifications_snapshot
               ActiveSupport::Notifications.notifier_subscriptions =
                 ActiveSupport::Notifications::Fanout::Registry.new

@@ -126,13 +126,15 @@ module ActiveRecord
 
         pool_manager = set_pool_manager(pool_config.connection_descriptor)
 
-        # If there is an existing pool with the same values as the pool_config
-        # don't remove the connection. Connections should only be removed if we are
-        # establishing a connection on a class that is already connected to a different
-        # configuration.
+        # If the existing pool was established with this same resolved config
+        # object, don't remove the connection. Connections should only be
+        # removed if we are establishing a connection on a class that is
+        # already connected to a different configuration. An equal but
+        # distinct config (e.g. one freshly resolved from a hash) deliberately
+        # replaces the pool, which is how an in-memory database is reset.
         existing_pool_config = pool_manager.get_pool_config(role, shard)
 
-        if !clobber && existing_pool_config && existing_pool_config.db_config == db_config
+        if !clobber && existing_pool_config && existing_pool_config.db_config.equal?(db_config)
           # Update the pool_config's connection class if it differs. This is used
           # for ensuring that ActiveRecord::Base and the primary_abstract_class use
           # the same pool. Without this granular swapping will not work correctly.

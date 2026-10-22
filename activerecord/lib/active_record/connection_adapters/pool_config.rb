@@ -31,6 +31,16 @@ module ActiveRecord
         def disconnect_all!
           INSTANCES.each_key { |c| c.disconnect!(automatic_reconnect: true) }
         end
+
+        # Points every pool config using one of the keys of +replacements+ (an
+        # identity hash of old to new db configs) at its replacement.
+        def replace_db_configs!(replacements)
+          INSTANCES.each_key do |pool_config|
+            if replacement = replacements[pool_config.db_config]
+              pool_config.db_config = replacement
+            end
+          end
+        end
       end
 
       def initialize(connection_class, db_config, role, shard)
@@ -55,6 +65,19 @@ module ActiveRecord
           @connection_descriptor = connection_descriptor
         else
           @connection_descriptor = ConnectionHandler::ConnectionDescriptor.new(connection_descriptor.name, connection_descriptor.primary_class?)
+        end
+      end
+
+      # Retires the current pool, which was built from the old config, along
+      # with anything cached from it.
+      def db_config=(db_config) # :nodoc:
+        synchronize do
+          disconnect!
+          @pool = nil
+          @pool_token = nil
+          @schema_reflection = nil
+          @server_version = nil
+          @db_config = db_config
         end
       end
 
@@ -87,7 +110,7 @@ module ActiveRecord
           shard: shard,
           pool_token: pool_token,
         }
-        ActiveSupport::Ractors.make_shareable(spec, copy: true)
+        ActiveSupport::Ractors.make_shareable(spec, copy: false)
       end
 
       def discard_pool!
