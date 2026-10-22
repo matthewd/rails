@@ -48,25 +48,28 @@ module ActiveRecord::Associations::Builder # :nodoc:
       association = o.association(name)
       foreign_key = association.foreign_key
 
-      if foreign_key.any? { |key| o.public_send(change_method, key) }
+      if association.identity_key.any? { |key| o.public_send(change_method, key) }
         read_old = lambda do |column|
           change = o.public_send(change_method, column)
           change ? change.first : o._read_attribute(column)
         end
         old_reference = foreign_key.map_value { |key| read_old.call(key) }
+        old_reference = nil if foreign_key.composite? && !old_reference.all?
 
         if old_reference
           reflection = association.reflection
           if reflection.polymorphic?
-            type = read_old.call(association.foreign_type) || o.public_send(association.foreign_type)
-            klass = o.class.polymorphic_class_for(type)
+            type = read_old.call(association.foreign_type)
+            klass = polymorphic_class_for_touch(o, type) if type
           else
             klass = association.klass
           end
 
-          old_route = reflection.association_route(origin_class: o.class, destination_class: klass)
-          old_origin_id = old_route._origin_key.map_value { |key| read_old.call(key) }
-          old_record = klass.find_by(old_route.destination_key.name => [old_origin_id])
+          if klass
+            old_route = reflection.association_route(origin_class: o.class, destination_class: klass)
+            old_origin_id = old_route._origin_key.map_value { |key| read_old.call(key) }
+            old_record = klass.find_by(old_route.destination_key.name => [old_origin_id])
+          end
 
           if old_record
             if touch != true
@@ -79,6 +82,9 @@ module ActiveRecord::Associations::Builder # :nodoc:
       end
 
       record = o.public_send name
+      if record && record.persisted? && !association.association_route(record).key_values_match?(o, record)
+        record = association.scope.first
+      end
       if record && record.persisted?
         if touch != true
           record.touch_later(touch)
@@ -86,6 +92,19 @@ module ActiveRecord::Associations::Builder # :nodoc:
           record.touch_later
         end
       end
+    end
+
+    def self.polymorphic_class_for_touch(record, type)
+      record.class.polymorphic_class_for(type)
+    rescue NameError => error
+      raise if error.is_a?(NoMethodError)
+
+      # Touching an unavailable old target is best effort. Do not hide errors
+      # raised by the model itself, or relax counter-cache maintenance.
+      type_name = type.delete_prefix("::")
+      missing_name = error.name.to_s
+      raise unless type_name.split("::").include?(missing_name) ||
+        missing_name == type_name || missing_name.end_with?("::#{type_name}")
     end
 
     def self.add_touch_callbacks(model, reflection)
@@ -153,12 +172,12 @@ module ActiveRecord::Associations::Builder # :nodoc:
           condition = lambda { |record|
             association = record.association(name)
 
-            fk_missing_or_changed = association.foreign_key.any? do |fk|
-              record._read_attribute(fk).nil? || record.attribute_changed?(fk)
+            reference_missing = association.foreign_key.any? do |fk|
+              record._read_attribute(fk).nil?
             end
 
-            fk_missing_or_changed ||
-              (polymorphic && (record._read_attribute(association.foreign_type).nil? || record.attribute_changed?(association.foreign_type)))
+            reference_missing || association.target_changed? ||
+              (polymorphic && record._read_attribute(association.foreign_type).nil?)
           }
 
           model.validates_presence_of reflection.name, message: :required, if: condition
@@ -184,6 +203,6 @@ module ActiveRecord::Associations::Builder # :nodoc:
 
     private_class_method :macro, :valid_options, :valid_dependent_options, :define_callbacks,
       :define_validations, :define_change_tracking_methods, :add_counter_cache_callbacks,
-      :add_touch_callbacks, :add_default_callbacks, :add_destroy_callbacks
+      :add_touch_callbacks, :polymorphic_class_for_touch, :add_default_callbacks, :add_destroy_callbacks
   end
 end

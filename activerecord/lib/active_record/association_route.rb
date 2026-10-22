@@ -25,7 +25,7 @@ module ActiveRecord
     attr_reader :fixed_values
 
     # Physical (alias-resolved) counterparts of the above.
-    attr_reader :_reference_key, :_target_key, :_match_reference_key, :_match_target_key, :_fixed_values
+    attr_reader :_reference_key, :_target_key, :_match_reference_key, :_match_target_key, :_fixed_values, :_reference_identity_key
 
     def initialize(reference: nil, reference_key: reference&.reference_key, constraints: Key::Mapping.empty, fixed_values: EMPTY_FIXED_VALUES, reference_class: nil, target_class: nil)
       @reference = reference
@@ -40,8 +40,17 @@ module ActiveRecord
       @_match_target_key = resolve_aliases(@match&.target_key, target_class)
       @_fixed_values = resolve_fixed_values(@fixed_values, reference_class)
 
+      # Identity belongs to the reference record, even before a polymorphic
+      # target class is known. Fixed columns include the polymorphic type.
+      identity_key = if constraints.empty? && fixed_values.empty?
+        reference_key
+      else
+        Key.for([*constraints.reference_key, *reference_key, *fixed_values.keys].uniq)
+      end
+      @_reference_identity_key = resolve_aliases(identity_key, reference_class)
+
       @hash = [self.class, reference, reference_key, constraints, @fixed_values,
-        @_reference_key, @_target_key, @_match_reference_key, @_match_target_key].hash
+        @_reference_key, @_target_key, @_match_reference_key, @_match_target_key, @_reference_identity_key].hash
       freeze
     end
 
@@ -54,7 +63,8 @@ module ActiveRecord
         _reference_key == other._reference_key &&
         _target_key == other._target_key &&
         _match_reference_key == other._match_reference_key &&
-        _match_target_key == other._match_target_key
+        _match_target_key == other._match_target_key &&
+        _reference_identity_key == other._reference_identity_key
     end
     alias_method :eql?, :==
 

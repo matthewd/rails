@@ -92,6 +92,31 @@ class AssociationRouteTest < ActiveRecord::TestCase
       foreign_key: :post_id,
       query_constraints: { body: :title },
       optional: true
+    belongs_to :author_and_title_matched_post,
+      class_name: "AssociationRouteTest::DecoupledRoutePost",
+      foreign_key: :author_id,
+      primary_key: :author_id,
+      query_constraints: { body: :title },
+      optional: true
+
+    alias_attribute :route_body, :body
+
+    belongs_to :aliased_title_matched_post,
+      class_name: "AssociationRouteTest::DecoupledRoutePost",
+      foreign_key: :post_id,
+      query_constraints: { route_body: :title },
+      optional: true
+  end
+
+  class DecoupledRouteSponsor < ActiveRecord::Base
+    self.table_name = "sponsors"
+
+    belongs_to :subject,
+      polymorphic: true,
+      foreign_key: :sponsorable_id,
+      foreign_type: :sponsorable_type,
+      query_constraints: { sponsor_type: :title },
+      optional: true
   end
 
   def test_declared_query_constraints_extend_routes_without_becoming_references
@@ -118,6 +143,116 @@ class AssociationRouteTest < ActiveRecord::TestCase
     assert_equal [matching, wrong_author], post.body_matched_comments.order(:id).to_a
     assert_equal post, matching.title_matched_post
     assert_nil wrong_body.title_matched_post
+  end
+
+  def test_query_constraint_changes_invalidate_cached_belongs_to_targets
+    post = DecoupledRoutePost.create!(title: "Constrained target", body: "Post body", author_id: 41)
+    comment = DecoupledRouteComment.new(post_id: post.id, author_id: post.author_id)
+    association = comment.association(:decoupled_post)
+
+    assert_equal post, comment.decoupled_post
+    assert_not_predicate association, :stale_target?
+    assert_no_queries { assert_same association.target, comment.decoupled_post }
+
+    comment.author_id = 42
+
+    assert_predicate association, :stale_target?
+    assert_nil comment.decoupled_post
+    assert_equal post.id, comment.post_id
+    assert_not_predicate association, :stale_target?
+
+    comment.author_id = post.author_id
+
+    assert_predicate association, :stale_target?
+    assert_equal post, comment.decoupled_post
+  end
+
+  def test_query_constraint_changes_select_a_different_target_without_changing_the_reference
+    first = DecoupledRoutePost.create!(title: "First target", body: "Post body", author_id: 41)
+    second = DecoupledRoutePost.create!(title: "Second target", body: "Post body", author_id: 41)
+    comment = DecoupledRouteComment.new(author_id: first.author_id, body: first.title)
+    association = comment.association(:author_and_title_matched_post)
+
+    assert_equal first, comment.author_and_title_matched_post
+
+    comment.body = second.title
+
+    assert_predicate association, :stale_target?
+    assert_equal second, comment.author_and_title_matched_post
+    assert_equal first.author_id, comment.author_id
+    assert_not_predicate association, :stale_target?
+  end
+
+  def test_nil_query_constraints_participate_in_belongs_to_stale_tracking
+    post = DecoupledRoutePost.create!(title: "Constrained target", body: "Post body", author_id: 41)
+    comment = DecoupledRouteComment.new(post_id: post.id)
+
+    assert_nil comment.decoupled_post
+
+    comment.author_id = post.author_id
+
+    assert_predicate comment.association(:decoupled_post), :stale_target?
+    assert_equal post, comment.decoupled_post
+
+    comment.author_id = nil
+
+    assert_predicate comment.association(:decoupled_post), :stale_target?
+    assert_nil comment.decoupled_post
+  end
+
+  def test_mapped_and_aliased_query_constraints_participate_in_belongs_to_stale_tracking
+    post = DecoupledRoutePost.create!(title: "Matched title", body: "Post body")
+    comment = DecoupledRouteComment.new(post_id: post.id, body: post.title)
+
+    assert_equal post, comment.title_matched_post
+    assert_equal post, comment.aliased_title_matched_post
+
+    comment.body = "Other title"
+
+    assert_predicate comment.association(:title_matched_post), :stale_target?
+    assert_predicate comment.association(:aliased_title_matched_post), :stale_target?
+    assert_nil comment.title_matched_post
+    assert_nil comment.aliased_title_matched_post
+  end
+
+  def test_query_constraint_changes_invalidate_cached_polymorphic_targets
+    post = DecoupledRoutePost.create!(title: "Polymorphic target", body: "Post body")
+    sponsor = DecoupledRouteSponsor.new(
+      sponsorable_id: post.id,
+      sponsorable_type: post.class.polymorphic_name,
+      sponsor_type: post.title
+    )
+
+    assert_equal post, sponsor.subject
+
+    sponsor.sponsor_type = "Other title"
+
+    assert_predicate sponsor.association(:subject), :stale_target?
+    assert_nil sponsor.subject
+
+    sponsor.sponsor_type = post.title
+
+    assert_predicate sponsor.association(:subject), :stale_target?
+    assert_equal post, sponsor.subject
+  end
+
+  def test_constrained_polymorphic_stale_tracking_without_a_target_class
+    post = DecoupledRoutePost.create!(title: "Polymorphic target", body: "Post body")
+    sponsor = DecoupledRouteSponsor.new(sponsorable_id: post.id, sponsor_type: post.title)
+
+    assert_nil sponsor.subject
+
+    sponsor.sponsorable_type = post.class.polymorphic_name
+
+    assert_predicate sponsor.association(:subject), :stale_target?
+    assert_equal post, sponsor.subject
+
+    sponsor.subject = nil
+
+    assert_nil sponsor.sponsorable_id
+    assert_nil sponsor.sponsorable_type
+    assert_equal post.title, sponsor.sponsor_type
+    assert_nil sponsor.subject
   end
 
   def test_declared_query_constraints_are_not_written_with_the_foreign_key

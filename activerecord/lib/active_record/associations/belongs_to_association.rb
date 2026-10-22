@@ -6,13 +6,15 @@ module ActiveRecord
     # Active Record Belongs To Association
     # ====================================
     class BelongsToAssociation < SingularAssociation # :nodoc:
-      attr_reader :foreign_key, :foreign_type
+      attr_reader :foreign_key, :foreign_type, :identity_key
 
-      # The foreign key and type are physical names for the owner's class, for
-      # use with the non-resolving attribute APIs and dirty tracking.
+      # These keys use physical names for the owner's class. Identity includes
+      # query constraints and type, while the foreign key remains the writable reference.
       def initialize(owner, reflection)
         super
-        @foreign_key = reflection.association_route(origin_class: owner.class)._reference_origin_key
+        route = reflection.association_route(origin_class: owner.class)
+        @foreign_key = route._reference_origin_key
+        @identity_key = route.link._reference_identity_key
         @foreign_type = nil
         if reflection.polymorphic?
           @foreign_type = owner.resolve_alias(reflection.foreign_type)
@@ -94,7 +96,7 @@ module ActiveRecord
         foreign_key_was = foreign_key.map_value { |key| owner.attribute_before_last_save(key) }
         foreign_key_was = nil if foreign_key.composite? && !foreign_key_was.all?
 
-        if foreign_key_was && model_was < ActiveRecord::Base
+        if foreign_key_was && model_was && model_was < ActiveRecord::Base
           route = reflection.association_route(origin_class: owner.class, destination_class: model_was)
           origin_key_was = route._origin_key.map_value { |key| owner.attribute_before_last_save(key) }
           update_counters_via_scope(model_was, origin_key_was, -1, route)
@@ -102,15 +104,15 @@ module ActiveRecord
       end
 
       def target_changed?
-        foreign_key.any? { |fk| owner.attribute_changed?(fk) } || (!foreign_key_present? && target&.new_record?)
+        identity_key.any? { |column| owner.attribute_changed?(column) } || (!foreign_key_present? && target&.new_record?)
       end
 
       def target_previously_changed?
-        foreign_key.any? { |fk| owner.attribute_previously_changed?(fk) }
+        identity_key.any? { |column| owner.attribute_previously_changed?(column) }
       end
 
       def saved_change_to_target?
-        foreign_key.any? { |fk| owner.saved_change_to_attribute?(fk) }
+        identity_key.any? { |column| owner.saved_change_to_attribute?(column) }
       end
 
       private
@@ -163,7 +165,7 @@ module ActiveRecord
 
         def update_counters(by)
           if require_counter_update? && foreign_key_present?
-            if target && !stale_target?
+            if target && !stale_target? && matches_foreign_key?(target)
               target.increment!(reflection.counter_cache_column, by, touch: reflection.options[:touch])
             else
               route = association_route
@@ -215,10 +217,12 @@ module ActiveRecord
         end
 
         def stale_state
-          value = foreign_key.map_value do |fk|
-            owner._read_attribute!(fk)
+          # Preserve an assigned, unsaved target while its reference is still unset.
+          return unless foreign_key.any? { |column| owner._read_attribute!(column) }
+
+          identity_key.map_value do |column|
+            foreign_key.include?(column) ? owner._read_attribute!(column) : owner._read_attribute(column)
           end
-          foreign_key.composite? ? (value if value.any?) : value
         end
     end
   end

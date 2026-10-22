@@ -1183,7 +1183,12 @@ module ActiveRecord
         def resolve_association_route(origin_class, destination_class)
           if polymorphic?
             unless destination_class
-              return AssociationRoute.new(link: AssociationLink.for(reference_key: foreign_key_definition, fixed_values: { foreign_type => nil }, reference_class: origin_class))
+              return AssociationRoute.new(link: AssociationLink.for(
+                reference_key: foreign_key_definition,
+                constraints: association_route_constraints(origin_class, nil),
+                fixed_values: { foreign_type => nil },
+                reference_class: origin_class
+              ))
             end
             fixed_values = { foreign_type => -destination_class.polymorphic_name }
           else

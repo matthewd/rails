@@ -83,10 +83,10 @@ module ActiveRecord
         # Note: this does not capture all cases, for example it would be impractical
         # to try to properly support stale-checking for nested associations.
         def stale_state
-          if through_reflection.belongs_to?
-            Array(through_reflection.foreign_key).filter_map do |foreign_key_column|
-              owner.read_attr(foreign_key_column)
-            end.presence
+          if through_reflection.belongs_to? && through_association.foreign_key.any? { |column| !owner._read_attribute(column).nil? }
+            through_association.identity_key.map do |column|
+              owner._read_attribute(column)
+            end
           end
         end
 
@@ -97,8 +97,8 @@ module ActiveRecord
         end
 
         def foreign_key_present?
-          through_reflection.belongs_to? && Array(through_reflection.foreign_key).all? do |foreign_key_column|
-            !owner.read_attr(foreign_key_column).nil?
+          through_reflection.belongs_to? && through_association.foreign_key.all? do |column|
+            !owner._read_attribute(column).nil?
           end
         end
 
