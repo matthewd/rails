@@ -160,9 +160,9 @@ module ActiveRecord
     #
     # NOTE: By its nature, batch processing is subject to race conditions if
     # other processes are modifying the database.
-    def find_in_batches(start: nil, finish: nil, batch_size: 1000, error_on_ignore: nil, cursor: primary_key, order: DEFAULT_ORDER)
+    def find_in_batches(start: nil, finish: nil, batch_size: 1000, error_on_ignore: nil, cursor: primary_key, order: DEFAULT_ORDER, &block)
       relation = self
-      unless block_given?
+      unless block
         return to_enum(:find_in_batches, start: start, finish: finish, batch_size: batch_size, error_on_ignore: error_on_ignore, cursor: cursor, order: order) do
           cursor = Array(cursor)
           total = apply_limits(relation, cursor, start, finish, build_batch_orders(cursor, order)).size
@@ -170,9 +170,8 @@ module ActiveRecord
         end
       end
 
-      in_batches(of: batch_size, start: start, finish: finish, load: true, error_on_ignore: error_on_ignore, cursor: cursor, order: order) do |batch|
-        yield batch.to_a
-      end
+      ensure_valid_options_for_batching!(cursor, start, finish, order, error_on_ignore)
+      each_batch(of: batch_size, start: start, finish: finish, load: true, cursor: cursor, order: order, use_ranges: nil, yield_records: true, &block)
     end
 
     # Yields ActiveRecord::Relation objects to work with a batch of records.
@@ -259,52 +258,54 @@ module ActiveRecord
     # NOTE: By its nature, batch processing is subject to race conditions if
     # other processes are modifying the database.
     def in_batches(of: 1000, start: nil, finish: nil, load: false, error_on_ignore: nil, cursor: primary_key, order: DEFAULT_ORDER, use_ranges: nil, &block)
-      ensure_valid_options_for_batching!(cursor, start, finish, order)
-
-      if order_values.any?(&:present?) || default_order_values.any?(&:present?)
-        act_on_ignored_order(error_on_ignore)
-      end
+      ensure_valid_options_for_batching!(cursor, start, finish, order, error_on_ignore)
 
       unless block
         return BatchEnumerator.new(of: of, start: start, finish: finish, relation: self, cursor: cursor, order: order, use_ranges: use_ranges)
       end
 
-      cursor = Array(cursor).map(&:to_s)
-      batch_limit = of
-
-      if limit_value
-        remaining   = limit_value
-        batch_limit = remaining if remaining < batch_limit
-      end
-
-      if self.loaded?
-        batch_on_loaded_relation(
-          relation: self,
-          start: start,
-          finish: finish,
-          cursor: cursor,
-          order: order,
-          batch_limit: batch_limit,
-          &block
-        )
-      else
-        batch_on_unloaded_relation(
-          relation: self,
-          start: start,
-          finish: finish,
-          load: load,
-          cursor: cursor,
-          order: order,
-          use_ranges: use_ranges,
-          remaining: remaining,
-          batch_limit: batch_limit,
-          &block
-        )
-      end
+      each_batch(of: of, start: start, finish: finish, load: load, cursor: cursor, order: order, use_ranges: use_ranges, &block)
     end
 
     private
-      def ensure_valid_options_for_batching!(cursor, start, finish, order)
+      def each_batch(of:, start:, finish:, load:, cursor:, order:, use_ranges:, yield_records: false, &block)
+        cursor = Array(cursor).map(&:to_s)
+        batch_limit = of
+
+        if limit_value
+          remaining   = limit_value
+          batch_limit = remaining if remaining < batch_limit
+        end
+
+        if self.loaded?
+          batch_on_loaded_relation(
+            relation: self,
+            start: start,
+            finish: finish,
+            cursor: cursor,
+            order: order,
+            batch_limit: batch_limit,
+            yield_records: yield_records,
+            &block
+          )
+        else
+          batch_on_unloaded_relation(
+            relation: self,
+            start: start,
+            finish: finish,
+            load: load,
+            cursor: cursor,
+            order: order,
+            use_ranges: use_ranges,
+            remaining: remaining,
+            batch_limit: batch_limit,
+            yield_records: yield_records,
+            &block
+          )
+        end
+      end
+
+      def ensure_valid_options_for_batching!(cursor, start, finish, order, error_on_ignore)
         cursor = Array(cursor).map(&:to_s)
 
         if start && Array(start).size != cursor.size
@@ -327,6 +328,8 @@ module ActiveRecord
         if (Array(order) - [:asc, :desc]).any?
           raise ArgumentError, ":order must be :asc or :desc or an array consisting of :asc or :desc, got #{order.inspect}"
         end
+
+        act_on_ignored_order(error_on_ignore) if order_values.any?(&:present?) || default_order_values.any?(&:present?)
       end
 
       def apply_limits(relation, cursor, start, finish, batch_orders)
@@ -380,7 +383,7 @@ module ActiveRecord
         end
       end
 
-      def batch_on_loaded_relation(relation:, start:, finish:, cursor:, order:, batch_limit:)
+      def batch_on_loaded_relation(relation:, start:, finish:, cursor:, order:, batch_limit:, yield_records:)
         records = relation.to_a
         order = build_batch_orders(cursor, order).map(&:second)
 
@@ -400,10 +403,14 @@ module ActiveRecord
         end
 
         records.each_slice(batch_limit) do |subrecords|
-          subrelation = relation.spawn
-          subrelation.load_records(subrecords)
+          if yield_records
+            yield subrecords
+          else
+            subrelation = relation.spawn
+            subrelation.load_records(subrecords)
 
-          yield subrelation
+            yield subrelation
+          end
         end
 
         nil
@@ -427,7 +434,7 @@ module ActiveRecord
         0
       end
 
-      def batch_on_unloaded_relation(relation:, start:, finish:, load:, cursor:, order:, use_ranges:, remaining:, batch_limit:)
+      def batch_on_unloaded_relation(relation:, start:, finish:, load:, cursor:, order:, use_ranges:, remaining:, batch_limit:, yield_records:)
         batch_orders = build_batch_orders(cursor, order)
         relation = relation.reorder(batch_orders.to_h).limit(batch_limit)
         relation = apply_limits(relation, cursor, start, finish, batch_orders)
@@ -441,8 +448,12 @@ module ActiveRecord
             values = records.pluck(*cursor)
             values_size = values.size
             values_last = values.last
-            yielded_relation = rewhere(cursor => values)
-            yielded_relation.load_records(records)
+            if yield_records
+              yielded_batch = records.dup
+            else
+              yielded_batch = rewhere(cursor => values)
+              yielded_batch.load_records(records)
+            end
           elsif (empty_scope && use_ranges != false) || use_ranges
             # Efficiently peak at the last value for the next batch using offset and limit.
             values_size = remaining ? [batch_limit, remaining].min : batch_limit
@@ -458,15 +469,15 @@ module ActiveRecord
 
             # Finally, build the yielded relation if at least one value found.
             if values_last
-              yielded_relation = apply_finish_limit(batch_relation, cursor, values_last, batch_orders)
-              yielded_relation = yielded_relation.except(:limit, :order)
-              yielded_relation.skip_query_cache!(false)
+              yielded_batch = apply_finish_limit(batch_relation, cursor, values_last, batch_orders)
+              yielded_batch = yielded_batch.except(:limit, :order)
+              yielded_batch.skip_query_cache!(false)
             end
           else
             values = batch_relation.pluck(*cursor)
             values_size = values.size
             values_last = values.last
-            yielded_relation = rewhere(cursor => values)
+            yielded_batch = rewhere(cursor => values)
           end
 
           break if values_size == 0
@@ -476,7 +487,7 @@ module ActiveRecord
                                   "or some columns contain nil."
           end
 
-          yield yielded_relation
+          yield yielded_batch
 
           break if values_size < batch_limit
 

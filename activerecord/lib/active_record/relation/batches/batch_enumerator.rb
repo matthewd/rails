@@ -67,9 +67,7 @@ module ActiveRecord
       def each_record(&block)
         return to_enum(:each_record) unless block_given?
 
-        @relation.to_enum(:in_batches, of: @of, start: @start, finish: @finish, load: true, cursor: @cursor, order: @order).each do |relation|
-          relation.records.each(&block)
-        end
+        @relation.find_each(batch_size: @of, start: @start, finish: @finish, cursor: @cursor, order: @order, &block)
       end
 
       # Deletes records in batches. Returns the total number of rows affected.
