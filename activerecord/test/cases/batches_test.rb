@@ -127,6 +127,16 @@ class EachTest < ActiveRecord::TestCase
     end
   end
 
+  def test_record_batches_do_not_build_a_relation_for_each_batch
+    relation = Cpk::Order.all
+    expected = Cpk::Order.order(:shop_id, :id).map(&:id)
+
+    assert_not_called(relation, :rewhere) do
+      assert_equal expected, relation.find_in_batches(batch_size: 2).flat_map { |batch| batch.map(&:id) }
+      assert_equal expected, relation.in_batches(of: 2).each_record.map(&:id)
+    end
+  end
+
   def test_find_in_batches_should_start_from_the_start_option
     assert_queries_count(@total) do
       Post.find_in_batches(batch_size: 1, start: 2) do |batch|
