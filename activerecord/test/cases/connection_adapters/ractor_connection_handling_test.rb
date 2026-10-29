@@ -300,6 +300,39 @@ module ActiveRecord
             assert_equal 1, calls
           end
 
+          def test_selects_returning_columns_without_calling_the_main_ractor
+            real = ActiveRecord::Base.lease_connection
+            columns = real.columns("auto_id_tests")
+            policies = [true, false]
+            expected = policies.map do |returning|
+              real.stub(:supports_insert_returning?, returning) do
+                real.select_returning_columns_for_insert(columns).map(&:name)
+              end
+            end
+            expected << columns.map { |column| real.return_value_after_insert?(column) }
+            expected << columns.map { |column| real.return_value_after_update?(column) }
+
+            conn = proxy_connection
+            calls = 0
+            methods = [:select_returning_columns_for_insert, :return_value_after_insert?, :return_value_after_update?]
+            methods.each do |method|
+              main_side.define_singleton_method(method) { |argument| calls += 1; super(argument) }
+            end
+
+            actual = policies.map do |returning|
+              conn.stub(:supports_insert_returning?, returning) do
+                conn.select_returning_columns_for_insert(columns).map(&:name)
+              end
+            end
+            actual << columns.map { |column| conn.return_value_after_insert?(column) }
+            actual << columns.map { |column| conn.return_value_after_update?(column) }
+
+            assert_equal expected, actual
+            assert_equal 0, calls
+          ensure
+            methods&.each { |method| main_side.singleton_class.send(:remove_method, method) }
+          end
+
           def test_health_methods_reflect_underlying_connection
             conn = proxy_connection
 

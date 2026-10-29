@@ -720,6 +720,10 @@ module ActiveRecord
         column.auto_populated_on_update?
       end
 
+      def select_returning_columns_for_insert(columns) # :nodoc:
+        columns
+      end
+
       def async_enabled? # :nodoc:
         supports_concurrent_connections? &&
           !ActiveRecord.async_query_executor.nil? && !pool.async_executor.nil?

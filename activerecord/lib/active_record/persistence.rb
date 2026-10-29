@@ -927,7 +927,7 @@ module ActiveRecord
       def _update_row(attribute_names, attempted_action = "update")
         returning_columns = self.class.with_connection do |c|
           if c.supports_update_returning?
-            self.class._returning_columns_for_update(c)
+            self.class._returning_columns_for_update
           else
             []
           end

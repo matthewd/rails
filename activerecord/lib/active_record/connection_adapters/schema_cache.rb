@@ -63,6 +63,10 @@ module ActiveRecord
         cache(pool).indexes(pool, table_name)
       end
 
+      def returning_candidates(pool, table_name)
+        cache(pool).returning_candidates(pool, table_name)
+      end
+
       def version(pool)
         cache(pool).version(pool)
       end
@@ -207,6 +211,10 @@ module ActiveRecord
         @schema_reflection.indexes(@pool, table_name)
       end
 
+      def returning_candidates(table_name) # :nodoc:
+        @schema_reflection.returning_candidates(@pool, table_name)
+      end
+
       def version
         @schema_reflection.version(@pool)
       end
@@ -258,6 +266,7 @@ module ActiveRecord
         @primary_keys = {}
         @data_sources = {}
         @indexes      = {}
+        @returning_candidates = {}
         @version = nil
       end
 
@@ -268,6 +277,7 @@ module ActiveRecord
         @primary_keys = @primary_keys.dup
         @data_sources = @data_sources.dup
         @indexes      = @indexes.dup
+        @returning_candidates = @returning_candidates.dup
       end
 
       def encode_with(coder) # :nodoc:
@@ -276,6 +286,7 @@ module ActiveRecord
         coder["data_sources"]     = @data_sources.sort.to_h
         coder["indexes"]          = @indexes.sort.to_h
         coder["version"]          = @version
+        coder["returning_candidates"] = @returning_candidates.sort.to_h
       end
 
       def init_with(coder) # :nodoc:
@@ -285,6 +296,7 @@ module ActiveRecord
         @data_sources     = coder["data_sources"]
         @indexes          = coder["indexes"] || {}
         @version          = coder["version"]
+        @returning_candidates = coder["returning_candidates"] || {}
 
         unless coder["deduplicated"]
           derive_columns_hash_and_deduplicate_values
@@ -305,6 +317,7 @@ module ActiveRecord
         @data_sources     = coder["data_sources"].index_with { true }
         @indexes          = (coder["indexes"] || {}).transform_values { |indexes| indexes.map { |i| references[i] } }
         @version          = coder["version"]
+        @returning_candidates = coder["returning_candidates"] || {}
       end
 
       def cached?(table_name)
@@ -346,6 +359,7 @@ module ActiveRecord
             columns(pool, table_name)
             columns_hash(pool, table_name)
             indexes(pool, table_name)
+            returning_candidates(pool, table_name)
           end
         end
       end
@@ -358,7 +372,9 @@ module ActiveRecord
 
         @columns.fetch(table_name) do
           pool.with_connection do |connection|
-            @columns[deep_deduplicate(table_name)] = deep_deduplicate(connection.columns(table_name))
+            columns = @columns[deep_deduplicate(table_name)] = deep_deduplicate(connection.columns(table_name))
+            add_returning_candidates(connection, table_name, columns)
+            columns
           end
         end
       end
@@ -388,6 +404,20 @@ module ActiveRecord
         end
       end
 
+      def returning_candidates(pool, table_name)
+        @returning_candidates.fetch(table_name) do
+          # Reading the columns from the database records their candidates as
+          # well, so we look again before deriving them from cached columns.
+          columns = columns(pool, table_name)
+
+          @returning_candidates.fetch(table_name) do
+            pool.with_connection do |connection|
+              add_returning_candidates(connection, table_name, columns)
+            end
+          end
+        end
+      end
+
       def version(pool)
         @version ||= pool.with_connection(&:schema_version)
       end
@@ -407,6 +437,7 @@ module ActiveRecord
         @primary_keys.delete name
         @data_sources.delete name
         @indexes.delete name
+        @returning_candidates.delete name
       end
 
       def add_all(pool) # :nodoc:
@@ -449,12 +480,13 @@ module ActiveRecord
       end
 
       def marshal_dump # :nodoc:
-        [@version, @columns, {}, @primary_keys, @data_sources, @indexes]
+        [@version, @columns, {}, @primary_keys, @data_sources, @indexes, nil, @returning_candidates]
       end
 
       def marshal_load(array) # :nodoc:
-        @version, @columns, _columns_hash, @primary_keys, @data_sources, @indexes, _database_version = array
+        @version, @columns, _columns_hash, @primary_keys, @data_sources, @indexes, _database_version, @returning_candidates = array
         @indexes ||= {}
+        @returning_candidates ||= {}
         @columns_hash = @columns.transform_values { |columns| columns.index_by(&:name) }
       end
 
@@ -471,12 +503,20 @@ module ActiveRecord
           ActiveRecord.schema_ignored_table?(table_name)
         end
 
+        def add_returning_candidates(connection, table_name, columns)
+          @returning_candidates[deep_deduplicate(table_name)] = deep_deduplicate(
+            "insert" => columns.filter_map { |column| column.name if connection.return_value_after_insert?(column) },
+            "update" => columns.filter_map { |column| column.name if connection.return_value_after_update?(column) },
+          )
+        end
+
         def derive_columns_hash_and_deduplicate_values
           @columns      = deep_deduplicate(@columns)
           @columns_hash = @columns.transform_values { |columns| columns.index_by(&:name) }
           @primary_keys = deep_deduplicate(@primary_keys)
           @data_sources = deep_deduplicate(@data_sources)
           @indexes      = deep_deduplicate(@indexes)
+          @returning_candidates = deep_deduplicate(@returning_candidates)
         end
 
         def deep_deduplicate(value)

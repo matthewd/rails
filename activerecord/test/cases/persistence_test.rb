@@ -2,6 +2,7 @@
 
 require "cases/helper"
 require "models/auto_id"
+require "models/subscriber"
 require "models/aircraft"
 require "models/dashboard"
 require "models/clothing_item"
@@ -63,6 +64,68 @@ class PersistenceTest < ActiveRecord::TestCase
     assert_not_nil order_id
   end
 
+  def test_create_reads_back_only_the_columns_the_connection_selects
+    connection = AutoId.lease_connection
+    key_only = ->(columns) { columns.select { |column| column.name == "auto_id" } }
+
+    record = nil
+    sql = connection.stub(:select_returning_columns_for_insert, key_only) do
+      capture_sql { record = AutoId.create!(value: 1) }
+    end.find { |query| query.start_with?("INSERT") }
+
+    assert_not_includes sql, connection.quote_column_name("published_at")
+    assert_equal AutoId.find(record.auto_id).auto_id, record.auto_id
+    assert_nil record.published_at
+    assert_not_nil record.reload.published_at
+  end
+
+  def test_create_keeps_an_explicit_primary_key_when_the_connection_selects_none
+    connection = Subscriber.lease_connection
+
+    record = connection.stub(:select_returning_columns_for_insert, []) do
+      Subscriber.create!(nick: "returning", name: "Returning")
+    end
+
+    assert_equal "returning", record.nick
+    assert_equal "returning", record.id
+    assert_equal "Returning", Subscriber.find("returning").name
+  end
+
+  if current_adapter?(:Mysql2Adapter, :TrilogyAdapter)
+    def test_create_reads_back_every_candidate_column_only_with_insert_returning
+      connection = AutoId.lease_connection
+
+      columns, record = connection.stub(:supports_insert_returning?, false) do
+        [AutoId._returning_columns_for_insert(connection), AutoId.create!(value: 1)]
+      end
+
+      assert_equal ["auto_id"], columns
+      assert_equal AutoId.find(record.auto_id).auto_id, record.auto_id
+      assert_nil record.published_at
+
+      columns = connection.stub(:supports_insert_returning?, true) do
+        AutoId._returning_columns_for_insert(connection)
+      end
+
+      assert_equal ["published_at", "auto_id"], columns
+    end
+
+    def test_insert_candidates_do_not_depend_on_insert_returning_support
+      model = Class.new(ActiveRecord::Base) { self.table_name = "auto_id_tests" }
+      connection = AutoId.lease_connection
+      AutoId.schema_cache.clear_data_source_cache!("auto_id_tests")
+
+      connection.stub(:supports_insert_returning?, false) { model.load_schema }
+
+      columns = connection.stub(:supports_insert_returning?, true) do
+        model._returning_columns_for_insert(connection)
+      end
+      assert_equal ["published_at", "auto_id"], columns
+    ensure
+      AutoId.schema_cache.clear_data_source_cache!("auto_id_tests")
+    end
+  end
+
   if current_adapter?(:PostgreSQLAdapter)
     def test_fills_auto_populated_columns_on_creation
       record = Default.create
@@ -104,6 +167,25 @@ class PersistenceTest < ActiveRecord::TestCase
 
       assert_equal false, (/RETURNING.*id/).match?(sql)
     end
+
+    def test_update_reads_back_only_the_adapters_update_candidates
+      model = Class.new(ActiveRecord::Base) { self.table_name = "defaults" }
+      Default.schema_cache.clear_data_source_cache!("defaults")
+      Default.lease_connection.stub(:return_value_after_update?, false) do
+        model.load_schema
+      end
+      record_with_defaults = model.create
+
+      sql = capture_sql do
+        record_with_defaults.update!(random_number: 105)
+      end.find { |query| query.start_with?("UPDATE") }
+
+      assert_no_match(/RETURNING/, sql)
+      assert_not_equal 1050, record_with_defaults.virtual_stored_number
+      assert_equal 1050, record_with_defaults.reload.virtual_stored_number
+    ensure
+      Default.schema_cache.clear_data_source_cache!("defaults")
+    end if supports_virtual_columns?
   elsif current_adapter?(:SQLite3Adapter)
     def test_fills_auto_populated_columns_on_creation
       record = Default.create

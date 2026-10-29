@@ -10,7 +10,8 @@ module ActiveRecord
         attr_reader :primary_key_definition, :model_primary_key_definition, :columns_hash, :columns, :column_names,
           :content_columns, :query_constraints_list, :composite_query_constraints_list,
           :composite_query_constraints_definition, :timestamp_attributes_for_create_in_model,
-          :timestamp_attributes_for_update_in_model, :all_timestamp_attributes_in_model
+          :timestamp_attributes_for_update_in_model, :all_timestamp_attributes_in_model,
+          :insert_returning_candidates, :returning_columns_for_update
 
         attr_accessor :attributes
 
@@ -24,6 +25,9 @@ module ActiveRecord
           @columns_hash = columns_hash.freeze
           @columns = @columns_hash.values.freeze
           @column_names = @columns.map(&:name).freeze
+          candidates = context.schema_cache.returning_candidates(context.table_name)
+          @insert_returning_candidates = candidates["insert"].filter_map { |name| @columns_hash[name] }.freeze
+          @returning_columns_for_update = candidates["update"].select { |name| @columns_hash.key?(name) }.freeze
         end
 
         def resolve_model_hooks(context)
@@ -91,6 +95,8 @@ module ActiveRecord
           alias_method :timestamp_attributes_for_create_in_model, :columns_hash
           alias_method :timestamp_attributes_for_update_in_model, :columns_hash
           alias_method :all_timestamp_attributes_in_model, :columns_hash
+          alias_method :insert_returning_candidates, :columns_hash
+          alias_method :returning_columns_for_update, :columns_hash
         end
       end
     end

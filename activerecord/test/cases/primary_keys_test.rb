@@ -12,6 +12,7 @@ require "models/mixed_case_monkey"
 require "models/dashboard"
 require "models/non_primary_key"
 require "models/cpk"
+require "models/auto_id"
 
 class PrimaryKeysTest < ActiveRecord::TestCase
   include ActiveSupport::Testing::RactorsAssertions
@@ -29,6 +30,26 @@ class PrimaryKeysTest < ActiveRecord::TestCase
   def test_returning_columns_for_insert_is_ractor_shareable
     columns = Topic._returning_columns_for_insert(ActiveRecord::Base.lease_connection)
     assert_ractor_shareable columns
+  end
+
+  def test_returning_columns_for_insert_are_narrowed_by_each_connection
+    key_only = Object.new
+    def key_only.select_returning_columns_for_insert(columns) = columns.select { |column| column.name == "auto_id" }
+    everything = Object.new
+    def everything.select_returning_columns_for_insert(columns) = columns
+
+    assert_equal ["auto_id"], AutoId._returning_columns_for_insert(key_only)
+    assert_equal ["published_at", "auto_id"], AutoId._returning_columns_for_insert(everything)
+  end
+
+  def test_returning_columns_for_insert_fall_back_to_the_primary_key_when_none_are_selected
+    nothing = Object.new
+    def nothing.select_returning_columns_for_insert(_columns) = []
+
+    assert_equal ["auto_id"], AutoId._returning_columns_for_insert(nothing)
+    assert_equal ["shop_id", "id"], Cpk::Order._returning_columns_for_insert(nothing)
+    assert_equal [], NonPrimaryKey._returning_columns_for_insert(nothing)
+    assert_ractor_shareable AutoId._returning_columns_for_insert(nothing)
   end
 
   def test_to_key_with_default_primary_key

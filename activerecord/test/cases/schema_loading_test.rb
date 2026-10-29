@@ -256,6 +256,36 @@ class SchemaLoadingTest < ActiveRecord::TestCase
     end
   end
 
+  def test_returning_column_candidates_come_from_the_loaded_schema_cache
+    with_temporary_connection_pool do
+      if in_memory_db?
+        ActiveRecord::Base.connection_pool.with_connection do |connection|
+          connection.create_table :tasks do |t|
+            t.datetime :starting
+            t.datetime :ending
+          end
+        end
+      end
+
+      klass = define_model do |c|
+        c.table_name = :tasks
+      end
+
+      klass.connection_pool.schema_cache.load!
+      klass.connection_pool.schema_cache.add("tasks")
+      klass.connection_pool.disconnect!
+      klass.send(:reload_schema_from_cache)
+
+      mapped_table = assert_no_queries(include_schema: true) do
+        klass.mapped_table_for(klass.schema_context)
+      end
+
+      assert_equal ["id"], mapped_table.insert_returning_candidates.map(&:name)
+      assert_empty mapped_table.returning_columns_for_update
+      assert_not_predicate klass.connection_pool, :connected?
+    end
+  end
+
   private
     def define_model
       Class.new(ActiveRecord::Base) do

@@ -522,23 +522,11 @@ module ActiveRecord
       end
 
       def _returning_columns_for_insert(connection) # :nodoc:
-        @_returning_columns_for_insert || begin
-          columns = schema_context._returning_columns_for_insert(connection)
-
-          ActiveSupport::Ractors.on_main(self) do
-            @_returning_columns_for_insert ||= columns
-          end
-        end
+        schema_context._returning_columns_for_insert(connection)
       end
 
-      def _returning_columns_for_update(connection) # :nodoc:
-        @_returning_columns_for_update || begin
-          columns = schema_context._returning_columns_for_update(connection)
-
-          ActiveSupport::Ractors.on_main(self) do
-            @_returning_columns_for_update ||= columns
-          end
-        end
+      def _returning_columns_for_update # :nodoc:
+        schema_context._returning_columns_for_update
       end
 
       # Returns the column object for the named attribute.
@@ -678,8 +666,6 @@ module ActiveRecord
         def reload_schema_contexts_from_cache
           @schema_context = nil
           @mapped_table_entry = nil
-          @_returning_columns_for_insert = nil
-          @_returning_columns_for_update = nil
         end
 
         def schema_loaded?

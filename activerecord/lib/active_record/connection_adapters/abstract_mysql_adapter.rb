@@ -215,8 +215,8 @@ module ActiveRecord
         mariadb? && database_version >= "10.5.0"
       end
 
-      def return_value_after_insert?(column) # :nodoc:
-        supports_insert_returning? ? column.auto_populated_on_insert? : column.auto_increment?
+      def select_returning_columns_for_insert(columns) # :nodoc:
+        supports_insert_returning? ? columns : columns.select(&:auto_increment?)
       end
 
       # See https://dev.mysql.com/doc/refman/8.0/en/invisible-indexes.html for more details on MySQL feature.

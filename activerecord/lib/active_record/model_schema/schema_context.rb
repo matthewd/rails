@@ -164,17 +164,13 @@ module ActiveRecord
       end
 
       def _returning_columns_for_insert(connection)
-        auto_populated_columns = columns.filter_map do |c|
-          -c.name if connection.return_value_after_insert?(c)
-        end
+        returning_columns = connection.select_returning_columns_for_insert(mapped_table.insert_returning_candidates).map { |c| -c.name }
 
-        (auto_populated_columns.empty? ? Array(mapped_table.model_primary_key_definition.name) : auto_populated_columns).freeze
+        (returning_columns.empty? ? Array(mapped_table.model_primary_key_definition.name) : returning_columns).freeze
       end
 
-      def _returning_columns_for_update(connection)
-        columns.filter_map do |c|
-          c.name if connection.return_value_after_update?(c)
-        end.freeze
+      def _returning_columns_for_update
+        mapped_table.returning_columns_for_update
       end
 
       def cached_find_by_statement(connection, key, &block) # :nodoc:

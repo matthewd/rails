@@ -122,6 +122,41 @@ module ActiveRecord
         end
       end
 
+      def test_yaml_loads_5_1_dump_without_returning_candidates_still_derives_them
+        cache = load_bound_reflection(schema_dump_5_1_path)
+
+        @connection.stub(:return_value_after_insert?, ->(column) { column.name == "id" }) do
+          assert_equal({ "insert" => ["id"], "update" => [] }, cache.returning_candidates("posts"))
+        end
+      end
+
+      def test_returning_candidates_are_captured_with_live_columns
+        expected = ["insert", "update"].index_with do |write|
+          @connection.columns("courses").filter_map do |column|
+            column.name if @connection.public_send(:"return_value_after_#{write}?", column)
+          end
+        end
+        assert_equal ["id"], expected["insert"]
+
+        @cache.columns("courses")
+
+        @connection.stub(:return_value_after_insert?, ->(_column) { flunk "candidates were not captured" }) do
+          assert_no_queries(include_schema: true) do
+            assert_equal expected, @cache.returning_candidates("courses")
+          end
+        end
+      end
+
+      def test_clear_data_source_cache_forgets_returning_candidates
+        assert_equal ["id"], @cache.returning_candidates("courses")["insert"]
+
+        @cache.clear_data_source_cache!("courses")
+
+        @connection.stub(:return_value_after_insert?, false) do
+          assert_equal [], @cache.returning_candidates("courses")["insert"]
+        end
+      end
+
       def test_primary_key_for_existent_table
         assert_equal "id", @cache.primary_keys("courses")
       end
@@ -453,6 +488,20 @@ module ActiveRecord
             assert_equal "id", cache.primary_keys("courses")
             assert_equal 1, cache.indexes("courses").size
           end
+        end
+      end
+
+      def test_dump_and_load_returning_candidates
+        expected = new_bound_reflection.returning_candidates("courses")
+        assert_equal ["id"], expected["insert"]
+
+        Tempfile.create(["schema_cache-", format_extension]) do |tempfile|
+          new_bound_reflection.dump_to(tempfile.path)
+          reset_deduplicable!
+
+          cache = load(File.read(tempfile.path))
+
+          assert_equal expected, cache.returning_candidates(:__unused_pool__, "courses")
         end
       end
 
