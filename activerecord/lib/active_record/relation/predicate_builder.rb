@@ -150,12 +150,7 @@ module ActiveRecord
         end
 
         if key.is_a?(Array)
-          queries = Array(value).map do |ids_set|
-            ids_set = ids_set.id if ids_set.respond_to?(:id)
-            raise ArgumentError, "Expected corresponding value for #{key} to be an Array" unless ids_set.is_a?(Array)
-            build_from_hash(key.zip(ids_set).to_h, &block)
-          end
-          grouping_queries(queries)
+          expand_tuples(key, Array(value), &block)
         elsif value.is_a?(Hash) && !table.has_column?(key)
           table.associated_table(key, &block)
             .predicate_builder.expand_from_hash(value.stringify_keys, &block)
@@ -230,6 +225,79 @@ module ActiveRecord
 
     private
       attr_reader :table
+
+      def expand_tuples(key, tuples, &block)
+        attributes = composite_in_attributes(key, &block) if tuples.size > 1
+        return expand_each_tuple(key, tuples, &block) unless attributes
+
+        rows = []
+        queries = []
+
+        tuples.each do |tuple|
+          tuple = tuple.id if tuple.respond_to?(:id)
+          if tuple.is_a?(Array) && tuple.any? { |value| value.respond_to?(:id) }
+            tuple = tuple.map { |value| value.respond_to?(:id) ? value.id : value }
+          end
+
+          if composite_in_tuple?(key, tuple)
+            rows << tuple
+          else
+            queries << expand_tuple(key, tuple, &block)
+          end
+        end
+
+        if rows.size < 2
+          queries.unshift(expand_tuple(key, rows.first, &block)) unless rows.empty?
+          return grouping_queries(queries)
+        end
+
+        predicate = Arel::Nodes::CompositeIn.new(attributes, rows, :in)
+        return predicate if queries.empty?
+
+        queries.map! { |query| Arel::Nodes::And.new(query) }
+        Arel::Nodes::Grouping.new(Arel::Nodes::Or.new(queries.unshift(predicate)))
+      end
+
+      def expand_each_tuple(key, tuples, &block)
+        grouping_queries(tuples.map { |tuple| expand_tuple(key, tuple, &block) })
+      end
+
+      def expand_tuple(key, tuple, &block)
+        tuple = tuple.id if tuple.respond_to?(:id)
+        raise ArgumentError, "Expected corresponding value for #{key} to be an Array" unless tuple.is_a?(Array)
+        build_from_hash(key.zip(tuple).to_h, &block)
+      end
+
+      def composite_in_attributes(key, &block)
+        return if key.empty?
+
+        attributes = key.map do |column_name|
+          table = self.table
+
+          if (idx = column_name.rindex("."))
+            table_name = column_name[0, idx]
+            return if table.has_column?(table_name)
+
+            table = table.associated_table(table_name, &block)
+            column_name = column_name[idx + 1, column_name.length]
+          end
+
+          return if table.associated_with(column_name) || table.aggregated_with?(column_name)
+
+          predicate_attribute(table.arel_table[column_name])
+        end
+
+        attributes if attributes.uniq.size == attributes.size
+      end
+
+      def composite_in_tuple?(key, tuple)
+        return false unless tuple.is_a?(Array) && tuple.size == key.size
+
+        # Like ArrayHandler, combine membership values without dispatching a
+        # predicate handler for each one. Deferred parameters still need their
+        # QueryAttributes so StatementCache can substitute them at execution.
+        tuple.none? { |value| value.nil? || Range === value || StatementCache::Substitute === value }
+      end
 
       def grouping_queries(queries)
         if queries.one?

@@ -183,6 +183,12 @@ module Arel # :nodoc: all
           visit_edge o, "attribute"
         end
 
+        def visit_Arel_Nodes_CompositeIn(o)
+          visit_edge o, "tuples"
+          visit_edge o, "type"
+          visit_edge o, "attributes"
+        end
+
         def visit_Arel_Attributes_Attribute(o)
           visit_edge o, "relation"
           visit_edge o, "name"

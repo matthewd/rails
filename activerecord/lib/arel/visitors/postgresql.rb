@@ -131,6 +131,20 @@ module Arel # :nodoc: all
           visit o.right, collector
         end
 
+        # PostgreSQL expands a row-value list into a nested OR for every row, which
+        # exhausts the server's stack (max_stack_depth) at several thousand rows;
+        # beyond a size well clear of that, compile the equivalent flat OR instead.
+        ROW_VALUE_IN_LIMIT = 1000
+        private_constant :ROW_VALUE_IN_LIMIT
+
+        def visit_Arel_Nodes_CompositeIn(o, collector)
+          if o.rows_count > ROW_VALUE_IN_LIMIT
+            super
+          else
+            visit_composite_in_with_row_values(o, collector)
+          end
+        end
+
         # Placeholders for the first binds of a query, rather than a new String for every
         # bind of every query compiled.
         BIND_PLACEHOLDERS = Array.new(256) { |i| -"$#{i}" }.freeze

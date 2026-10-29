@@ -58,6 +58,38 @@ module ActiveRecord
       end
     end
 
+    def test_tuple_parameters
+      first = Book.create!(name: "first tuple", author_id: 1001)
+      second = Book.create!(name: "second tuple", author_id: 1002)
+
+      each_statement_mode do
+        cache = StatementCache.create(@connection) do |params|
+          Book.where([:author_id, :name] => [[params.bind, params.bind], [params.bind, params.bind]]).order(:id)
+        end
+
+        assert_equal [first, second], cache.execute([1001, "first tuple", 1002, "second tuple"], @connection)
+        assert_equal [second], cache.execute([1001, "missing", 1002, "second tuple"], @connection)
+        assert_empty cache.execute([1001, "missing", 1002, "missing"], @connection)
+      end
+    end
+
+    def test_tuple_parameters_after_fixed_tuples
+      first = Book.create!(name: "first tuple", author_id: 1001)
+      second = Book.create!(name: "second tuple", author_id: 1002)
+      third = Book.create!(name: "third tuple", author_id: 1003)
+
+      each_statement_mode do
+        cache = StatementCache.create(@connection) do |params|
+          tuples = [[1001, "first tuple"], [1004, "fourth tuple"], [params.bind, params.bind]]
+          Book.where([:author_id, :name] => tuples).order(:id)
+        end
+
+        assert_equal [first, second], cache.execute([1002, "second tuple"], @connection)
+        assert_equal [first, third], cache.execute([1003, "third tuple"], @connection)
+        assert_equal [first], cache.execute([1002, "missing"], @connection)
+      end
+    end
+
     def test_repeated_parameters_share_one_input
       first = Book.create!(name: "Matched", isbn: "Other")
       second = Book.create!(name: "Other", isbn: "Matched")

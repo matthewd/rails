@@ -137,6 +137,19 @@ class EachTest < ActiveRecord::TestCase
     end
   end
 
+  def test_in_batches_with_composite_cursor_yields_relations_constrained_to_each_batch
+    expected = Cpk::Order.order(:shop_id, :id).map(&:id).each_slice(2).to_a
+    assert_operator expected.size, :>, 1
+
+    batches = []
+    Cpk::Order.in_batches(of: 2, load: true) do |batch|
+      assert_instance_of Arel::Nodes::CompositeIn, batch.where_clause.ast
+      batches << [batch.map(&:id), batch.reload.map(&:id).sort]
+    end
+
+    assert_equal expected.map { |ids| [ids, ids] }, batches
+  end
+
   def test_record_batches_read_only_the_last_records_cursor
     batches = 0
 

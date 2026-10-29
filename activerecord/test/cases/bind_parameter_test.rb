@@ -104,6 +104,24 @@ if ActiveRecord::Base.lease_connection.prepared_statements
         assert_not_includes statement_cache, to_sql_key(topics.arel)
       end
 
+      def test_tuple_membership_uses_binds_without_caching_prepared_statements
+        values = Topic.order(:id).limit(3).pluck(:id, :title)
+        @connection.clear_cache!
+
+        [2, 3].each do |size|
+          tuples = values.first(size)
+          topics = Topic.where([:id, :title] => tuples).order(:id)
+          _sql, binds, preparable = @connection.to_sql_and_binds(topics.arel)
+
+          assert_equal false, preparable
+          assert_equal tuples.flatten, binds.map(&:value_for_database)
+          assert_equal tuples.map(&:first), topics.map(&:id)
+          assert_not_includes statement_cache, to_sql_key(topics.arel)
+        end
+
+        assert_empty statement_cache
+      end
+
       def test_statement_cache_with_sql_string_literal
         @connection.clear_cache!
 

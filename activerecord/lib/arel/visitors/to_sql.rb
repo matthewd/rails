@@ -369,6 +369,20 @@ module Arel # :nodoc: all
           collector << ")"
         end
 
+        def visit_Arel_Nodes_CompositeIn(o, collector)
+          collector.preparable = false
+
+          tuples = o.casted_values.transpose
+
+          if tuples.empty?
+            return collector << (o.type == :in ? "1=0" : "1=1")
+          end
+
+          collector << (o.type == :in ? "(" : "NOT (")
+          collect_composite_in_equalities(o, tuples, collector)
+          collector << ")"
+        end
+
         def visit_Arel_SelectManager(o, collector)
           collector << "("
           visit(o.ast, collector) << ")"
@@ -932,6 +946,74 @@ module Arel # :nodoc: all
 
         def unboundable?(value)
           value.respond_to?(:unboundable?) && value.unboundable?
+        end
+
+        def visit_composite_in_with_row_values(o, collector)
+          collector.preparable = false
+
+          values = o.casted_values
+          if values.first.empty?
+            return collector << (o.type == :in ? "1=0" : "1=1")
+          end
+
+          collector << "("
+          inject_join(o.attributes, collector, ", ")
+          collector << (o.type == :in ? ") IN (" : ") NOT IN (")
+          collect_composite_in_tuples(o, values, collector)
+          collector << ")"
+        end
+
+        def collect_composite_in_equalities(o, tuples, collector)
+          attributes = o.attributes
+          equalities = attributes.map do |attribute|
+            "#{visit(attribute, Arel::Collectors::SQLString.new).value} = " unless attribute.respond_to?(:comparison_expression)
+          end
+
+          tuples.each_with_index do |tuple, row|
+            collector << " OR " unless row == 0
+
+            tuple.each_index do |index|
+              collector << " AND " unless index == 0
+              value = tuple[index]
+              attribute = attributes[index]
+
+              if equalities[index]
+                collector << equalities[index]
+                collector.add_bind(o.bind_for(index, value), &bind_block)
+              else
+                visit attribute, collector
+                collector << " = "
+                collect_composite_in_bind(o, attribute, index, value, collector)
+              end
+            end
+          end
+
+          collector
+        end
+
+        def collect_composite_in_tuples(o, values, collector)
+          attributes = o.attributes
+
+          values.first.each_index do |row|
+            collector << (row == 0 ? "(" : "), (")
+
+            values.each_index do |index|
+              collector << ", " unless index == 0
+              collect_composite_in_bind(o, attributes[index], index, values[index][row], collector)
+            end
+          end
+
+          collector << ")"
+        end
+
+        def collect_composite_in_bind(o, attribute, index, value, collector)
+          bind = o.bind_for(index, value)
+
+          if attribute.respond_to?(:comparison_expression)
+            visit attribute.comparison_expression(bind), collector
+          else
+            collector.add_bind(bind, &bind_block)
+          end
         end
 
         def has_join_sources?(o)

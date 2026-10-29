@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 require_relative "../helper"
+require "active_model"
+require "arel/collectors/bind"
+require "arel/collectors/composite"
 
 module Arel
   module Visitors
@@ -359,6 +362,40 @@ module Arel
         search = Nodes.build_quoted("{foo,bar,baz}")
         sql = compile Nodes::Overlaps.new(column, search)
         assert_like %{ "products"."tags" && '{foo,bar,baz}' }, sql
+      end
+
+      test "Nodes::CompositeIn compares row values" do
+        node = Nodes::CompositeIn.new([@table[:id], @table[:name]], [[1, "Bobby"], [2, "Robert"]], :in,
+          types: [ActiveModel::Type::Integer.new, ActiveModel::Type::String.new])
+
+        assert_like %{
+          ("users"."id", "users"."name") IN (($1, $2), ($3, $4))
+        }, compile(node)
+        assert_like %{
+          ("users"."id", "users"."name") NOT IN (($1, $2), ($3, $4))
+        }, compile(node.invert)
+      end
+
+      test "Nodes::CompositeIn compares row values up to a limit and expands beyond it" do
+        compile_rows = -> (count) do
+          rows = Array.new(count) { |i| [i, "name#{i}"] }
+          node = Nodes::CompositeIn.new([@table[:id], @table[:name]], rows, :in,
+            types: [ActiveModel::Type::Integer.new, ActiveModel::Type::String.new])
+          collector = Collectors::Composite.new(Collectors::SQLString.new, Collectors::Bind.new)
+          collector.preparable = true
+          sql, binds = @visitor.accept(node, collector).value
+          assert_equal false, collector.preparable
+          assert_equal rows.flatten, binds.map(&:value_for_database)
+          sql
+        end
+
+        sql = compile_rows.call(1000)
+        assert sql.start_with?('("users"."id", "users"."name") IN (($1, $2), ($3, $4)')
+        assert sql.end_with?("($1999, $2000))")
+
+        sql = compile_rows.call(1001)
+        assert sql.start_with?('("users"."id" = $1 AND "users"."name" = $2 OR "users"."id" = $3')
+        assert sql.end_with?('"users"."name" = $2002)')
       end
 
       private

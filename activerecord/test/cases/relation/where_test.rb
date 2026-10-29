@@ -3,6 +3,7 @@
 require "cases/helper"
 require "models/author"
 require "models/binary"
+require "models/book"
 require "models/cake_designer"
 require "models/car"
 require "models/category"
@@ -203,13 +204,17 @@ module ActiveRecord
     end
 
     def test_with_tuple_syntax_and_large_values_list
-      # sqlite3 raises "Expression tree is too large (maximum depth 1000)"
-      skip if current_adapter?(:SQLite3Adapter)
-
       assert_nothing_raised do
         ids = [[1, 2]] * 1500
-        Cpk::Book.where([:author_id, :id] => ids).to_sql
+        Cpk::Book.where([:author_id, :id] => ids).to_a
       end
+    end
+
+    def test_with_tuple_syntax_and_very_large_values_list
+      book = Cpk::Book.create!(id: [1, 2])
+      ids = Array.new(20_000) { |i| [1, i + 3] } << [1, 2]
+
+      assert_equal [book], Cpk::Book.where([:author_id, :id] => ids).to_a
     end
 
     def test_where_with_tuple_syntax_referencing_another_table
@@ -237,6 +242,230 @@ module ActiveRecord
 
       assert_equal %w{authors}, relation.references_values
       assert_equal [categorization], relation
+    end
+
+    def test_where_with_tuple_syntax_and_several_tuples_references_another_table
+      first = categorizations(:mary_thinking_general)
+      second = categorizations(:mary_thinking_sti)
+
+      key = [:category_id, "authors.name"]
+      conditions = [first, second].map { |categorization| [categorization.category_id, categorization.author.name] }
+      relation = Categorization.joins(:author).where(key => conditions)
+
+      assert_instance_of Arel::Nodes::CompositeIn, relation.where_clause.ast
+      assert_equal [first, second].sort_by(&:id), relation.sort_by(&:id)
+    end
+
+    def test_where_with_tuple_syntax_compares_tuples_as_a_whole
+      book_one = Cpk::Book.create!(id: [1, 2], title: "Tuples")
+      book_two = Cpk::Book.create!(id: [3, 4], title: "Tuples")
+      book_three = Cpk::Book.create!(id: [1, 4], title: "Tuples")
+      relation = Cpk::Book.where([:author_id, :id] => [[1, 2], [3, 4]])
+      books = Cpk::Book.where(title: "Tuples")
+
+      assert_instance_of Arel::Nodes::CompositeIn, relation.where_clause.ast
+      assert_equal [book_one, book_two].sort, relation.sort
+      assert_equal [book_three], books.where.not([:author_id, :id] => [[1, 2], [3, 4]])
+    end
+
+    def test_where_with_tuple_syntax_and_attribute_aliases
+      first_topic = topics(:first)
+      third_topic = topics(:third)
+
+      conditions = [first_topic, third_topic].map { |topic| [topic.title, topic.author_name] }
+
+      assert_equal [first_topic, third_topic].sort, Topic.where([:heading, :author_name] => conditions).sort
+    end
+
+    def test_where_with_tuple_syntax_and_nil_components
+      book_one = Cpk::Book.create!(id: [1, 2], order_id: 10, title: "Tuples")
+      book_two = Cpk::Book.create!(id: [3, 4], title: "Tuples")
+      book_three = Cpk::Book.create!(id: [5, 6], order_id: 12, title: "Tuples")
+      relation = Cpk::Book.where([:author_id, :order_id] => [[1, 10], [3, nil], [5, 99]])
+      books = Cpk::Book.where(title: "Tuples")
+
+      assert_equal [book_one, book_two].sort, relation.sort
+      assert_equal [book_three], books.where.not([:author_id, :order_id] => [[1, 10], [3, nil], [5, 99]])
+    end
+
+    def test_where_with_tuple_syntax_omits_tuples_with_unserializable_components
+      book_one = Cpk::Book.create!(id: [1, 2], title: "Tuples")
+      book_two = Cpk::Book.create!(id: [3, 4], title: "Tuples")
+      books = Cpk::Book.where(title: "Tuples")
+
+      assert_equal [book_one], Cpk::Book.where([:author_id, :id] => [[1, 2], [2**70, 4]])
+      assert_equal [book_two], books.where.not([:author_id, :id] => [[1, 2], [2**70, 4]])
+      assert_empty books.where([:author_id, :id] => [[2**70, 2], [2**70, 4]])
+      assert_equal [book_one, book_two].sort, books.where.not([:author_id, :id] => [[2**70, 2], [2**70, 4]]).sort
+    end
+
+    def test_where_with_tuple_syntax_omits_components_serialized_as_nil
+      book_one = Cpk::Book.create!(id: [1, 2], title: "Tuples")
+      book_two = Cpk::Book.create!(id: [3, 4], title: "Tuples")
+      book_three = Cpk::Book.create!(id: [5, 6], title: "Tuples")
+      books = Cpk::Book.where(title: "Tuples")
+
+      assert_equal [book_one], Cpk::Book.where([:author_id, :id] => [[1, 2], ["three", 4]])
+      assert_equal [book_two, book_three].sort, books.where.not([:author_id, :id] => [[1, 2], ["three", 4]]).sort
+    end
+
+    def test_where_with_tuple_syntax_omits_normalized_nil_components
+      topic = Class.new(ActiveRecord::Base) do
+        self.table_name = "topics"
+        normalizes :author_name, with: ->(value) { value.strip.presence }
+      end
+      first_topic = topic.find(topics(:first).id)
+      unnamed_topic = topic.create!(title: "Unnamed", author_name: nil)
+      conditions = [[first_topic.title, " #{first_topic.author_name} "], ["Unnamed", " "]]
+
+      assert_equal [first_topic], topic.where([:title, :author_name] => conditions).to_a
+      assert_includes topic.where.not([:title, :author_name] => conditions), unnamed_topic
+      assert_not_includes topic.where.not([:title, :author_name] => conditions), first_topic
+      assert_equal topic.count - 1, topic.where.not([:title, :author_name] => conditions).count
+    end
+
+    def test_tuple_membership_compacts_unknown_enum_values_like_scalar_membership
+      book = Class.new(ActiveRecord::Base) do
+        self.table_name = "books"
+        enum :nullable_status, [:single, :married]
+      end
+      single = book.create!(author_id: 1001, nullable_status: :single)
+      book.create!(author_id: 1001, nullable_status: nil)
+      married = book.create!(author_id: 1001, nullable_status: :married)
+      books = book.where(author_id: 1001)
+      conditions = [[1001, "single"], [1001, "bogus"]]
+
+      assert_equal [single], books.where([:author_id, :nullable_status] => conditions).to_a
+      assert_equal [married], books.where.not([:author_id, :nullable_status] => conditions).to_a
+      assert_equal books.where(nullable_status: ["single", "bogus"]).to_a,
+        books.where([:author_id, :nullable_status] => conditions).to_a
+      assert_equal books.where.not(nullable_status: ["single", "bogus"]).to_a,
+        books.where.not([:author_id, :nullable_status] => conditions).to_a
+    end
+
+    def test_where_with_tuple_syntax_separates_range_components
+      book_one = Cpk::Book.create!(id: [1, 2], title: "Tuples")
+      book_two = Cpk::Book.create!(id: [1, 3], title: "Tuples")
+      book_three = Cpk::Book.create!(id: [3, 4], title: "Tuples")
+      Cpk::Book.create!(id: [5, 6], title: "Tuples")
+      books = Cpk::Book.where(title: "Tuples")
+
+      assert_equal [book_one, book_two, book_three].sort, books.where([:author_id, :id] => [[3, 4], [1, 1..3], [7, 8]]).sort
+    end
+
+    def test_tuple_membership_treats_collection_components_as_values_in_any_position
+      book_one = Cpk::Book.create!(id: [1, 2], title: "Tuples")
+      book_two = Cpk::Book.create!(id: [1, 3], title: "Tuples")
+      book_three = Cpk::Book.create!(id: [3, 4], title: "Tuples")
+      other_book = Cpk::Book.create!(id: [5, 6], title: "Tuples")
+      books = Cpk::Book.where(title: "Tuples")
+      values = [[2, 3], Set[2, 3]]
+
+      values.each do |value|
+        tuples = [[3, 4], [1, value], [7, 8]]
+
+        tuples.size.times do |index|
+          conditions = { [:author_id, :id] => tuples.rotate(index) }
+
+          assert_equal [book_three], books.where(conditions).to_a
+          assert_equal [book_one, book_two, other_book].sort, books.where.not(conditions).sort
+        end
+      end
+    end
+
+    def test_tuple_membership_normalizes_id_components_in_any_position
+      book_one = Cpk::Book.create!(id: [1, 2], title: "Tuples")
+      book_two = Cpk::Book.create!(id: [3, 4], title: "Tuples")
+      other_book = Cpk::Book.create!(id: [1, 3], title: "Tuples")
+      books = Cpk::Book.where(title: "Tuples")
+      id_value = Struct.new(:id).new(2)
+      values = [id_value, Post.new(id: 2), SimpleDelegator.new(Post.new(id: 2))]
+
+      values.each do |value|
+        tuples = [[3, 4], [1, value], [7, 8]]
+
+        tuples.size.times do |index|
+          conditions = { [:author_id, :id] => tuples.rotate(index) }
+
+          assert_equal [book_one, book_two].sort, books.where(conditions).sort
+          assert_equal [other_book], books.where.not(conditions).to_a
+        end
+      end
+    end
+
+    def test_tuple_membership_treats_sql_literals_as_values
+      literal = Topic.create!(title: "1 + 1", author_name: "Literal")
+      other = Topic.create!(title: "Other", author_name: "Other")
+      conditions = [[Arel.sql("1 + 1"), "Literal"], ["Other", "Other"]]
+
+      assert_equal [literal, other].sort, Topic.where([:title, :author_name] => conditions).sort
+    end
+
+    def test_tuple_membership_separates_nil_ids_from_new_records
+      first = Cpk::Book.create!(id: [1, 2], order_id: nil)
+      second = Cpk::Book.create!(id: [3, 4], order_id: 7)
+      new_record = Post.new
+      tuples = [[1, new_record], [3, Post.new(id: 7)], [5, 8]]
+
+      assert_equal [first, second].sort, Cpk::Book.where([:author_id, :order_id] => tuples).sort
+      assert_same new_record, tuples.first.last
+    end
+
+    def test_where_with_tuple_syntax_and_serialized_collection_components
+      scalar = Topic.create!(title: "Tuples", content: "plain")
+      array = Topic.create!(title: "Tuples", content: [1, 2])
+      hash = Topic.create!(title: "Tuples", content: { "key" => "value" })
+      other = Topic.create!(title: "Tuples", content: "other")
+      topics = Topic.where(title: "Tuples")
+      tuples = [[scalar.id, "plain"], [array.id, [1, 2]], [hash.id, { "key" => "value" }], [other.id, "missing"]]
+
+      tuples.size.times do |index|
+        conditions = { [:id, :content] => tuples.rotate(index) }
+
+        assert_equal [scalar, array, hash].sort, topics.where(conditions).sort
+        assert_equal [other], topics.where.not(conditions).to_a
+      end
+    end
+
+    def test_where_with_tuple_syntax_and_dotted_serialized_hash_keys
+      first = Topic.create!(content: { "key" => "first" })
+      second = Topic.create!(content: { "key" => "second" })
+      conditions = { ["content.key", :id] => [["first", first.id], ["second", second.id]] }
+
+      assert_equal [first, second].sort, Topic.where(conditions).sort
+    end
+
+    def test_where_with_tuple_syntax_and_duplicate_key_columns
+      first = Cpk::Book.create!(id: [1, 2], title: "Tuples")
+      second = Cpk::Book.create!(id: [3, 4], title: "Tuples")
+      books = Cpk::Book.where(title: "Tuples")
+
+      # The last component for a repeated column wins.
+      assert_equal [first, second].sort, books.where([:id, :id] => [[0, 2], [0, 4]]).sort
+      assert_equal [first], books.where([:id, "cpk_books.id"] => [[2, 2], [4, 2]]).to_a
+
+      aliased = Book.create!(name: "first tuple", author_id: 1001)
+      assert_equal [aliased], Book.where(id: aliased.id).where([:title, :name] => [["x", "first tuple"], ["y", "other"]]).to_a
+    end
+
+    def test_where_with_tuple_syntax_and_no_key_columns
+      assert_empty Cpk::Book.where([] => [[], []]).to_a
+    end
+
+    def test_where_with_one_tuple_is_introspected_as_equalities
+      relation = Cpk::Book.where([:author_id, :id] => [[1, 2]])
+
+      assert_equal({ "author_id" => 1, "id" => 2 }, relation.where_values_hash)
+    end
+
+    def test_unscope_and_rewhere_of_a_tuple_predicate_require_every_column
+      relation = Cpk::Book.where([:author_id, :id] => [[1, 2], [3, 4]])
+      tuples = { [:author_id, :id] => [[5, 6], [7, 8]] }
+
+      assert_equal relation.where_clause, relation.unscope(where: :author_id).where_clause
+      assert_empty relation.unscope(where: [:author_id, :id]).where_clause
+      assert_equal relation.where(author_id: 1).where_clause, relation.rewhere(author_id: 1).where_clause
+      assert_equal relation.where(tuples).where_clause, relation.rewhere(tuples).where_clause
     end
 
     def test_where_with_nil_cpk_association
