@@ -474,6 +474,29 @@ module ActiveRecord
         assert ShardConnectionTestModel.find_by_shard_key("foo")
       end
 
+      def test_declared_primary_key_read_early_does_not_bind_the_schema_to_that_shard
+        SecondaryBase.connects_to shards: {
+          default: { writing: { database: ":memory:", adapter: "sqlite3" } },
+          one: { writing: { database: ":memory:", adapter: "sqlite3" } }
+        }
+        [:default, :one].each do |shard_name|
+          ActiveRecord::Base.connected_to(shard: shard_name) do
+            SecondaryBase.lease_connection.execute("CREATE TABLE shard_lock_models (id INTEGER PRIMARY KEY, #{shard_name}_column VARCHAR(255))")
+          end
+        end
+        model = Class.new(SecondaryBase) do
+          self.table_name = "shard_lock_models"
+          self.primary_key = "id"
+        end
+        assert_equal "id", model.primary_key
+
+        ActiveRecord::Base.connected_to(shard: :one) do
+          ActiveRecord::Base.prohibit_shard_swapping do
+            assert_equal ["id", "one_column"], model.column_names
+          end
+        end
+      end
+
       def test_swapping_shards_globally_in_a_multi_threaded_environment
         tf_default = Tempfile.open "shard_key_default"
         tf_shard_one = Tempfile.open "shard_key_one"

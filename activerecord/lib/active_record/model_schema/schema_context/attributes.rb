@@ -31,7 +31,7 @@ module ActiveRecord
           @types = defaults.cast_types.tap do |hash|
             hash.default = ActiveModel::Type.default_value
           end
-          default_keys = DatabaseDefaultKeys.new(mapped_table.primary_key_definition, mapped_table.columns_hash)
+          default_keys = DatabaseDefaultKeys.new(mapped_table.model_primary_key_definition, mapped_table.columns_hash)
           @builder = ActiveModel::AttributeSet::Builder.new(@types, defaults, default_keys)
           @column_defaults = defaults.to_hash.freeze if defaults.read_only?
         end

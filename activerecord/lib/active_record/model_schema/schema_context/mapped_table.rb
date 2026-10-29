@@ -7,7 +7,7 @@ module ActiveRecord
     class SchemaContext # :nodoc:
       # The columns of a context's table and the metadata derived from them.
       class MappedTable # :nodoc:
-        attr_reader :primary_key_definition, :columns_hash, :columns, :column_names,
+        attr_reader :primary_key_definition, :model_primary_key_definition, :columns_hash, :columns, :column_names,
           :content_columns, :query_constraints_list, :composite_query_constraints_list,
           :composite_query_constraints_definition, :timestamp_attributes_for_create_in_model,
           :timestamp_attributes_for_update_in_model, :all_timestamp_attributes_in_model
@@ -28,11 +28,12 @@ module ActiveRecord
 
         def resolve_model_hooks(context)
           model_class = context.model_class
-          @primary_key_definition = model_class.primary_key_definition
+          @primary_key_definition = context.resolve_primary_key_definition
+          @model_primary_key_definition = context.reader_primary_key_definition(@primary_key_definition)
 
-          primary_key = model_class.primary_key
+          primary_key = @model_primary_key_definition.name
           @query_constraints_list = context.query_constraints_definition ||
-            context.derive_query_constraints_list(primary_key)
+            context.derive_query_constraints_list(primary_key, context.base_reader_primary_key)
           @composite_query_constraints_list = (@query_constraints_list || Array(primary_key)).freeze
           @composite_query_constraints_definition = ActiveRecord::Key.for(@composite_query_constraints_list)
           @content_columns = @columns.reject do |column|
@@ -55,6 +56,12 @@ module ActiveRecord
           def initialize(context)
             @table_name = context.table_name
             @model_name = context.model_class.to_s
+          end
+
+          attr_reader :primary_key_definition
+
+          def resolve_model_hooks(context)
+            @primary_key_definition = context.resolve_primary_key_definition
           end
 
           def table_exists?

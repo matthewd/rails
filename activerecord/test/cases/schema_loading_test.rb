@@ -17,6 +17,39 @@ module SchemaLoadCounter
 end
 
 class SchemaLoadingTest < ActiveRecord::TestCase
+  def test_building_a_schema_context_does_not_inspect_the_database
+    klass = define_model { |model| model.table_name = "topics" }
+
+    klass.schema_cache.stub(:data_source_exists?, ->(*) { flunk "Building a context inspected the database" }) do
+      assert_not_predicate klass.schema_context, :schema_loaded?
+
+      ["title", ["title", "id"], nil].each do |key|
+        klass.primary_key = key
+        assert_equal ActiveRecord::Key.for(key), klass.schema_context.primary_key_definition
+        assert_not_predicate klass.schema_context, :schema_loaded?
+      end
+    end
+  end
+
+  def test_reading_an_inferred_primary_key_loads_the_schema
+    klass = define_model { |model| model.table_name = "topics" }
+
+    assert_equal "id", klass.primary_key
+    assert_predicate klass.schema_context, :schema_loaded?
+    assert_no_queries(include_schema: true) do
+      assert_includes klass.column_names, "title"
+    end
+  end
+
+  def test_content_columns_uses_inheritance_column_set_after_primary_key_resolution
+    klass = define_model { |model| model.table_name = "topics" }
+    assert_equal "id", klass.primary_key
+
+    klass.inheritance_column = "author_name"
+
+    assert_not_includes klass.content_columns.map(&:name), "author_name"
+  end
+
   def test_inheritance_column_change_refreshes_loaded_descendant_content_columns
     klass = define_model { |model| model.table_name = "topics" }
     models = [klass, Class.new(klass)]
@@ -58,8 +91,19 @@ class SchemaLoadingTest < ActiveRecord::TestCase
     context = klass.schema_context
     klass.table_name = "movies"
 
+    assert_equal "id", context.primary_key
     assert_includes context.column_names, "title"
+    assert_equal "movieid", klass.primary_key
     assert_includes klass.column_names, "name"
+  end
+
+  def test_composite_primary_key_reader_override_is_supported_once_the_schema_loads
+    klass = define_model do |model|
+      model.table_name = "keyboards"
+      def model.primary_key = ["name", "key_number"]
+    end
+
+    assert_equal ["Keys", 4], klass.instantiate("name" => "Keys", "key_number" => 4).id
   end
 
   def test_replaced_context_retains_its_column_filters
@@ -78,6 +122,56 @@ class SchemaLoadingTest < ActiveRecord::TestCase
     ActiveRecord::Base.prohibit_shard_swapping do
       assert_includes context.column_names, "title"
       assert_equal "id", klass.primary_key
+    end
+  end
+
+  def test_context_specific_primary_keys_determine_the_loaded_schema
+    klass = define_model { |model| model.table_name = "topics" }
+    contexts = ["title", "author_name"].map do |key|
+      context = ActiveRecord::ModelSchema::SchemaContext.new(klass, primary_key: key)
+      ActiveSupport::Ractors.make_shareable(context)
+    end
+
+    contexts.each do |context|
+      assert_not_includes context.content_columns.map(&:name), context.primary_key
+      assert_equal [context.primary_key], context.composite_query_constraints_list
+    end
+
+    assert_includes contexts.first.content_columns.map(&:name), "author_name"
+    assert_includes contexts.last.content_columns.map(&:name), "title"
+    assert_equal "id", klass.primary_key
+  end
+
+  def test_declared_primary_key_can_be_read_before_first_table_name_assignment
+    klass = Class.new(ActiveRecord::Base) { self.primary_key = "id" }
+    assert_equal "id", klass.primary_key
+
+    klass.table_name = "topics"
+
+    assert_equal "id", klass.primary_key
+    assert_includes klass.column_names, "title"
+  end
+
+  def test_declared_primary_key_can_be_read_before_table_name_change_without_connection
+    with_temporary_connection_pool do
+      klass = define_model do |model|
+        model.table_name = "topics"
+        model.primary_key = "id"
+      end
+      assert_equal "id", klass.primary_key
+      assert_not_predicate klass.connection_pool, :connected?
+
+      klass.table_name = "tasks"
+
+      assert_not_predicate klass.connection_pool, :connected?
+      if in_memory_db?
+        klass.lease_connection.create_table :tasks do |t|
+          t.datetime :starting
+        end
+      end
+
+      assert_includes klass.column_names, "starting"
+      assert_not_includes klass.column_names, "title"
     end
   end
 
@@ -200,6 +294,32 @@ class SchemaLoadingMissingTableTest < ActiveRecord::TestCase
     assert_equal "late", model.find(record.id).name
   end
 
+  def test_missing_table_inferred_key_is_inferred_again_after_create_table
+    model = define_model
+
+    2.times { assert_equal "id", model.primary_key }
+    assert_raises(ActiveRecord::StatementInvalid, match: "Could not find table 'late_tables'") { model.column_names }
+
+    create_late_table(primary_key: "code")
+
+    assert_equal "code", model.primary_key
+    assert_equal ["code", "name"], model.column_names
+  end
+
+  def test_get_primary_key_override_without_a_table_is_retried_after_create_table
+    model = define_model
+    def model.get_primary_key(base_name)
+      "custom_#{super}"
+    end
+
+    2.times { assert_equal "custom_id", model.primary_key }
+
+    create_late_table(primary_key: "code")
+
+    assert_equal "custom_code", model.primary_key
+    assert_includes model.column_names, "name"
+  end
+
   private
     def define_model
       Class.new(ActiveRecord::Base) do
@@ -208,7 +328,7 @@ class SchemaLoadingMissingTableTest < ActiveRecord::TestCase
       end
     end
 
-    def create_late_table
-      @connection.create_table(:late_tables) { |t| t.string :name }
+    def create_late_table(**options)
+      @connection.create_table(:late_tables, **options) { |t| t.string :name }
     end
 end

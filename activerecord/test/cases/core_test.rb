@@ -336,6 +336,21 @@ class CoreTest < ActiveRecord::TestCase
         assert_equal true, attributes.defaults["approved"].value
       end
 
+      def test_schema_context_loads_its_own_schema_from_a_ractor
+        model = Class.new(ActiveRecord::Base) { self.table_name = "topics" }
+        context = ActiveSupport::Ractors.make_shareable(
+          ActiveRecord::ModelSchema::SchemaContext.new(model, primary_key: "title")
+        )
+
+        column_names, content_columns = on_ractor { [context.column_names, context.content_columns.map(&:name)] }
+
+        assert_predicate context, :schema_loaded?
+        assert_same context.column_names, column_names
+        assert_includes content_columns, "id"
+        assert_not_includes content_columns, "title"
+        assert_equal "id", model.primary_key
+      end
+
       def test_schema_context_shares_columns_but_keeps_attributes_ractor_local
         model = Class.new(ActiveRecord::Base) do
           def self.name = "ractor_schema_context_local_attributes"
