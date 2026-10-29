@@ -4,6 +4,7 @@
 require "active_support/core_ext/enumerable"
 require "active_support/parameter_filter"
 require "active_support/ractors"
+require "active_support/weak_key_map"
 require "concurrent/map"
 
 module ActiveRecord
@@ -288,7 +289,7 @@ module ActiveRecord
 
     module ClassMethods
       def initialize_find_by_cache # :nodoc:
-        ActiveSupport::Ractors[find_by_statement_cache_key] = { true => Concurrent::Map.new, false => Concurrent::Map.new }
+        ActiveSupport::Ractors[find_by_statement_cache_key] = ActiveSupport::WeakKeyMap.new
       end
 
       def find_by_statement_cache_key # :nodoc:
