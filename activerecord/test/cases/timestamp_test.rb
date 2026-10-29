@@ -571,6 +571,19 @@ class TimestampTest < ActiveRecord::TestCase
     assert_equal ["created_at", "updated_at"], toy.send(:all_timestamp_attributes_in_model)
   end
 
+  def test_timestamp_attribute_overrides_can_read_columns
+    model = Class.new(ActiveRecord::Base) do
+      self.table_name = "topics"
+      def self.timestamp_attributes_for_create = column_names.include?("written_on") ? ["written_on"] : super
+    end
+
+    assert_equal ["written_on"], model.timestamp_attributes_for_create_in_model
+
+    record = travel_to(Time.utc(2024, 1, 1)) { model.create!(title: "Written") }.reload
+    assert_equal Time.utc(2024, 1, 1), record.written_on
+    assert_nil record.created_at
+  end
+
   def test_saving_cpk_record_with_touching_should_touch_parent
     order = Cpk::Order.create!(id: [1, 2])
     book = Cpk::Book.create!(id: [3, 4], order: order)

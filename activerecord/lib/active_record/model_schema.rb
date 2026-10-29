@@ -207,19 +207,32 @@ module ActiveRecord
     end
 
     module ClassMethods
-      # The loaded schema context, if any, without loading it.
+      # The schema context already built for this model, if any, without
+      # building one. It may not have loaded its columns yet.
       def current_schema_context # :nodoc:
         @schema_context
       end
 
       def schema_context # :nodoc:
-        return @schema_context if schema_loaded?
-        load_schema
-        @schema_context
+        return @schema_context if @schema_context
+
+        ActiveSupport::Ractors.on_main(self) do
+          @load_schema_monitor.synchronize do
+            @schema_context ||= ActiveSupport::Ractors.make_shareable(build_schema_context)
+          end
+        end
       end
 
       def build_schema_context # :nodoc:
         ActiveRecord::ModelSchema::SchemaContext.new(self)
+      end
+
+      def mapped_table_for(context) # :nodoc:
+        if (entry = @mapped_table_entry) && entry[0].equal?(context)
+          entry[1]
+        else
+          context.load_schema
+        end
       end
 
       # Guesses the table name (in forced lower-case) based on the name of the class in the
@@ -308,6 +321,8 @@ module ActiveRecord
           reset_column_information if connected?
         end
 
+        reload_schema_from_cache if @schema_context
+
         @table_name        = value
         @arel_table        = Arel::Table.new(klass: self)
         @predicate_builder = PredicateBuilder.new(TableMetadata.new(self, @arel_table)) if renaming
@@ -374,6 +389,7 @@ module ActiveRecord
       end
 
       def real_inheritance_column=(value) # :nodoc:
+        reload_schema_from_cache
         self._inheritance_column = value.to_s
       end
 
@@ -599,22 +615,29 @@ module ActiveRecord
 
       # Load the model's schema information either from the schema cache
       # or directly from the database.
-      def load_schema
-        return if schema_loaded?
+      def load_schema(context = schema_context)
+        return if context.schema_loaded?
 
-        @load_schema_monitor.synchronize do
-          unless schema_loaded? || @schema_context
-            @schema_context = build_schema_context
-            @schema_context.load_schema!
-            ActiveSupport::Ractors.make_shareable(@schema_context)
-            unless @schema_hooks_loaded
-              load_schema!
-              @schema_hooks_loaded = true
+        ActiveSupport::Ractors.on_main(self) do
+          @load_schema_monitor.synchronize do
+            unless context.schema_loaded? || @schema_loading_contexts.include?(context)
+              begin
+                @schema_loading_contexts.add(context)
+                mapped_table = context.load_schema!
+                if mapped_table.table_exists? && context.equal?(schema_context) && !@schema_hooks_loaded
+                  load_schema!
+                  @schema_hooks_loaded = true
+                end
+                @mapped_table_entry = [context, mapped_table].freeze if mapped_table.table_exists? && context.equal?(current_schema_context)
+              rescue
+                context.clear_schema
+                reload_schema_from_cache # If the schema loading failed half way through, we must reset the state.
+                raise
+              ensure
+                @schema_loading_contexts.delete(context)
+              end
             end
           end
-        rescue
-          reload_schema_from_cache # If the schema loading failed half way through, we must reset the state.
-          raise
         end
       end
 
@@ -630,6 +653,7 @@ module ActiveRecord
       protected
         def initialize_load_schema_monitor
           @load_schema_monitor = Monitor.new
+          @schema_loading_contexts = Set.new
         end
 
         def reload_schema_from_cache(recursive = true)
@@ -649,6 +673,7 @@ module ActiveRecord
 
         def reload_schema_contexts_from_cache
           @schema_context = nil
+          @mapped_table_entry = nil
           @_returning_columns_for_insert = nil
           @_returning_columns_for_update = nil
         end

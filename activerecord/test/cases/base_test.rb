@@ -1848,6 +1848,14 @@ class BasicsTest < ActiveRecord::TestCase
     assert_equal expected_message, exception.message
   end
 
+  test ".columns_hash names an anonymous model that has no table name" do
+    model = Class.new(ActiveRecord::Base) { self.table_name = nil }
+    exception = assert_raises(ActiveRecord::TableNotSpecified) do
+      model.columns_hash
+    end
+    assert_equal "#{model} has no table configured. Set one with #{model}.table_name=", exception.message
+  end
+
   test "ignored columns have no attribute methods" do
     assert_not_respond_to Developer.new, :first_name
     assert_not_respond_to Developer.new, :first_name=
