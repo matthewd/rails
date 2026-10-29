@@ -5,6 +5,8 @@ module ActiveRecord
   class Key # :nodoc:
     def self.for(name)
       key = case name
+      when Key
+        name
       when Array
         Composite.new(name)
       when nil, false

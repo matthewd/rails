@@ -137,6 +137,48 @@ class EachTest < ActiveRecord::TestCase
     end
   end
 
+  def test_record_batches_read_only_the_last_records_cursor
+    batches = 0
+
+    Cpk::Order.find_in_batches(batch_size: 2) do |batch|
+      assert_empty batch.first.accessed_fields
+      assert_equal ["id", "shop_id"], batch.last.accessed_fields.sort
+      batches += 1
+    end
+
+    assert_operator batches, :>, 1
+  end
+
+  def test_single_column_composite_cursor_batches_like_a_scalar_cursor
+    single_column_key = Class.new(ActiveRecord::Base) do
+      self.table_name = "posts"
+      self.inheritance_column = nil
+      self.primary_key = [:id]
+    end
+    expected = Post.where(id: 3..).order(:id).pluck(:id)
+    ids = ->(records) { records.map { |record| record.read_attribute(:id) } }
+
+    [[Post, { cursor: [:id] }], [Post, { cursor: ["id"] }], [single_column_key, {}]].each do |model, options|
+      assert_equal expected, ids.(model.find_each(batch_size: 2, start: 3, **options))
+      assert_equal expected, ids.(model.find_each(batch_size: 2, start: [3], **options))
+      assert_equal expected.each_slice(2).count, model.find_in_batches(batch_size: 2, start: 3, **options).size
+      [true, false].each do |load|
+        assert_equal expected, model.in_batches(of: 2, load: load, start: 3, **options).flat_map { |batch| batch.pluck(:id).sort }
+      end
+    end
+  end
+
+  def test_batching_with_a_custom_composite_cursor_and_mixed_order
+    expected = Post.order(author_id: :asc, id: :desc).pluck(:author_id, :id)
+    options = { cursor: [:author_id, :id], order: [:asc, :desc] }
+    cursor_values = ->(post) { [post.author_id, post.id] }
+
+    assert_equal expected, Post.find_each(batch_size: 2, **options).map(&cursor_values)
+    assert_equal expected, Post.all.load.find_each(batch_size: 2, **options).map(&cursor_values)
+    assert_equal expected, Post.in_batches(of: 2, **options).each_record.map(&cursor_values)
+    assert_equal expected.each_slice(2).count, Post.in_batches(of: 2, **options).count
+  end
+
   def test_find_in_batches_should_start_from_the_start_option
     assert_queries_count(@total) do
       Post.find_in_batches(batch_size: 1, start: 2) do |batch|
@@ -366,6 +408,12 @@ class EachTest < ActiveRecord::TestCase
     assert_equal "id", enumerator.cursor
     assert_equal :asc, enumerator.order
     assert_equal true, enumerator.use_ranges
+  end
+
+  def test_in_batches_cursor_reader_returns_the_given_cursor_or_the_primary_key
+    assert_equal :id, Post.in_batches(cursor: :id).cursor
+    assert_equal [:author_id, :id], Post.in_batches(cursor: [:author_id, :id]).cursor
+    assert_equal ["shop_id", "id"], Cpk::Order.in_batches.cursor
   end
 
   def test_in_batches_should_yield_relation_if_block_given

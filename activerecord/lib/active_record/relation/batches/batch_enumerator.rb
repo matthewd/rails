@@ -6,12 +6,13 @@ module ActiveRecord
     class BatchEnumerator
       include Enumerable
 
-      def initialize(of: 1000, start: nil, finish: nil, relation:, cursor:, order: :asc, use_ranges: nil) # :nodoc:
+      def initialize(of: 1000, start: nil, finish: nil, relation:, cursor:, cursor_key:, order: :asc, use_ranges: nil) # :nodoc:
         @of       = of
         @relation = relation
         @start = start
         @finish = finish
-        @cursor = cursor
+        @cursor = cursor.is_a?(Key) ? cursor.name : cursor
+        @cursor_key = cursor_key
         @order = order
         @use_ranges = use_ranges
       end
@@ -67,7 +68,7 @@ module ActiveRecord
       def each_record(&block)
         return to_enum(:each_record) unless block_given?
 
-        @relation.find_each(batch_size: @of, start: @start, finish: @finish, cursor: @cursor, order: @order, &block)
+        @relation.find_each(batch_size: @of, start: @start, finish: @finish, cursor: @cursor_key, order: @order, &block)
       end
 
       # Deletes records in batches. Returns the total number of rows affected.
@@ -128,7 +129,7 @@ module ActiveRecord
       # end
       # ```
       def each(&block)
-        enum = @relation.to_enum(:in_batches, of: @of, start: @start, finish: @finish, load: false, cursor: @cursor, order: @order, use_ranges: @use_ranges)
+        enum = @relation.to_enum(:in_batches, of: @of, start: @start, finish: @finish, load: false, cursor: @cursor_key, order: @order, use_ranges: @use_ranges)
         return enum.each(&block) if block_given?
         enum
       end
