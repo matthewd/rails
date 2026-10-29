@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../helper"
+require "active_model"
 
 module Arel
   module Visitors
@@ -352,6 +353,18 @@ module Arel
         search = Nodes.build_quoted("{foo,bar,baz}")
         sql = compile Nodes::Overlaps.new(column, search)
         assert_like %{ "products"."tags" && '{foo,bar,baz}' }, sql
+      end
+
+      test "Nodes::CompositeIn compares row values" do
+        node = Nodes::CompositeIn.new([@table[:id], @table[:name]], [[1, "Bobby"], [2, "Robert"]], :in,
+          types: [ActiveModel::Type::Integer.new, ActiveModel::Type::String.new])
+
+        assert_like %{
+          ("users"."id", "users"."name") IN (($1, $2), ($3, $4))
+        }, compile(node)
+        assert_like %{
+          ("users"."id", "users"."name") NOT IN (($1, $2), ($3, $4))
+        }, compile(node.invert)
       end
 
       private

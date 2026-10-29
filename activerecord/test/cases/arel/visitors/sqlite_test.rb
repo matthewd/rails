@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../helper"
+require "active_model"
 
 module Arel
   module Visitors
@@ -54,6 +55,20 @@ module Arel
         val = Nodes.build_quoted(nil, @table[:active])
         sql = compile Nodes::IsDistinctFrom.new(@table[:name], val)
         assert_like %{ "users"."name" IS NOT NULL }, sql
+      end
+
+      test "Nodes::CompositeIn compares with a VALUES list" do
+        type_caster = Object.new
+        def type_caster.type_for_attribute(name) = ActiveModel::Type.default_value
+        @table = Table.new(name: :users, type_caster: type_caster)
+        node = Nodes::CompositeIn.new([@table[:id], @table[:name]], [[1, "Bobby"], [2, "Robert"]], :in)
+
+        assert_like %{
+          ("users"."id", "users"."name") IN (VALUES (?, ?), (?, ?))
+        }, compile(node)
+        assert_like %{
+          ("users"."id", "users"."name") NOT IN (VALUES (?, ?), (?, ?))
+        }, compile(node.invert)
       end
 
       private

@@ -148,6 +148,30 @@ module ActiveRecord
       end
     end
 
+    # A serialized string type with a distinct database representation,
+    # which counts its serializations.
+    class CountingPrefixString < ActiveRecord::Type::String
+      attr_accessor :serializations
+
+      def initialize(...)
+        super
+        @serializations = 0
+      end
+
+      def serialize(value)
+        @serializations += 1
+        "coded:#{value}" unless value.nil?
+      end
+
+      def deserialize(value)
+        value&.delete_prefix("coded:")
+      end
+
+      def serialized?
+        true
+      end
+    end
+
     module PrefixCoder
       def self.dump(value)
         "coded:#{value}"
@@ -193,6 +217,20 @@ module ActiveRecord
           column.fetch_attribute { |attribute| raw_column = attribute }
           Arel::Nodes::InfixOperation.new("~", raw_column, Arel::Nodes.build_quoted(value.source))
         end)
+      end
+    end
+
+    class SymbolPredicateBuilder < PredicateBuilder
+      class SymbolHandler < BasicObjectHandler
+        def call(attribute, value)
+          Arel::Nodes::InfixOperation.new("~", attribute, Arel::Nodes.build_quoted(value.to_s))
+        end
+      end
+
+      def register_handlers
+        super
+
+        register_handler(Symbol, SymbolHandler.new(self))
       end
     end
 
@@ -383,6 +421,85 @@ module ActiveRecord
       topic.create!(title: "Other")
 
       assert_equal records, topic.where(title: ["ARRAY ONE", "ARRAY TWO"]).order(:id).to_a
+    end
+
+    def test_attribute_type_comparison_expression_applies_to_tuple_values
+      topic = topic_model_with_title_type(UnaccentedString.new)
+      relation = topic.where([:title, :author_name] => [["CAFE", "David"], ["BAR", "Mary"]])
+
+      assert_instance_of Arel::Nodes::CompositeIn, relation.where_clause.ast
+      author_name = quote_table_name("topics.author_name")
+      values = tuple_list_prefix
+      expected_sql = "SELECT #{quoted_topics}.* FROM #{quoted_topics} " \
+        "WHERE (#{normalized_title}, #{author_name}) IN (#{values}" \
+        "(#{normalized_value("CAFE")}, #{quoted_value("David")}), (#{normalized_value("BAR")}, #{quoted_value("Mary")}))"
+
+      assert_equal expected_sql, relation.to_sql
+    end
+
+    def test_attribute_type_comparison_expression_executes_tuple_predicates
+      topic = topic_model_with_title_type(LowerString.new)
+      records = [topic.create!(title: "Tuple One", author_name: "A"), topic.create!(title: "Tuple Two", author_name: "B")]
+      topic.create!(title: "Tuple Two", author_name: "A")
+
+      assert_equal records, topic.where([:title, :author_name] => [["TUPLE ONE", "A"], ["TUPLE TWO", "B"]]).order(:id).to_a
+    end
+
+    def test_tuple_values_are_captured_when_the_relation_is_built
+      topic = topic_model_with_title_type(ActiveRecord::Type::String.new)
+      record = topic.create!(title: "Captured", author_name: "A")
+      topic.create!(title: "Changed", author_name: "A")
+      title = +"Captured"
+      relation = topic.where([:title, :author_name] => [[title, "A"], ["Other", "B"]])
+      title.replace("Changed")
+
+      assert_equal [record], relation.to_a
+    end
+
+    def test_serialized_tuple_values_are_serialized_once_when_the_relation_is_built
+      type = CountingPrefixString.new
+      topic = topic_model_with_title_type(type)
+      records = [topic.create!(title: "one", author_name: "A"), topic.create!(title: "two", author_name: "B")]
+      other = topic.create!(title: "two", author_name: "A")
+      title = +"one"
+
+      type.serializations = 0
+      relation = topic.where([:title, :author_name] => [[title, "A"], ["two", "B"]])
+      title.replace("two")
+      assert_equal 2, type.serializations
+
+      assert_match(/\('coded:one', 'A'\), \('coded:two', 'B'\)/, relation.to_sql)
+      assert_equal records, relation.order(:id).to_a
+      assert_equal [other], relation.invert_where.where(id: [*records, other].map(&:id)).to_a
+      assert_equal 2, type.serializations
+    end
+
+    def test_serialized_tuple_values_compose_with_query_predicates
+      type = ActiveRecord::Type::Serialized.new(LowerString.new, PrefixCoder)
+      topic = topic_model_with_title_type(type)
+      sql = topic.where([:title, :author_name] => [["VALUE", "A"], ["OTHER", "B"]]).to_sql
+      title = "lower(#{quote_table_name("topics.title")})"
+      author_name = quote_table_name("topics.author_name")
+      expected_sql = "SELECT #{quoted_topics}.* FROM #{quoted_topics} " \
+        "WHERE (#{title}, #{author_name}) IN (#{tuple_list_prefix}" \
+        "(lower('coded:VALUE'), #{quoted_value("A")}), (lower('coded:OTHER'), #{quoted_value("B")}))"
+
+      assert_equal expected_sql, sql
+    end
+
+    def test_registered_handlers_apply_to_tuple_values
+      sql = Topic.where([:title, :author_name] => [[/rails/, "David"], [/ruby/, "Mary"]]).to_sql
+
+      assert_match %r{#{Regexp.escape(quote_table_name("topics.title"))} ~ 'rails'}i, sql
+      assert_match %r{#{Regexp.escape(quote_table_name("topics.title"))} ~ 'ruby'}i, sql
+    end
+
+    def test_registered_handler_subclasses_apply_to_tuple_values
+      Topic.class_eval { @predicate_builder = SymbolPredicateBuilder.new(TableMetadata.new(Topic, Topic.arel_table)) }
+      sql = Topic.where([:title, :author_name] => [[:rails, "David"], [:ruby, "Mary"]]).to_sql
+
+      assert_match %r{#{Regexp.escape(quote_table_name("topics.title"))} ~ 'rails'}i, sql
+      assert_match %r{#{Regexp.escape(quote_table_name("topics.title"))} ~ 'ruby'}i, sql
     end
 
     def test_attribute_type_comparison_expression_applies_to_range_bounds
@@ -777,6 +894,14 @@ module ActiveRecord
 
       def normalized_title
         "lower(custom_immutable_unaccent(#{quote_table_name("topics.title")}))"
+      end
+
+      def quoted_value(value)
+        ActiveRecord::Base.lease_connection.quote(value)
+      end
+
+      def tuple_list_prefix
+        current_adapter?(:SQLite3Adapter) ? "VALUES " : ""
       end
 
       def normalized_value(value)

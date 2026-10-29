@@ -2,6 +2,9 @@
 
 require_relative "../helper"
 require "bigdecimal"
+require "active_model"
+require "arel/collectors/bind"
+require "arel/collectors/composite"
 
 module Arel
   module Visitors
@@ -1004,7 +1007,105 @@ module Arel
         assert_like "SELECT foo, bar FROM customers GROUP BY foo", compile(sql)
       end
 
+      test "Nodes::CompositeIn compares each tuple component-wise" do
+        node = composite_in([[1, "Bobby"], [2, "Robert"]])
+
+        assert_like %{
+          ("users"."id" = ? AND "users"."name" = ? OR "users"."id" = ? AND "users"."name" = ?)
+        }, compile(node)
+        assert_like %{
+          NOT ("users"."id" = ? AND "users"."name" = ? OR "users"."id" = ? AND "users"."name" = ?)
+        }, compile(node.invert)
+      end
+
+      test "Nodes::CompositeIn is not preparable" do
+        collector = Collectors::SQLString.new.tap { |c| c.preparable = true }
+        @visitor.accept(composite_in([[1, "Bobby"], [2, "Robert"]]), collector)
+
+        assert_equal false, collector.preparable
+      end
+
+      test "Nodes::CompositeIn binds each component's cast value in tuple order with its attribute's name" do
+        _, binds = compile_with_binds(composite_in([["1", :Bobby], ["2", :Robert]]))
+
+        assert_equal [["id", 1], ["name", "Bobby"], ["id", 2], ["name", "Robert"]],
+          binds.map { |bind| [bind.name, bind.value_for_database] }
+      end
+
+      test "Nodes::CompositeIn compares components serialized as nil by equality" do
+        node = composite_in([[1, "Bobby"], ["one", "Robert"]])
+        sql, binds = compile_with_binds(node)
+
+        assert_like %{
+          ("users"."id" = ? AND "users"."name" = ? OR "users"."id" = ? AND "users"."name" = ?)
+        }, sql
+        assert_equal [1, "Bobby", nil, "Robert"], binds.map(&:value_for_database)
+      end
+
+      test "Nodes::CompositeIn compares components with IS NULL where their type tests a bound nil that way" do
+        node = composite_in([[1, "Bobby"], [2, " "], [3, "Bob"]], attributes: [@table[:id], @table[:nickname]], types: [INTEGER_TYPE, BLANK_AS_NIL_TYPE])
+        sql, binds = compile_with_binds(node)
+
+        assert_like %{
+          ("users"."id" = ? AND "users"."nickname" = ? OR "users"."id" = ? AND "users"."nickname" = ?
+            OR "users"."id" = ? AND "users"."nickname" IS NULL)
+        }, sql
+        assert_equal [1, "Bobby", 3, "Bob", 2], binds.map(&:value_for_database)
+        assert_like %{
+          NOT ("users"."id" = ? AND "users"."nickname" = ? OR "users"."id" = ? AND "users"."nickname" = ?
+            OR "users"."id" = ? AND "users"."nickname" IS NULL)
+        }, compile(node.invert)
+      end
+
+      test "Nodes::CompositeIn compares an attribute's comparison expression of each value" do
+        name = LowerAttribute.new(@table, "name")
+        node = composite_in([[1, "Bobby"], [2, "Robert"]], attributes: [@table[:id], name])
+        sql, binds = compile_with_binds(node)
+
+        assert_like %{
+          ("users"."id" = ? AND "users"."name" = lower(?) OR "users"."id" = ? AND "users"."name" = lower(?))
+        }, sql
+        assert_equal [1, "Bobby", 2, "Robert"], binds.map(&:value_for_database)
+      end
+
+      test "Nodes::CompositeIn matches nothing when every tuple is unserializable" do
+        node = composite_in([[2**40, "Bobby"], [2**41, "Robert"]])
+
+        assert_equal "1=0", compile(node)
+        assert_equal "1=1", compile(node.invert)
+      end
+
       private
+        INTEGER_TYPE = ActiveModel::Type::Integer.new.freeze
+        STRING_TYPE = ActiveModel::Type::String.new.freeze
+
+        # Like a normalized attribute type: values are tested with IS NULL
+        # when they serialize to nil.
+        class BlankAsNilType < ActiveModel::Type::String
+          def normalizer; end
+
+          def serialize(value)
+            super(value.strip.presence)
+          end
+        end
+
+        BLANK_AS_NIL_TYPE = BlankAsNilType.new.freeze
+
+        class LowerAttribute < Arel::Attributes::Attribute
+          def comparison_expression(expression)
+            Nodes::NamedFunction.new("lower", [expression])
+          end
+        end
+
+        def composite_in(tuples, attributes: [@table[:id], @table[:name]], types: [INTEGER_TYPE, STRING_TYPE])
+          Nodes::CompositeIn.new(attributes, tuples, :in, types: types)
+        end
+
+        def compile_with_binds(node)
+          collector = Collectors::Composite.new(Collectors::SQLString.new, Collectors::Bind.new)
+          @visitor.accept(node, collector).value
+        end
+
         def compile(node)
           @visitor.accept(node, Collectors::SQLString.new).value
         end

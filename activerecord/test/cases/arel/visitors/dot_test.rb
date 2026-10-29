@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../helper"
+require "active_model"
 
 module Arel
   module Visitors
@@ -141,6 +142,19 @@ module Arel
         assert_edge("operator", dot)
         assert_edge("left", dot)
         assert_edge("right", dot)
+      end
+
+      def test_Arel_Nodes_CompositeIn
+        table = Table.new(name: :users)
+        types = [ActiveModel::Type::Integer.new, ActiveModel::Type::String.new]
+        node = Arel::Nodes::CompositeIn.new([table[:id], table[:name]], [[1, "Bobby"], [2, "Robert"]], :in, types: types)
+
+        dot = @visitor.accept(node, Arel::Collectors::PlainString.new).value
+
+        assert_match '[label="<f0>Arel::Nodes::CompositeIn"]', dot
+        assert_edge("tuples", dot)
+        assert_edge("type", dot)
+        assert_edge("attributes", dot)
       end
 
       def test_Arel_Nodes_RegExp

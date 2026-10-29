@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../helper"
+require "active_model"
 
 module Arel
   module Visitors
@@ -185,6 +186,19 @@ module Arel
         assert_like %{
           "foo" AS (SELECT * FROM "bar")
         }, compile(cte)
+      end
+
+      test "Nodes::CompositeIn compares row values" do
+        table = Table.new(name: :users)
+        node = Nodes::CompositeIn.new([table[:id], table[:name]], [[1, "Bobby"], [2, "Robert"]], :in,
+          types: [ActiveModel::Type::Integer.new, ActiveModel::Type::String.new])
+
+        assert_like %{
+          ("users"."id", "users"."name") IN ((?, ?), (?, ?))
+        }, compile(node)
+        assert_like %{
+          ("users"."id", "users"."name") NOT IN ((?, ?), (?, ?))
+        }, compile(node.invert)
       end
 
       private

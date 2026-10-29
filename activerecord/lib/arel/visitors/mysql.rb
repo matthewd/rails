@@ -56,6 +56,8 @@ module Arel # :nodoc: all
           visit_Arel_Nodes_IsNotDistinctFrom o, collector
         end
 
+        alias :visit_Arel_Nodes_CompositeIn :visit_composite_in_with_row_values
+
         def visit_Arel_Nodes_Regexp(o, collector)
           infix_value o, collector, " REGEXP "
         end

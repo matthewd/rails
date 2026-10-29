@@ -72,6 +72,15 @@ module Arel # :nodoc: all
           visit o.right, collector
         end
 
+        alias :visit_Arel_Nodes_CompositeIn :visit_composite_in_with_row_values
+
+        # SQLite only accepts a subquery on the right-hand side of a row
+        # value IN.
+        def collect_composite_in_tuples(o, values, collector)
+          collector << "VALUES "
+          super
+        end
+
         # Queries used in UNION should not be wrapped by parentheses,
         # because it is an invalid syntax in SQLite.
         def infix_value_with_paren(o, collector, value, suppress_parens = false)

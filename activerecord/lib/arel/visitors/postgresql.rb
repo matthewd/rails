@@ -131,6 +131,8 @@ module Arel # :nodoc: all
           visit o.right, collector
         end
 
+        alias :visit_Arel_Nodes_CompositeIn :visit_composite_in_with_row_values
+
         BIND_BLOCK = ActiveSupport::Ractors.shareable_proc { |i| "$#{i}" }
         private_constant :BIND_BLOCK
 
