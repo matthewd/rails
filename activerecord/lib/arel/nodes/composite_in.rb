@@ -96,6 +96,14 @@ module Arel # :nodoc: all
         ActiveModel::Attribute.with_cast_value(attributes[index].name, value, ActiveModel::Type.default_value)
       end
 
+      def procs_for_binds
+        type = ActiveModel::Type.default_value
+        attributes.map do |attribute|
+          name = attribute.name
+          -> value { ActiveModel::Attribute.with_cast_value(name, value, type) }
+        end
+      end
+
       def fetch_attribute(&block)
         attributes.all? { |attribute| attribute.fetch_attribute(&block) }
       end

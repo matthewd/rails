@@ -23,6 +23,19 @@ module Arel # :nodoc: all
         self << (@bind_index...@bind_index += binds.size).map(&block).join(", ")
         self
       end
+
+      def add_bind_rows(columns, procs_for_binds = nil)
+        sql = +""
+        columns.first.size.times do |row|
+          sql << (row == 0 ? "(" : "), (")
+          columns.size.times do |index|
+            sql << ", " unless index == 0
+            sql << yield(@bind_index)
+            @bind_index += 1
+          end
+        end
+        self << sql << ")"
+      end
     end
   end
 end

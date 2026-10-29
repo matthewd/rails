@@ -24,6 +24,20 @@ module Arel # :nodoc: all
         self
       end
 
+      def add_bind_rows(columns, procs_for_binds, &)
+        width = columns.size
+        first = @binds.size
+        columns.each_with_index do |column, index|
+          proc_for_binds = procs_for_binds[index]
+          position = first + index
+          column.each do |value|
+            @binds[position] = proc_for_binds.call(value)
+            position += width
+          end
+        end
+        self
+      end
+
       def value
         @binds
       end

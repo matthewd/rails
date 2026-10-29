@@ -1020,6 +1020,10 @@ module Arel # :nodoc: all
         def collect_composite_in_tuples(o, values, collector)
           attributes = o.attributes
 
+          if attributes.none? { |attribute| attribute.respond_to?(:comparison_expression) }
+            return collector.add_bind_rows(values, o.procs_for_binds, &bind_block)
+          end
+
           values.first.each_index do |row|
             collector << (row == 0 ? "(" : "), (")
 

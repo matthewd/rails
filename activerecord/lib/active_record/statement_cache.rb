@@ -108,6 +108,19 @@ module ActiveRecord
         self
       end
 
+      def add_bind_rows(columns, procs_for_binds, &)
+        columns.first.size.times do |row|
+          @parts << (row == 0 ? "(" : "), (")
+          columns.size.times do |index|
+            @parts << ", " unless index == 0
+            @parts << Substitute.new
+            @binds << procs_for_binds[index].call(columns[index][row])
+          end
+        end
+        @parts << ")"
+        self
+      end
+
       def value
         [@parts, @binds]
       end
