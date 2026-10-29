@@ -84,7 +84,9 @@ module ActiveRecord
     #
     # NOTE: By its nature, batch processing is subject to race conditions if
     # other processes are modifying the database.
-    def find_each(start: nil, finish: nil, batch_size: 1000, error_on_ignore: nil, cursor: primary_key, order: DEFAULT_ORDER, &block)
+    def find_each(start: nil, finish: nil, batch_size: 1000, error_on_ignore: nil, cursor: model.primary_key_definition, order: DEFAULT_ORDER, &block)
+      cursor = Key.for(cursor)
+
       if block_given?
         find_in_batches(start: start, finish: finish, batch_size: batch_size, error_on_ignore: error_on_ignore, cursor: cursor, order: order) do |records|
           records.each(&block)
@@ -92,7 +94,6 @@ module ActiveRecord
       else
         enum_for(:find_each, start: start, finish: finish, batch_size: batch_size, error_on_ignore: error_on_ignore, cursor: cursor, order: order) do
           relation = self
-          cursor = Array(cursor)
           apply_limits(relation, cursor, start, finish, build_batch_orders(cursor, order)).size
         end
       end
@@ -160,11 +161,11 @@ module ActiveRecord
     #
     # NOTE: By its nature, batch processing is subject to race conditions if
     # other processes are modifying the database.
-    def find_in_batches(start: nil, finish: nil, batch_size: 1000, error_on_ignore: nil, cursor: primary_key, order: DEFAULT_ORDER, &block)
+    def find_in_batches(start: nil, finish: nil, batch_size: 1000, error_on_ignore: nil, cursor: model.primary_key_definition, order: DEFAULT_ORDER, &block)
+      cursor = Key.for(cursor)
       relation = self
       unless block
         return to_enum(:find_in_batches, start: start, finish: finish, batch_size: batch_size, error_on_ignore: error_on_ignore, cursor: cursor, order: order) do
-          cursor = Array(cursor)
           total = apply_limits(relation, cursor, start, finish, build_batch_orders(cursor, order)).size
           (total - 1).div(batch_size) + 1
         end
@@ -257,19 +258,19 @@ module ActiveRecord
     #
     # NOTE: By its nature, batch processing is subject to race conditions if
     # other processes are modifying the database.
-    def in_batches(of: 1000, start: nil, finish: nil, load: false, error_on_ignore: nil, cursor: primary_key, order: DEFAULT_ORDER, use_ranges: nil, &block)
-      ensure_valid_options_for_batching!(cursor, start, finish, order, error_on_ignore)
+    def in_batches(of: 1000, start: nil, finish: nil, load: false, error_on_ignore: nil, cursor: model.primary_key_definition, order: DEFAULT_ORDER, use_ranges: nil, &block)
+      cursor_key = Key.for(cursor)
+      ensure_valid_options_for_batching!(cursor_key, start, finish, order, error_on_ignore)
 
       unless block
-        return BatchEnumerator.new(of: of, start: start, finish: finish, relation: self, cursor: cursor, order: order, use_ranges: use_ranges)
+        return BatchEnumerator.new(of: of, start: start, finish: finish, relation: self, cursor: cursor, cursor_key: cursor_key, order: order, use_ranges: use_ranges)
       end
 
-      each_batch(of: of, start: start, finish: finish, load: load, cursor: cursor, order: order, use_ranges: use_ranges, &block)
+      each_batch(of: of, start: start, finish: finish, load: load, cursor: cursor_key, order: order, use_ranges: use_ranges, &block)
     end
 
     private
       def each_batch(of:, start:, finish:, load:, cursor:, order:, use_ranges:, yield_records: false, &block)
-        cursor = Array(cursor).map(&:to_s)
         batch_limit = of
 
         if limit_value
@@ -306,8 +307,6 @@ module ActiveRecord
       end
 
       def ensure_valid_options_for_batching!(cursor, start, finish, order, error_on_ignore)
-        cursor = Array(cursor).map(&:to_s)
-
         if start && Array(start).size != cursor.size
           raise ArgumentError, ":start must contain one value per cursor column"
         end
@@ -316,9 +315,9 @@ module ActiveRecord
           raise ArgumentError, ":finish must contain one value per cursor column"
         end
 
-        if (Array(primary_key) - cursor).any?
+        unless model.primary_key_definition.subset?(cursor)
           indexes = model.schema_cache.indexes(table_name)
-          unique_index = indexes.find { |index| index.unique && index.where.nil? && (Array(index.columns) - cursor).empty? }
+          unique_index = indexes.find { |index| index.unique && index.where.nil? && (Array(index.columns) - cursor.columns).empty? }
 
           unless unique_index
             raise ArgumentError, ":cursor must include a primary key or other unique column(s)"
@@ -353,7 +352,7 @@ module ActiveRecord
       end
 
       def batch_condition(relation, cursor, values, operators)
-        cursor_positions = cursor.zip(Array(values), operators)
+        cursor_positions = cursor.columns.zip(Array(values), operators)
 
         first_clause_column, first_clause_value, operator = cursor_positions.pop
         where_clause = predicate_builder[first_clause_column, first_clause_value, operator]
@@ -445,13 +444,15 @@ module ActiveRecord
         loop do
           if load
             records = batch_relation.records
-            values = records.pluck(*cursor)
-            values_size = values.size
-            values_last = values.last
+            values_size = records.size
             if yield_records
+              last_record = records.last
+              values_last = cursor.map_value { |column| last_record[column] } if last_record
               yielded_batch = records.dup
             else
-              yielded_batch = rewhere(cursor => values)
+              values = records.pluck(*cursor)
+              values_last = values.last
+              yielded_batch = rewhere(cursor.name => values)
               yielded_batch.load_records(records)
             end
           elsif (empty_scope && use_ranges != false) || use_ranges
@@ -477,7 +478,7 @@ module ActiveRecord
             values = batch_relation.pluck(*cursor)
             values_size = values.size
             values_last = values.last
-            yielded_batch = rewhere(cursor => values)
+            yielded_batch = rewhere(cursor.name => values)
           end
 
           break if values_size == 0

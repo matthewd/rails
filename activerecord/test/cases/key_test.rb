@@ -16,6 +16,12 @@ class KeyTest < ActiveRecord::TestCase
     assert_kind_of Key, Key.for([:shop_id, :id])
   end
 
+  def test_for_returns_an_existing_key_unchanged
+    [Key.for("id"), Key.for([:shop_id, :id]), Key.for(nil)].each do |key|
+      assert_same key, Key.for(key)
+    end
+  end
+
   def test_simple_key_shape
     pk = Key.for("id")
 
