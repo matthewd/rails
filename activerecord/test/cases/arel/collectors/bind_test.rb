@@ -19,7 +19,20 @@ module Arel
         assert_equal ["hello2", "world3"], binds
       end
 
+      test "add_bind_rows gathers binds in row order between other binds" do
+        collector = Collectors::Bind.new
+        collector.add_bind("before")
+        collector.add_bind_rows([[1, 2, 3], %w[a b c]], row_procs) { raise "unused" }
+        collector.add_bind("after")
+
+        assert_equal ["before", [:id, 1], [:name, "a"], [:id, 2], [:name, "b"], [:id, 3], [:name, "c"], "after"], collector.value
+      end
+
       private
+        def row_procs
+          [-> value { [:id, value] }, -> value { [:name, value] }]
+        end
+
         def collect(node)
           @visitor.accept(node, Collectors::Bind.new)
         end

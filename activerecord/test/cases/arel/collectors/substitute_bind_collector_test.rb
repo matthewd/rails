@@ -42,6 +42,23 @@ module Arel
         sql = compile(ast_with_binds, quoter)
         assert_equal 'SELECT FROM "users" WHERE "users"."age" = "hello" AND "users"."name" = "world"', sql
       end
+
+      def test_add_bind_rows_quotes_values_without_building_binds
+        quoter = Object.new
+        def quoter.quote(val)
+          val.inspect
+        end
+        collector = Collectors::SubstituteBinds.new(quoter, Collectors::SQLString.new)
+        unused = -> value { raise "bind built for #{value.inspect}" }
+
+        collector.add_bind("before") { raise "unused" }
+        collector << " AND (a, b) IN "
+        collector.add_bind_rows([[1, 2], %w[x y]], [unused, unused]) { raise "unused" }
+        collector << " AND y = "
+        collector.add_bind("after") { raise "unused" }
+
+        assert_equal '"before" AND (a, b) IN (1, "x"), (2, "y") AND y = "after"', collector.value
+      end
     end
   end
 end

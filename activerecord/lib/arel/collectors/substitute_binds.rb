@@ -25,6 +25,18 @@ module Arel # :nodoc: all
         self << binds.map { |bind| quoter.quote(bind) }.join(", ")
       end
 
+      def add_bind_rows(columns, procs_for_binds = nil, &)
+        sql = +""
+        columns.first.size.times do |row|
+          sql << (row == 0 ? "(" : "), (")
+          columns.size.times do |index|
+            sql << ", " unless index == 0
+            sql << quoter.quote(columns[index][row])
+          end
+        end
+        self << sql << ")"
+      end
+
       def value
         delegate.value
       end

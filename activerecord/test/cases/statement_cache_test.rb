@@ -14,6 +14,20 @@ module ActiveRecord
       @connection = ActiveRecord::Base.lease_connection
     end
 
+    def test_partial_query_collector_add_bind_rows_defers_each_value
+      collector = StatementCache::PartialQueryCollector.new
+      collector.add_bind("before")
+      collector << " AND (a, b) IN "
+      collector.add_bind_rows([[1, 2], %w[x y]], [-> v { [:a, v] }, -> v { [:b, v] }])
+      collector << " AND y = "
+      collector.add_bind("after")
+
+      parts, binds = collector.value
+      assert_equal ["before", [:a, 1], [:b, "x"], [:a, 2], [:b, "y"], "after"], binds
+      assert_equal [" AND (a, b) IN ", "(", ", ", "), (", ", ", ")", " AND y = "], parts.reject { |part| StatementCache::Substitute === part }
+      assert_equal 6, parts.count { |part| StatementCache::Substitute === part }
+    end
+
     def test_statement_cache
       Book.create(name: "my book")
       Book.create(name: "my other book")

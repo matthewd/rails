@@ -20,6 +20,18 @@ module Arel
         assert_equal sql.encoding, Encoding::UTF_8
       end
 
+      test "add_bind_rows numbers placeholders in row order between other binds" do
+        collector = Collectors::SQLString.new
+        collector << "x = "
+        collector.add_bind("before") { |i| "$#{i}" }
+        collector << " AND (a, b) IN "
+        collector.add_bind_rows([[1, 2], [3, 4]], nil) { |i| "$#{i}" }
+        collector << " AND y = "
+        collector.add_bind("after") { |i| "$#{i}" }
+
+        assert_equal "x = $1 AND (a, b) IN ($2, $3), ($4, $5) AND y = $6", collector.value
+      end
+
       private
         def collect(node)
           @visitor.accept(node, Collectors::SQLString.new)

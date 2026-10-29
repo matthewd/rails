@@ -33,6 +33,20 @@ module Arel
         assert bind_collector.retryable
       end
 
+      test "add_bind_rows is performed on both collectors" do
+        sql_collector = Collectors::SQLString.new
+        bind_collector = Collectors::Bind.new
+        collector = Collectors::Composite.new(sql_collector, bind_collector)
+
+        collector.add_bind("before") { |i| "$#{i}" }
+        collector.add_bind_rows([[1, 2], %w[a b]], [-> v { [:id, v] }, -> v { [:name, v] }]) { |i| "$#{i}" }
+        collector.add_bind("after") { |i| "$#{i}" }
+
+        sql, binds = collector.value
+        assert_equal "$1($2, $3), ($4, $5)$6", sql
+        assert_equal ["before", [:id, 1], [:name, "a"], [:id, 2], [:name, "b"], "after"], binds
+      end
+
       private
         def collect(node)
           sql_collector = Collectors::SQLString.new

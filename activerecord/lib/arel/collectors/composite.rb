@@ -36,6 +36,12 @@ module Arel # :nodoc: all
         self
       end
 
+      def add_bind_rows(columns, procs_for_binds, &block)
+        left.add_bind_rows(columns, procs_for_binds, &block)
+        right.add_bind_rows(columns, procs_for_binds, &block)
+        self
+      end
+
       def value
         [left.value, right.value]
       end
