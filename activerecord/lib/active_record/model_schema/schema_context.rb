@@ -67,6 +67,10 @@ module ActiveRecord
         mapped_table.content_columns
       end
 
+      def has_inheritance_column?
+        mapped_table.has_inheritance_column?
+      end
+
       def query_constraints_list
         mapped_table.query_constraints_list
       end

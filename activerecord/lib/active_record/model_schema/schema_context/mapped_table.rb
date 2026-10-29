@@ -41,10 +41,15 @@ module ActiveRecord
               column.name == model_class.inheritance_column ||
               column.name.end_with?("_id", "_count")
           end.freeze
+          @has_inheritance_column = @columns_hash.key?(model_class.inheritance_column)
 
           @timestamp_attributes_for_create_in_model = (model_class.timestamp_attributes_for_create & @column_names).freeze
           @timestamp_attributes_for_update_in_model = (model_class.timestamp_attributes_for_update & @column_names).freeze
           @all_timestamp_attributes_in_model = (@timestamp_attributes_for_create_in_model + @timestamp_attributes_for_update_in_model).freeze
+        end
+
+        def has_inheritance_column?
+          @has_inheritance_column
         end
 
         def table_exists?
@@ -78,6 +83,7 @@ module ActiveRecord
           alias_method :columns, :columns_hash
           alias_method :column_names, :columns_hash
           alias_method :content_columns, :columns_hash
+          alias_method :has_inheritance_column?, :columns_hash
           alias_method :attributes, :columns_hash
           alias_method :query_constraints_list, :columns_hash
           alias_method :composite_query_constraints_list, :columns_hash
