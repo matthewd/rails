@@ -639,6 +639,43 @@ class PrimaryKeysTest < ActiveRecord::TestCase
     assert_equal "conventional_movieid", inferring_child.primary_key
   end
 
+  def test_composite_record_keeps_its_key_shape_when_the_model_key_becomes_scalar
+    model = Class.new(ActiveRecord::Base) do
+      self.table_name = "topics"
+      self.primary_key = ["title", "id"]
+    end
+    record = model.instantiate("title" => "Composite", "id" => 42)
+    model.primary_key = "title"
+
+    assert_equal ["Composite", 42], record.id
+    record.id = ["Changed", "44"]
+    assert_equal ["Changed", 44], record.id
+    assert_equal ["Changed", "44"], record.id_before_type_cast
+    assert_equal ["Composite", 42], record.id_was
+    assert_equal ["Composite", 42], record.id_in_database
+    assert_equal ["Changed", 44], record.id_for_database
+    assert_predicate record, :id?
+    assert_equal [model, ["Changed", 44]].hash, record.hash
+    record.write_attribute(:id, 45)
+    assert_equal ["Changed", 45], record.id
+    error = assert_raises(TypeError) { record.id = 46 }
+    assert_equal 'Expected value matching ["title", "id"], got 46.', error.message
+  end
+
+  def test_scalar_record_keeps_its_key_shape_when_the_model_key_becomes_composite
+    model = Class.new(ActiveRecord::Base) do
+      self.table_name = "topics"
+      self.primary_key = "title"
+    end
+    record = model.instantiate("title" => "Scalar", "id" => 43)
+    model.primary_key = ["title", "id"]
+    assert_predicate model, :composite_primary_key?
+
+    record.id = "Changed"
+    assert_equal "Changed", record.id
+    assert_equal [model, "Changed"].hash, record.hash
+  end
+
   def test_primary_key_assignment_reloads_descendant_schema
     klass = Class.new(ActiveRecord::Base) do
       self.table_name = "topics"

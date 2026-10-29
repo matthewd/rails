@@ -621,7 +621,7 @@ module ActiveRecord
     def init_attributes(_) # :nodoc:
       attrs = @attributes.deep_dup
 
-      self.class.primary_key_definition.each { |key| attrs.reset(key) }
+      Array(@primary_key).each { |key| attrs.reset(key) }
 
       attrs
     end
@@ -704,7 +704,7 @@ module ActiveRecord
     def hash
       id = self.id
 
-      if self.class.composite_primary_key? ? primary_key_values_present? : id
+      if primary_key_is_composite? ? primary_key_values_present?(id) : id
         [self.class, id].hash
       else
         super

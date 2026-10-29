@@ -21,8 +21,8 @@ module ActiveRecord
         _read_attribute(@primary_key)
       end
 
-      def primary_key_values_present? # :nodoc:
-        !!id
+      def primary_key_values_present?(key = id) # :nodoc:
+        !!key
       end
 
       # Sets the primary key column's value. If the primary key is composite,
@@ -60,6 +60,10 @@ module ActiveRecord
       end
 
       private
+        def primary_key_is_composite?
+          false
+        end
+
         def attribute_method?(attr_name)
           attr_name == "id" || super
         end

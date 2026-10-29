@@ -281,6 +281,22 @@ class CoreTest < ActiveRecord::TestCase
     assert_not Cpk::Book.new(author_id: 1, title: "Same title") == Cpk::Book.new(author_id: 1, title: "Same title")
   end
 
+  def test_hash_reads_a_composite_id_once
+    model = Class.new(Cpk::Book) do
+      attr_accessor :id_reads
+
+      def id
+        self.id_reads += 1
+        super
+      end
+    end
+    book = model.new(id: [1, 2])
+    book.id_reads = 0
+
+    assert_equal [model, [1, 2]].hash, book.hash
+    assert_equal 1, book.id_reads
+  end
+
   def test_composite_pk_models_hash
     assert_equal Cpk::Book.new(id: [1, 2]).hash, Cpk::Book.new(id: [1, 2]).hash
 
